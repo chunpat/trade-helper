@@ -1,0 +1,29 @@
+{
+  "name": "trade-helper-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "serve": "vite preview",
+    "lint": "eslint src --ext .js,.vue"
+  },
+  "dependencies": {
+    "axios": "^0.24.0",
+    "core-js": "^3.6.5",
+    "element-plus": "^2.0.0",
+    "vue": "^3.2.0",
+    "vue-router": "^4.0.0",
+    "vuex": "^4.0.0",
+    "echarts": "^5.2.0",
+    "moment": "^2.29.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^4.0.0",
+    "vite": "^4.0.0",
+    "eslint": "^8.0.0",
+    "eslint-plugin-vue": "^9.0.0",
+    "sass": "^1.26.5"
+  }
+}
