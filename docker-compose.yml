@@ -1,9 +1,9 @@
-version: '3.8'
-
 networks:
   backend-network:
     driver: bridge
   frontend-network:
+    driver: bridge
+  shared-network:
     driver: bridge
 
 services:
@@ -22,6 +22,9 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    networks:
+      - backend-network
+      - shared-network
     command: --default-authentication-plugin=mysql_native_password
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -38,9 +41,12 @@ services:
           memory: 512M
     restart: always
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - backend-network
+      - shared-network
     command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -59,6 +65,7 @@ services:
           memory: 1G
     networks:
       - backend-network
+      - shared-network
     restart: always
     ports:
       - "8029:8000"
@@ -93,10 +100,11 @@ services:
           memory: 512M
     networks:
       - frontend-network
+      - shared-network
     depends_on:
       - backend
     healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:80/"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1/"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import os
 
 from app.core.database import init_db
+from app.services.market_data import get_poller_from_env
 from app.api.v1 import router as api_router
 
 # Load environment variables
@@ -46,12 +47,18 @@ async def startup_event():
     """Initialize services on startup"""
     # Initialize database
     init_db()
+    # start market-data poller (background task)
+    app.state.market_poller = get_poller_from_env()
+    app.state.market_poller.start()
 
 # Shutdown event
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
-    pass
+    # stop market-data poller if running
+    poller = getattr(app.state, "market_poller", None)
+    if poller:
+        poller.stop()
 
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
