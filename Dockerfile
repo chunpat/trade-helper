@@ -10,10 +10,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Install system dependencies
 RUN set -ex; \
-    # 配置国内镜像源 (适用于新的 Debian 基础镜像)
-    echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian/ bookworm main" > /etc/apt/sources.list.d/tuna.list && \
-    echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian/ bookworm-updates main" >> /etc/apt/sources.list.d/tuna.list && \
-    echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main" >> /etc/apt/sources.list.d/tuna.list && \
+    # 替换主 sources.list，彻底使用阿里云源，避免 fallback 到 deb.debian.org
+    echo "deb http://mirrors.aliyun.com/debian/ bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian/ bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
     # 更新并安装系统依赖
     apt-get update && \
     apt-get install -y --no-install-recommends \

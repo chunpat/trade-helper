@@ -10,8 +10,6 @@
 - **数据库**: MySQL
 - **消息队列**: Redis PubSub
 - **缓存系统**: Redis
-- **监控系统**: Prometheus + Grafana
-- **日志系统**: ELK Stack
 
 ### 前端技术栈
 
@@ -189,20 +187,50 @@ risk_control:
 - 企业微信/钉钉集成
 - Telegram Bot
 
-## 开发计划
+## 📊 项目当前进度 (Current Status)
 
-### 基础版本 (v1.0)
-- [x] 基础API集成
-- [x] 简单资金和仓位控制
-- [x] 基础监控和告警功能
-- [x] 前端管理界面
+这是一个 **数字货币合约交易风控监控系统**，主要侧重于**监控**和**风险预警**，而非自动交易执行。
 
-### 进阶版本 (v2.0)
-- [ ] 高级风控策略
-- [ ] 性能优化
-- [ ] 机器学习风险预测
-- [ ] 完善的监控和告警系统
-- [ ] 移动端适配
+#### 1. 后端 (Backend - FastAPI)
+*   **基础架构**: FastAPI 框架搭建完成，数据库 (MySQL) 和缓存 (Redis) 连接已配置。
+*   **核心服务**:
+    *   `Auth`: 用户认证 (JWT) 已实现。
+    *   `RiskControlService`: 实现了核心风控逻辑（持仓价值检查、杠杆检查、订单风险检查）。
+    *   `PositionSyncService`: 实现了从 Binance 合约接口**同步持仓**的功能（目前是轮询机制）。
+    *   `MarketDataService`: 实现了市场价格的**轮询获取**，用于计算持仓盈亏和风险。
+    *   `WSBroadcast`: 实现了 WebSocket 广播，用于向前端推送实时数据。
+*   **API 接口**: 暴露了 `auth`, `market`, `risk_control` 等 API。
+
+#### 2. 前端 (Frontend - Vue 3)
+*   **页面结构**: 搭建了 Dashboard, Login, Positions, RiskAlerts, Settings, Accounts 等页面。
+*   **Dashboard**: 实现了总持仓价值、风险预警数、日内盈亏的展示组件。
+*   **交互**: 初步集成了 WebSocket (`wsClient.js`) 用于接收后端推送。
+
+#### 3. 基础设施 (Infrastructure)
+*   **Docker**: 完整的 `docker-compose.yml`，包含 MySQL, Redis, Backend, Frontend 服务。
+
+### 📝 待办事项清单 (Todo List)
+
+#### 1. 核心功能完善 (Core Features)
+- [ ] **风控配置**: 实现风控参数的增删改查 (CRUD) 接口及前端页面。
+- [ ] **报警通知渠道集成**: 目前 `RiskAlert` 只是存入数据库。需要实现实际的通知发送功能（如：邮件、Telegram Bot、钉钉/飞书 Webhook）。
+- [ ] **优化行情获取**: 目前 `MarketDataService` 使用的是 REST API 轮询 (10秒一次)。建议接入 Binance WebSocket 市场流，以实现毫秒级风控。
+- [ ] **完善交易所适配器**: `BinanceAdapter` 目前仅支持 `fetch_positions`。如果未来需要“一键平仓”或“减仓”等风控操作，需要实现 `place_order` / `cancel_order` 接口。
+- [ ] **历史数据归档**: 考虑添加定时任务，归档旧的 `OrderLog` 和 `TickerHistory` 数据，防止数据库过大。
+
+#### 2. 前端对接与优化 (Frontend Integration)
+- [ ] **全页面数据联调**: 确认 `Positions.vue` (持仓列表) 和 `RiskAlerts.vue` (报警历史) 是否已完全对接后端 API 并能正确渲染。
+- [ ] **WebSocket 断线重连**: 检查 `wsClient.js` 的健壮性，确保在网络波动或后端重启后能自动重连。
+- [ ] **配置页面**: 完善 `Settings.vue`，允许用户在前端动态配置风控参数（如最大杠杆、单笔亏损限额等）。
+
+#### 3. 测试与质量 (Testing & QA)
+- [ ] **单元测试**: 为 `RiskControlService` 添加单元测试，覆盖各种边界条件（如：刚好达到最大持仓、杠杆计算等）。
+- [ ] **集成测试**: 编写 API 集成测试，模拟从“同步持仓”到“触发风控”的全流程。
+- [ ] **模拟脚本**: 完善 `scripts/` 目录下的测试脚本，使其能模拟生成大量订单或极端行情，测试系统的抗压能力。
+
+#### 4. 部署与文档 (DevOps & Docs)
+- [ ] **生产环境配置**: 优化 `docker-compose.yml` 或新建 `docker-compose.prod.yml`，配置 Nginx HTTPS 证书，关闭调试模式。
+- [ ] **API 文档**: 虽然 FastAPI 自带 Swagger，但建议在 README 中补充核心风控逻辑的说明文档，方便团队成员理解。
 
 ## 贡献指南
 

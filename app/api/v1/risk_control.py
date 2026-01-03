@@ -39,6 +39,53 @@ async def create_risk_config(
     db.refresh(db_config)
     return db_config
 
+@router.get("/accounts/{account_id}/risk-config", response_model=schemas.RiskConfigInDB)
+async def get_risk_config(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取风控配置"""
+    from app.models.risk_control import RiskConfig
+    config = db.query(RiskConfig).filter(RiskConfig.account_id == account_id).first()
+    if not config:
+        raise HTTPException(status_code=404, detail="Risk configuration not found")
+    return config
+
+@router.put("/accounts/{account_id}/risk-config", response_model=schemas.RiskConfigInDB)
+async def update_risk_config(
+    account_id: int,
+    config_update: schemas.RiskConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """更新风控配置"""
+    from app.models.risk_control import RiskConfig
+    db_config = db.query(RiskConfig).filter(RiskConfig.account_id == account_id).first()
+    
+    if not db_config:
+        # If not exists, create one (assuming account exists)
+        # But we need to make sure account exists first
+        from app.models.risk_control import Account
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+             raise HTTPException(status_code=404, detail="Account not found")
+             
+        # Create new config
+        new_config_data = config_update.dict(exclude_unset=True)
+        new_config_data["account_id"] = account_id
+        db_config = RiskConfig(**new_config_data)
+        db.add(db_config)
+    else:
+        # Update existing
+        update_data = config_update.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_config, field, value)
+            
+    db.commit()
+    db.refresh(db_config)
+    return db_config
+
 @router.post("/check-position-risk")
 async def check_position_risk(
     account_id: int,
@@ -131,6 +178,42 @@ async def list_accounts(db: Session = Depends(get_db), current_user=Depends(get_
     from app.models.risk_control import Account
     return db.query(Account).order_by(Account.updated_at.desc()).all()
 
+@router.put('/accounts/{account_id}', response_model=schemas.AccountInDB)
+async def update_account(
+    account_id: int,
+    account_update: schemas.AccountUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Update an account"""
+    from app.models.risk_control import Account
+    db_account = db.query(Account).filter(Account.id == account_id).first()
+    if not db_account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    update_data = account_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(db_account, field, value)
+    
+    db.commit()
+    db.refresh(db_account)
+    return db_account
+
+@router.delete('/accounts/{account_id}', status_code=204)
+async def delete_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Delete an account"""
+    from app.models.risk_control import Account
+    db_account = db.query(Account).filter(Account.id == account_id).first()
+    if not db_account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    db.delete(db_account)
+    db.commit()
+    return None
 
 @router.post('/accounts/{account_id}/positions/sync', status_code=202)
 async def trigger_account_sync(account_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
@@ -282,3 +365,133 @@ async def resolve_risk_alert(
     db.commit()
     db.refresh(alert)
     return alert
+
+@router.get("/alerts/", response_model=List[schemas.RiskAlertInDB])
+async def get_alerts(
+    skip: int = 0,
+    limit: int = 100,
+    is_resolved: Optional[bool] = None,
+    risk_level: Optional[schemas.RiskLevel] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取风险预警列表"""
+    from app.models.risk_control import RiskAlert
+    query = db.query(RiskAlert)
+    
+    if is_resolved is not None:
+        query = query.filter(RiskAlert.is_resolved == is_resolved)
+    
+    if risk_level:
+        query = query.filter(RiskAlert.risk_level == risk_level)
+        
+    alerts = query.order_by(RiskAlert.created_at.desc()).offset(skip).limit(limit).all()
+    return alerts
+
+@router.put("/alerts/{alert_id}/resolve", response_model=schemas.RiskAlertInDB)
+async def resolve_alert(
+    alert_id: int,
+    resolution: schemas.RiskAlertUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """处理/解决风险预警"""
+    from app.models.risk_control import RiskAlert
+    alert = db.query(RiskAlert).filter(RiskAlert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    
+    alert.is_resolved = resolution.is_resolved
+    alert.resolution_notes = resolution.resolution_notes
+    if resolution.is_resolved and not alert.resolved_at:
+        alert.resolved_at = datetime.utcnow()
+        
+    db.commit()
+    db.refresh(alert)
+    return alert
+
+@router.get("/history/transactions", response_model=List[schemas.TransactionHistoryInDB])
+async def get_transaction_history(
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    type: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取交易历史（包括资金费等）"""
+    from app.models.risk_control import TransactionHistory
+    query = db.query(TransactionHistory)
+    
+    if account_id:
+        query = query.filter(TransactionHistory.account_id == account_id)
+    if symbol:
+        query = query.filter(TransactionHistory.symbol == symbol)
+    if type:
+        query = query.filter(TransactionHistory.type == type)
+        
+    history = query.order_by(TransactionHistory.time.desc()).offset(skip).limit(limit).all()
+    return history
+
+@router.post("/accounts/{account_id}/sync-history")
+async def sync_account_history(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """同步账户历史数据（交易和资金费）"""
+    from app.models.risk_control import Account, TransactionHistory
+    from app.services.exchange.binance_adapter import create_adapter_for_account
+    
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+        
+    adapter = create_adapter_for_account(account)
+    if not adapter:
+        raise HTTPException(status_code=400, detail="Failed to create adapter")
+        
+    # Fetch Income History (includes FUNDING_FEE, REALIZED_PNL, COMMISSION, TRANSFER)
+    # Note: This is a simplified sync. In production, we should track last synced time.
+    try:
+        income_history = await adapter.fetch_income_history(limit=100) # Fetch last 100 items
+        
+        count = 0
+        if income_history:
+            for item in income_history:
+                # Check if exists
+                tran_id = item.get('tranId') or item.get('tradeId') # income uses tranId, trades use tradeId
+                if not tran_id:
+                    continue
+                    
+                # Check if exists globally (transaction_id is unique)
+                exists = db.query(TransactionHistory).filter(
+                    TransactionHistory.transaction_id == str(tran_id)
+                ).first()
+                
+                if not exists:
+                    # Map Binance Income to TransactionHistory
+                    # Income types: TRANSFER, WELCOME_BONUS, REALIZED_PNL, FUNDING_FEE, COMMISSION, INSURANCE_CLEAR
+                    
+                    db_item = TransactionHistory(
+                        account_id=account_id,
+                        symbol=item.get('symbol'),
+                        type=item.get('incomeType'),
+                        side=None, # Income doesn't usually have side
+                        price=None,
+                        qty=None,
+                        quote_qty=None,
+                        commission=None,
+                        commission_asset=item.get('asset'),
+                        realized_pnl=float(item.get('income')), # For PnL/Funding/Commission, income is the amount
+                        time=datetime.fromtimestamp(item.get('time') / 1000),
+                        transaction_id=str(tran_id)
+                    )
+                    db.add(db_item)
+                    count += 1
+            db.commit()
+            
+        return {"message": f"Synced {count} history items"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

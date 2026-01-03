@@ -63,6 +63,8 @@ services:
         limits:
           cpus: '1'
           memory: 1G
+    volumes:
+      - .:/app
     networks:
       - backend-network
       - shared-network
@@ -77,6 +79,7 @@ services:
       - DB_NAME=${DB_NAME}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       mysql:
         condition: service_healthy

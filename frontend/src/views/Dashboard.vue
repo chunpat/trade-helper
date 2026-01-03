@@ -133,9 +133,10 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
+import { dashboard } from '@/api'
 
 export default {
   name: 'Dashboard',
@@ -145,105 +146,115 @@ export default {
     const positionChart = ref(null)
     const riskPieChart = ref(null)
 
-    // 模拟数据
-    const totalPositionValue = ref('$1,234,567')
-    const positionValueStatus = ref('success')
-    const dayChange = ref(2.5)
-    const activeAlerts = ref(8)
-    const alertStatus = ref('warning')
-    const highRiskAlerts = ref(2)
-    const mediumRiskAlerts = ref(6)
-    const dailyPnL = ref(15624.5)
-    const pnlStatus = ref('success')
-    const pnlRatio = ref(1.25)
-    const activeAccounts = ref(5)
-    const normalAccounts = ref(4)
-    const abnormalAccounts = ref(1)
+    // Data refs
+    const totalPositionValue = ref('0')
+    const positionValueStatus = ref('')
+    const dayChange = ref(0)
+    const activeAlerts = ref(0)
+    const alertStatus = ref('')
+    const highRiskAlerts = ref(0)
+    const mediumRiskAlerts = ref(0)
+    const dailyPnL = ref(0)
+    const pnlStatus = ref('')
+    const pnlRatio = ref(0)
+    const activeAccounts = ref(0)
+    const normalAccounts = ref(0)
+    const abnormalAccounts = ref(0)
+    const recentAlerts = ref([])
 
-    const recentAlerts = ref([
-      {
-        time: '2025-05-05 14:30:00',
-        type: '持仓预警',
-        account: 'Account-001',
-        message: 'BTC持仓超过预设限额',
-        risk_level: '高风险',
-        status: '未处理'
-      },
-      // ... more alerts
-    ])
+    let positionChartInstance = null
+    let riskPieChartInstance = null
 
-    const initCharts = () => {
-      // 持仓分布图表
-      const positionChartInstance = echarts.init(positionChart.value)
+    const fetchData = async () => {
+      try {
+        const summary = await dashboard.getSummary()
+        totalPositionValue.value = summary.total_position_value
+        positionValueStatus.value = summary.position_value_status
+        dayChange.value = summary.day_change
+        activeAlerts.value = summary.active_alerts
+        alertStatus.value = summary.alert_status
+        highRiskAlerts.value = summary.high_risk_alerts
+        mediumRiskAlerts.value = summary.medium_risk_alerts
+        dailyPnL.value = summary.daily_pnl
+        pnlStatus.value = summary.pnl_status
+        pnlRatio.value = summary.pnl_ratio
+        activeAccounts.value = summary.active_accounts
+        normalAccounts.value = summary.normal_accounts
+        abnormalAccounts.value = summary.abnormal_accounts
+
+        const alerts = await dashboard.getRecentAlerts()
+        recentAlerts.value = alerts
+      } catch (error) {
+        console.error('Failed to fetch dashboard data:', error)
+      }
+    }
+
+    const updateCharts = async () => {
+      try {
+        // Position Chart
+        const positionData = await dashboard.getPositionChart(timeRange.value)
+        if (positionChartInstance) {
+          positionChartInstance.setOption({
+            xAxis: { data: positionData.xAxis },
+            series: positionData.series
+          })
+        }
+
+        // Risk Chart
+        const riskData = await dashboard.getRiskChart()
+        if (riskPieChartInstance) {
+          riskPieChartInstance.setOption({
+            series: [{ data: riskData }]
+          })
+        }
+      } catch (error) {
+        console.error('Failed to fetch chart data:', error)
+      }
+    }
+
+    const initCharts = async () => {
+      // Initialize instances
+      positionChartInstance = echarts.init(positionChart.value)
+      riskPieChartInstance = echarts.init(riskPieChart.value)
+
+      // Set initial options (skeleton)
       positionChartInstance.setOption({
-        tooltip: {
-          trigger: 'axis'
-        },
-        legend: {
-          data: ['BTC', 'ETH', 'Others']
-        },
-        xAxis: {
-          type: 'category',
-          data: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
-        },
-        yAxis: {
-          type: 'value'
-        },
-        series: [
-          {
-            name: 'BTC',
-            type: 'line',
-            data: [120, 132, 101, 134, 90]
-          },
-          {
-            name: 'ETH',
-            type: 'line',
-            data: [220, 182, 191, 234, 290]
-          },
-          {
-            name: 'Others',
-            type: 'line',
-            data: [150, 232, 201, 154, 190]
-          }
-        ]
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['BTC', 'ETH', 'Others'] },
+        xAxis: { type: 'category', data: [] },
+        yAxis: { type: 'value' },
+        series: []
       })
 
-      // 风险分布饼图
-      const riskPieChartInstance = echarts.init(riskPieChart.value)
       riskPieChartInstance.setOption({
-        tooltip: {
-          trigger: 'item'
-        },
-        legend: {
-          orient: 'vertical',
-          left: 'left'
-        },
-        series: [
-          {
-            name: '风险分布',
-            type: 'pie',
-            radius: '60%',
-            data: [
-              { value: 60, name: '低风险' },
-              { value: 30, name: '中风险' },
-              { value: 10, name: '高风险' }
-            ],
-            emphasis: {
-              itemStyle: {
-                shadowBlur: 10,
-                shadowOffsetX: 0,
-                shadowColor: 'rgba(0, 0, 0, 0.5)'
-              }
+        tooltip: { trigger: 'item' },
+        legend: { orient: 'vertical', left: 'left' },
+        series: [{
+          name: '风险分布',
+          type: 'pie',
+          radius: '60%',
+          data: [],
+          emphasis: {
+            itemStyle: {
+              shadowBlur: 10,
+              shadowOffsetX: 0,
+              shadowColor: 'rgba(0, 0, 0, 0.5)'
             }
           }
-        ]
+        }]
       })
 
       window.addEventListener('resize', () => {
-        positionChartInstance.resize()
-        riskPieChartInstance.resize()
+        positionChartInstance && positionChartInstance.resize()
+        riskPieChartInstance && riskPieChartInstance.resize()
       })
+      
+      await updateCharts()
     }
+
+    watch(timeRange, () => {
+      updateCharts()
+    })
 
     const getRiskLevelType = (level) => {
       const types = {
@@ -258,8 +269,9 @@ export default {
       router.push('/risk-alerts')
     }
 
-    onMounted(() => {
-      initCharts()
+    onMounted(async () => {
+      await fetchData()
+      await initCharts()
     })
 
     return {

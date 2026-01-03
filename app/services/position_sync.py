@@ -24,51 +24,70 @@ class PositionSyncService:
             return
 
         rows = await adapter.fetch_positions()
-        if rows is None:
-            logging.debug("position-sync: no position data for account %s", account.id)
+        account_info = await adapter.fetch_account_info()
+        
+        if rows is None and account_info is None:
+            logging.debug("position-sync: no data for account %s", account.id)
             return
-        logging.info("position-sync: received %s position rows for account %s", len(rows), account.id)
+            
+        if rows:
+            logging.info("position-sync: received %s position rows for account %s", len(rows), account.id)
 
-        # upsert positions
+        # upsert positions and account info
         db = SessionLocal()
         try:
-            # aggregate Binance rows by (symbol, positionSide) so LONG and SHORT are separate
+            # Update Account Info
+            if account_info:
+                db_account = db.query(Account).get(account.id)
+                if db_account:
+                    try:
+                        db_account.total_balance = float(account_info.get('totalWalletBalance', 0))
+                        db_account.total_equity = float(account_info.get('totalMarginBalance', 0))
+                        # For today_pnl, we might need a separate mechanism to track daily changes.
+                        # For now, we can use totalUnrealizedProfit as a component, 
+                        # but real daily PnL requires snapshotting.
+                        # We'll leave today_pnl as is or update if we have a way.
+                    except Exception as e:
+                        logging.error("position-sync: failed to update account info for %s: %s", account.id, e)
+
             by_symbol = {}
-            for r in rows:
-                try:
-                    symbol = r.get('symbol')
-                    pside = (r.get('positionSide') or "NET").upper()
-                    amt = float(r.get('positionAmt', 0) or 0)
-                    entry_price = float(r.get('entryPrice', 0)) if r.get('entryPrice') else None
-                    mark_price = float(r.get('markPrice', 0)) if r.get('markPrice') else None
-                    unrealized = float(r.get('unRealizedProfit', 0) or 0)
-                    leverage = float(r.get('leverage', 1) or 1)
+            if rows:
+                # aggregate Binance rows by (symbol, positionSide) so LONG and SHORT are separate
+                for r in rows:
+                    try:
+                        symbol = r.get('symbol')
+                        pside = (r.get('positionSide') or "NET").upper()
+                        amt = float(r.get('positionAmt', 0) or 0)
+                        entry_price = float(r.get('entryPrice', 0)) if r.get('entryPrice') else None
+                        mark_price = float(r.get('markPrice', 0)) if r.get('markPrice') else None
+                        unrealized = float(r.get('unRealizedProfit', 0) or 0)
+                        leverage = float(r.get('leverage', 1) or 1)
 
-                    key = (symbol, pside)
-                    if key not in by_symbol:
-                        by_symbol[key] = {
-                            'net_amt': 0.0,
-                            'entry_price': None,
-                            'mark_price': None,
-                            'unrealized': 0.0,
-                            'leverage': leverage,
-                        }
+                        key = (symbol, pside)
+                        if key not in by_symbol:
+                            by_symbol[key] = {
+                                'net_amt': 0.0,
+                                'entry_price': None,
+                                'mark_price': None,
+                                'unrealized': 0.0,
+                                'leverage': leverage,
+                            }
 
-                    info = by_symbol[key]
-                    info['net_amt'] += amt
-                    # prefer a non-zero entry_price if available
-                    if info['entry_price'] is None and entry_price and entry_price > 0:
-                        info['entry_price'] = entry_price
-                    # update mark_price to latest non-null
-                    if mark_price is not None:
-                        info['mark_price'] = mark_price
-                    info['unrealized'] += unrealized
-                    # keep leverage if present
-                    if leverage:
-                        info['leverage'] = leverage
+                        info = by_symbol[key]
+                        info['net_amt'] += amt
+                        # prefer a non-zero entry_price if available
+                        if info['entry_price'] is None and entry_price and entry_price > 0:
+                            info['entry_price'] = entry_price
+                        # update mark_price to latest non-null
+                        if mark_price is not None:
+                            info['mark_price'] = mark_price
+                        info['unrealized'] += unrealized
+                        # keep leverage if present
+                        if leverage:
+                            info['leverage'] = leverage
 
-                except Exception:
-                    logging.exception("position-sync: error processing row for account %s row=%s", account.id, r)
+                    except Exception:
+                        logging.exception("position-sync: error processing row for account %s row=%s", account.id, r)
 
             # now upsert per-symbol consolidated info
             for (symbol, pside), info in by_symbol.items():

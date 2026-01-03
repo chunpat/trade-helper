@@ -63,6 +63,40 @@ class BinanceAdapter:
 
         return None
 
+    async def fetch_account_info(self) -> Optional[Dict]:
+        """Fetch account information including balances via /fapi/v2/account.
+        
+        Returns dict with account info, or None on error.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                t_res = await client.get(f"{self.BASE}/fapi/v1/time")
+                if t_res.status_code == 200:
+                    server_ts = t_res.json().get("serverTime")
+                else:
+                    server_ts = int(time.time() * 1000)
+        except Exception:
+            server_ts = int(time.time() * 1000)
+
+        ts = int(server_ts)
+        recv_window = 15000
+        qs = f"timestamp={ts}&recvWindow={recv_window}"
+        sig = self._sign(qs)
+        url = f"{self.BASE}/fapi/v2/account?{qs}&signature={sig}"
+
+        headers = {"X-MBX-APIKEY": self.api_key}
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(url, headers=headers)
+                if r.status_code == 200:
+                    return r.json()
+                logging.error("binance: fetch_account_info non-200 status %s body=%s", r.status_code, r.text)
+        except Exception as e:
+            logging.exception("binance: fetch_account_info failed: %s", e)
+
+        return None
+
     async def fetch_positions_raw(self) -> Dict:
         """Return raw HTTP result (status and body) for debugging instead of parsing.
 
@@ -93,6 +127,40 @@ class BinanceAdapter:
         except Exception as e:
             logging.exception("binance: fetch_positions_raw failed: %s", e)
             return {"status": 0, "text": str(e)}
+
+    async def fetch_income_history(self, limit: int = 100) -> Optional[List[Dict]]:
+        """Fetch income history (funding fees, realized pnl, etc) via /fapi/v1/income.
+        
+        Returns list of income dicts, or None on error.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                t_res = await client.get(f"{self.BASE}/fapi/v1/time")
+                if t_res.status_code == 200:
+                    server_ts = t_res.json().get("serverTime")
+                else:
+                    server_ts = int(time.time() * 1000)
+        except Exception:
+            server_ts = int(time.time() * 1000)
+
+        ts = int(server_ts)
+        recv_window = 15000
+        qs = f"timestamp={ts}&recvWindow={recv_window}&limit={limit}"
+        sig = self._sign(qs)
+        url = f"{self.BASE}/fapi/v1/income?{qs}&signature={sig}"
+
+        headers = {"X-MBX-APIKEY": self.api_key}
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(url, headers=headers)
+                if r.status_code == 200:
+                    return r.json()
+                logging.error("binance: fetch_income_history non-200 status %s body=%s", r.status_code, r.text)
+        except Exception as e:
+            logging.exception("binance: fetch_income_history failed: %s", e)
+
+        return None
 
 
 def create_adapter_for_account(account) -> Optional[BinanceAdapter]:

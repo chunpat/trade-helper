@@ -19,12 +19,20 @@ class AccountBase(BaseModel):
 class AccountCreate(AccountBase):
     pass
 
-class AccountUpdate(AccountBase):
-    is_active: Optional[bool] = Field(None, description="是否激活")
+class AccountUpdate(BaseModel):
+    exchange: Optional[str] = None
+    name: Optional[str] = None
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
+    settings: Optional[Dict] = None
+    is_active: Optional[bool] = None
 
 class AccountInDB(AccountBase):
     id: int
     is_active: bool
+    total_equity: Optional[float] = 0.0
+    total_balance: Optional[float] = 0.0
+    today_pnl: Optional[float] = 0.0
     created_at: datetime
     updated_at: datetime
 
@@ -132,6 +140,55 @@ class TickerHistoryInDB(BaseModel):
     source: Optional[str]
     position_id: Optional[int]
     account_id: Optional[int]
+
+    class Config:
+        orm_mode = True
+
+class RiskAlertBase(BaseModel):
+    alert_type: str = Field(..., description="预警类型")
+    risk_level: RiskLevel = Field(..., description="风险等级")
+    message: str = Field(..., description="预警消息")
+    details: Optional[Dict] = Field(None, description="详细信息")
+
+class RiskAlertCreate(RiskAlertBase):
+    account_id: int
+
+class RiskAlertUpdate(BaseModel):
+    is_resolved: bool
+    resolution_notes: Optional[str] = None
+
+class RiskAlertInDB(RiskAlertBase):
+    id: int
+    account_id: int
+    is_resolved: bool
+    created_at: datetime
+    resolved_at: Optional[datetime]
+    resolution_notes: Optional[str]
+
+    class Config:
+        orm_mode = True
+
+class TransactionHistoryBase(BaseModel):
+    symbol: Optional[str]
+    type: str
+    side: Optional[str]
+    price: Optional[float]
+    qty: Optional[float]
+    quote_qty: Optional[float]
+    commission: Optional[float]
+    commission_asset: Optional[str]
+    realized_pnl: Optional[float]
+    time: datetime
+    transaction_id: Optional[str]
+
+class TransactionHistoryCreate(TransactionHistoryBase):
+    account_id: int
+
+class TransactionHistoryInDB(TransactionHistoryBase):
+    id: int
+    account_id: int
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         orm_mode = True

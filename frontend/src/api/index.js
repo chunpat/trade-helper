@@ -45,11 +45,17 @@ export const riskControl = {
   createAccount(data) {
     return api.post('/risk-control/accounts/', data)
   },
+  updateAccount(accountId, data) {
+    return api.put(`/risk-control/accounts/${accountId}`, data)
+  },
+  deleteAccount(accountId) {
+    return api.delete(`/risk-control/accounts/${accountId}`)
+  },
   getRiskConfig(accountId) {
     return api.get(`/risk-control/accounts/${accountId}/risk-config`)
   },
   updateRiskConfig(accountId, data) {
-    return api.post(`/risk-control/accounts/${accountId}/risk-config`, data)
+    return api.put(`/risk-control/accounts/${accountId}/risk-config`, data)
   },
 
   // Position related
@@ -74,7 +80,7 @@ export const riskControl = {
     return api.post('/risk-control/alerts/', data)
   },
   resolveAlert(alertId, notes) {
-    return api.patch(`/risk-control/alerts/${alertId}`, { resolution_notes: notes })
+    return api.put(`/risk-control/alerts/${alertId}/resolve`, { is_resolved: true, resolution_notes: notes })
   },
 
   // Dashboard data
@@ -89,6 +95,15 @@ export const riskControl = {
   syncAccountPositions(accountId) {
     return api.post(`/risk-control/accounts/${accountId}/positions/sync`)
   },
+  
+  // History
+  getTransactionHistory(params) {
+    return api.get('/risk-control/history/transactions', { params })
+  },
+  syncAccountHistory(accountId) {
+    return api.post(`/risk-control/accounts/${accountId}/sync-history`)
+  },
+
   // Auth endpoints
   registerUser(data) {
     return api.post('/auth/register', data)
@@ -106,6 +121,22 @@ export const riskControl = {
   }
 }
 
+export const dashboard = {
+  getSummary() {
+    return api.get('/dashboard/summary')
+  },
+  getPositionChart(timeRange) {
+    return api.get('/dashboard/charts/position', { params: { time_range: timeRange } })
+  },
+  getRiskChart() {
+    return api.get('/dashboard/charts/risk')
+  },
+  getRecentAlerts() {
+    return api.get('/dashboard/alerts')
+  }
+}
+
 export default {
-  riskControl
+  riskControl,
+  dashboard
 }

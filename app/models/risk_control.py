@@ -19,6 +19,11 @@ class Account(Base, BaseMixin):
     is_active = Column(Boolean, default=True)
     settings = Column(JSON)
 
+    # Financial metrics
+    total_equity = Column(Float, default=0.0)
+    total_balance = Column(Float, default=0.0)
+    today_pnl = Column(Float, default=0.0)
+    
     risk_configs = relationship("RiskConfig", back_populates="account")
     positions = relationship("Position", back_populates="account")
 
@@ -103,3 +108,21 @@ class TickerHistory(Base, BaseMixin):
     source = Column(String(50), nullable=True)
     position_id = Column(Integer, ForeignKey("positions.id"), nullable=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+
+class TransactionHistory(Base, BaseMixin):
+    __tablename__ = "transaction_history"
+
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    symbol = Column(String(20))
+    type = Column(String(50), nullable=False)  # TRADE, FUNDING_FEE, COMMISSION, REALIZED_PNL
+    side = Column(String(10)) # BUY, SELL
+    price = Column(Float)
+    qty = Column(Float)
+    quote_qty = Column(Float)
+    commission = Column(Float)
+    commission_asset = Column(String(10))
+    realized_pnl = Column(Float)
+    time = Column(DateTime, nullable=False)
+    transaction_id = Column(String(100), unique=True) # tradeId or tranId
+
+    account = relationship("Account")
