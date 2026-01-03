@@ -58,7 +58,32 @@ def init_db():
         RiskConfig,
         Position,
         RiskAlert,
-        OrderLog
+        OrderLog,
+        TickerHistory
     )
     
     Base.metadata.create_all(bind=engine)
+
+    # Ensure new column position_side exists for positions table (safe alter for development)
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            # check whether column exists
+            res = conn.execute(text("SHOW COLUMNS FROM positions LIKE 'position_side'"))
+            exists = res.first() is not None
+            if not exists:
+                import logging
+                logging.info("init_db: position_side column missing, attempting to add it")
+                # Try a modern ALTER with IF NOT EXISTS first (MySQL 8+). If that fails
+                # we'll fall back to the older ALTER TABLE form.
+                try:
+                    conn.execute(text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS position_side VARCHAR(10) DEFAULT NULL"))
+                    logging.info("init_db: ALTER TABLE with IF NOT EXISTS executed")
+                except Exception as e:
+                    logging.info("init_db: ALTER TABLE IF NOT EXISTS failed — trying plain ALTER; error=%s", e)
+                    conn.execute(text("ALTER TABLE positions ADD COLUMN position_side VARCHAR(10) DEFAULT NULL"))
+                    logging.info("init_db: plain ALTER TABLE executed")
+    except Exception:
+        # best-effort only; do not fail startup if alter fails
+        import logging
+        logging.exception("init_db: failed to add position_side column (ignored)")

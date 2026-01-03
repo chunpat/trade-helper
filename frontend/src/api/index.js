@@ -1,7 +1,7 @@
 import axios from 'axios'
 
 const api = axios.create({
-  baseURL: process.env.VUE_APP_API_URL || 'http://localhost:8000/api/v1',
+  baseURL: process.env.VUE_APP_API_URL || 'http://localhost:8029/api/v1',
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json'
@@ -53,6 +53,9 @@ export const riskControl = {
   },
 
   // Position related
+  getPositions(params) {
+    return api.get('/risk-control/positions/', { params })
+  },
   checkPositionRisk(params) {
     return api.post('/risk-control/check-position-risk', params)
   },
@@ -77,6 +80,24 @@ export const riskControl = {
   // Dashboard data
   getAccountRiskSummary(accountId) {
     return api.get(`/risk-control/accounts/${accountId}/risk-summary`)
+  },
+
+  // Sync endpoints
+  syncPositions() {
+    return api.post('/risk-control/positions/sync')
+  },
+  syncAccountPositions(accountId) {
+    return api.post(`/risk-control/accounts/${accountId}/positions/sync`)
+  },
+  // Auth endpoints
+  registerUser(data) {
+    return api.post('/auth/register', data)
+  },
+  login(data) {
+    return api.post('/auth/token', data)
+  },
+  getMe() {
+    return api.get('/auth/me')
   },
   
   // Order risk check

@@ -5,6 +5,7 @@ import 'element-plus/dist/index.css'
 import App from './App.vue'
 import router from './router'
 import store from './store'
+import { startWebSocket } from './services/wsClient'
 
 // Create Vue app
 const app = createApp(App)
@@ -18,6 +19,15 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
 app.use(ElementPlus)
 app.use(store)
 app.use(router)
+
+// try to populate current user if token exists
+if (localStorage.getItem('token')) {
+  // fetch current user into store (best-effort)
+  store.dispatch('fetchCurrentUser').catch(() => {})
+}
+
+// start websocket connection to receive real-time updates
+startWebSocket(store)
 
 // Global error handler
 app.config.errorHandler = (err, vm, info) => {

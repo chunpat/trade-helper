@@ -3,6 +3,8 @@ import { riskControl } from '../api'
 
 export default createStore({
   state: {
+    token: localStorage.getItem('token') || null,
+    currentUser: null,
     accounts: [],
     positions: [],
     alerts: [],
@@ -25,6 +27,12 @@ export default createStore({
   },
 
   mutations: {
+    SET_TOKEN(state, token) {
+      state.token = token
+    },
+    SET_CURRENT_USER(state, user) {
+      state.currentUser = user
+    },
     SET_ACCOUNTS(state, accounts) {
       state.accounts = accounts
     },
@@ -46,9 +54,64 @@ export default createStore({
         state.alerts.splice(index, 1, updatedAlert)
       }
     }
+    ,
+    UPDATE_POSITION(state, updatedPosition) {
+      const idx = state.positions.findIndex(p => p.id === updatedPosition.id)
+      if (idx !== -1) {
+        // merge the updated fields into existing position
+        state.positions.splice(idx, 1, { ...state.positions[idx], ...updatedPosition })
+      } else {
+        // if not found, push to list
+        state.positions.push(updatedPosition)
+      }
+    }
   },
 
   actions: {
+    // Auth actions
+    async login({ commit }, { username, password }) {
+      try {
+        const data = await riskControl.login({ username, password })
+        const token = data.access_token
+        localStorage.setItem('token', token)
+        commit('SET_TOKEN', token)
+        // optionally fetch current user
+        // we don't have an endpoint returning me yet (me exists), but we can call it
+        try {
+          const me = await riskControl.getMe()
+          commit('SET_CURRENT_USER', me)
+        } catch (e) {
+          // ignore
+        }
+        return data
+      } catch (e) {
+        throw e
+      }
+    },
+    logout({ commit }) {
+      localStorage.removeItem('token')
+      commit('SET_TOKEN', null)
+      commit('SET_CURRENT_USER', null)
+    },
+    async fetchCurrentUser({ commit, state }) {
+      if (!state.token) return null
+      try {
+        const me = await riskControl.getMe()
+        commit('SET_CURRENT_USER', me)
+        return me
+      } catch (e) {
+        // token invalid or other issue - clear token
+        localStorage.removeItem('token')
+        commit('SET_TOKEN', null)
+        commit('SET_CURRENT_USER', null)
+        return null
+      }
+    },
+    async register({ dispatch }, { username, password }) {
+      await riskControl.registerUser({ username, password })
+      // auto-login after register
+      return dispatch('login', { username, password })
+    },
     // Account actions
     async fetchAccounts({ commit }) {
       try {
@@ -96,6 +159,38 @@ export default createStore({
     },
 
     // Position actions
+    async fetchPositions({ commit }, params) {
+      try {
+        const positions = await riskControl.getPositions(params)
+        commit('SET_POSITIONS', positions)
+        return positions
+      } catch (error) {
+        console.error('Failed to fetch positions:', error)
+        throw error
+      }
+    },
+    async triggerSyncPositions({ dispatch }) {
+      try {
+        await riskControl.syncPositions()
+        // wait shortly then refresh positions and accounts
+        await dispatch('fetchPositions')
+        await dispatch('fetchAccounts')
+      } catch (error) {
+        console.error('Failed to sync positions:', error)
+        throw error
+      }
+    },
+
+    async triggerAccountSync({ dispatch }, accountId) {
+      try {
+        await riskControl.syncAccountPositions(accountId)
+        // refresh positions for that account
+        await dispatch('fetchPositions', { account_id: accountId })
+      } catch (error) {
+        console.error('Failed to sync account positions:', error)
+        throw error
+      }
+    },
     async checkPositionRisk(_, params) {
       try {
         return await riskControl.checkPositionRisk(params)

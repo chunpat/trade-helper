@@ -22,6 +22,16 @@ class Account(Base, BaseMixin):
     risk_configs = relationship("RiskConfig", back_populates="account")
     positions = relationship("Position", back_populates="account")
 
+
+class User(Base, BaseMixin):
+    __tablename__ = 'users'
+
+    username = Column(String(100), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)
+
+
 class RiskConfig(Base, BaseMixin):
     __tablename__ = "risk_configs"
 
@@ -50,6 +60,8 @@ class Position(Base, BaseMixin):
     leverage = Column(Float, nullable=False)
     risk_level = Column(Enum(RiskLevelEnum), nullable=False)
     liquidation_price = Column(Float)
+    # position side for derivatives: LONG / SHORT / NET
+    position_side = Column(String(10), nullable=True)
     is_active = Column(Boolean, default=True)
 
     account = relationship("Account", back_populates="positions")
@@ -80,3 +92,14 @@ class OrderLog(Base, BaseMixin):
     risk_check_passed = Column(Boolean, nullable=False)
     risk_check_details = Column(JSON)
     exchange_response = Column(JSON)
+
+
+class TickerHistory(Base, BaseMixin):
+    __tablename__ = "ticker_history"
+
+    symbol = Column(String(20), nullable=False, index=True)
+    price = Column(Float, nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    source = Column(String(50), nullable=True)
+    position_id = Column(Integer, ForeignKey("positions.id"), nullable=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
