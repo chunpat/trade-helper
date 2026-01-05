@@ -3,8 +3,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.core.deps import get_db
 from app.schemas.dashboard import DashboardSummary, PositionChartData, RiskDistributionItem, DashboardAlert, ChartSeries
-from app.models.risk_control import Account, RiskAlert, RiskLevelEnum, Position
+from app.models.risk_control import Account, RiskAlert, RiskLevelEnum, Position, TransactionHistory, AccountSnapshot
 from typing import List
+from datetime import datetime, time as dt_time, timedelta
 
 router = APIRouter(
     prefix="/dashboard",
@@ -22,9 +23,17 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
     total_equity = db.query(func.sum(Account.total_equity)).scalar() or 0.0
     total_balance = db.query(func.sum(Account.total_balance)).scalar() or 0.0
     
-    # Calculate PnL (This is a simplification as we don't have daily snapshots yet)
-    # Assuming today_pnl is stored in Account
-    daily_pnl = db.query(func.sum(Account.today_pnl)).scalar() or 0.0
+    # Calculate Daily PnL from TransactionHistory
+    # Use UTC for consistency with Binance data
+    now_utc = datetime.utcnow()
+    today_start = datetime.combine(now_utc.date(), dt_time.min)
+    
+    # Sum realized_pnl from income types (REALIZED_PNL, FUNDING_FEE, COMMISSION)
+    # We exclude 'TRADE' type to avoid double counting with 'REALIZED_PNL'
+    daily_pnl = db.query(func.sum(TransactionHistory.realized_pnl)).filter(
+        TransactionHistory.time >= today_start,
+        TransactionHistory.type.in_(['REALIZED_PNL', 'FUNDING_FEE', 'COMMISSION'])
+    ).scalar() or 0.0
     
     # Alerts
     active_alerts = db.query(RiskAlert).filter(RiskAlert.is_resolved == False).count()
@@ -37,18 +46,42 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
         RiskAlert.risk_level == RiskLevelEnum.MEDIUM
     ).count()
 
-    # Calculate PnL Ratio
-    pnl_ratio = (daily_pnl / total_balance * 100) if total_balance > 0 else 0.0
+    # Calculate PnL Ratio (PnL / (Total Equity - PnL))
+    previous_equity_calc = total_equity - daily_pnl
+    pnl_ratio = (daily_pnl / previous_equity_calc * 100) if previous_equity_calc > 0 else 0.0
+    
+    # Day change (Equity change percentage compared to 24h ago)
+    yesterday = datetime.utcnow() - timedelta(days=1)
+    
+    # Get the latest snapshot for each account that is older than 24h
+    subq = db.query(
+        AccountSnapshot.account_id,
+        func.max(AccountSnapshot.timestamp).label('max_ts')
+    ).filter(AccountSnapshot.timestamp <= yesterday).group_by(AccountSnapshot.account_id).subquery()
+    
+    old_snapshots = db.query(AccountSnapshot).join(
+        subq,
+        (AccountSnapshot.account_id == subq.c.account_id) & 
+        (AccountSnapshot.timestamp == subq.c.max_ts)
+    ).all()
+    
+    old_total_equity = sum(s.total_equity for s in old_snapshots)
+    
+    if old_total_equity > 0:
+        day_change = ((total_equity - old_total_equity) / old_total_equity) * 100
+    else:
+        # Fallback to pnl_ratio if no snapshot exists
+        day_change = pnl_ratio
 
     return DashboardSummary(
         total_position_value=f"${total_equity:,.2f}",
-        position_value_status="success", 
-        day_change=0.0, # Placeholder as we don't have history
+        position_value_status="success" if day_change >= 0 else "danger", 
+        day_change=round(day_change, 2),
         active_alerts=active_alerts,
         alert_status="warning" if active_alerts > 0 else "success",
         high_risk_alerts=high_risk_alerts,
         medium_risk_alerts=medium_risk_alerts,
-        daily_pnl=daily_pnl,
+        daily_pnl=round(daily_pnl, 2),
         pnl_status="success" if daily_pnl >= 0 else "danger",
         pnl_ratio=round(pnl_ratio, 2),
         active_accounts=total_accounts,
@@ -58,19 +91,46 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
 
 @router.get("/charts/position", response_model=PositionChartData)
 def get_position_chart(time_range: str = "today", db: Session = Depends(get_db)):
-    # Mock data for charts as we don't have historical data table yet
+    # Calculate daily realized PnL for the last 7 days
+    days = 7
+    if time_range == "week": days = 7
+    elif time_range == "month": days = 30
+    
+    # Use UTC for consistency
+    now_utc = datetime.utcnow()
+    end_date = now_utc.date()
+    start_date = end_date - timedelta(days=days-1)
+    
+    # Generate date list
+    date_list = [(start_date + timedelta(days=i)) for i in range(days)]
+    date_strs = [d.strftime("%m-%d") for d in date_list]
+    
+    # Query realized PnL grouped by date
+    pnl_data = []
+    for d in date_list:
+        d_start = datetime.combine(d, dt_time.min)
+        d_end = datetime.combine(d, dt_time.max)
+        
+        daily_sum = db.query(func.sum(TransactionHistory.realized_pnl)).filter(
+            TransactionHistory.time >= d_start,
+            TransactionHistory.time <= d_end,
+            TransactionHistory.type.in_(['REALIZED_PNL', 'FUNDING_FEE', 'COMMISSION'])
+        ).scalar() or 0.0
+        pnl_data.append(round(daily_sum, 2))
+    
     return PositionChartData(
-        xAxis=['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+        xAxis=date_strs,
         series=[
-            ChartSeries(name='BTC', type='line', data=[120, 132, 101, 134, 90]),
-            ChartSeries(name='ETH', type='line', data=[220, 182, 191, 234, 290]),
-            ChartSeries(name='Others', type='line', data=[150, 232, 201, 154, 190])
+            ChartSeries(name='日内盈亏', type='bar', data=pnl_data)
         ]
     )
 
 @router.get("/charts/risk", response_model=List[RiskDistributionItem])
 def get_risk_chart(db: Session = Depends(get_db)):
-    results = db.query(Position.risk_level, func.count(Position.id)).group_by(Position.risk_level).all()
+    # Only count active positions
+    results = db.query(Position.risk_level, func.count(Position.id)).filter(
+        Position.is_active == True
+    ).group_by(Position.risk_level).all()
     
     data = []
     for risk_level, count in results:

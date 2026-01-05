@@ -146,14 +146,17 @@ async def create_position(
 @router.get('/positions/', response_model=List[schemas.PositionInDB])
 async def list_positions(
     account_id: Optional[int] = None,
+    is_active: Optional[bool] = True,
     db: Session = Depends(get_db)
 ):
-    """List positions (optionally filter by account_id)"""
+    """List positions (optionally filter by account_id and is_active)"""
     from app.models.risk_control import Position
 
     query = db.query(Position)
     if account_id:
         query = query.filter(Position.account_id == account_id)
+    if is_active is not None:
+        query = query.filter(Position.is_active == is_active)
 
     return query.order_by(Position.updated_at.desc()).all()
 
@@ -452,46 +455,116 @@ async def sync_account_history(
     if not adapter:
         raise HTTPException(status_code=400, detail="Failed to create adapter")
         
+    # Clean up old trade-level records (T_ prefix) to avoid duplicates with new ORDER_ records
+    try:
+        db.query(TransactionHistory).filter(
+            TransactionHistory.account_id == account_id,
+            TransactionHistory.transaction_id.like('T_%')
+        ).delete(synchronize_session=False)
+        db.commit()
+    except Exception as e:
+        logging.warning("Failed to clean up old trade records: %s", e)
+        db.rollback()
+
     # Fetch Income History (includes FUNDING_FEE, REALIZED_PNL, COMMISSION, TRANSFER)
     # Note: This is a simplified sync. In production, we should track last synced time.
     try:
-        income_history = await adapter.fetch_income_history(limit=100) # Fetch last 100 items
+        income_history = await adapter.fetch_income_history(limit=100)
+        user_trades = await adapter.fetch_user_trades(limit=100)
         
         count = 0
+        # Process Income
         if income_history:
             for item in income_history:
-                # Check if exists
-                tran_id = item.get('tranId') or item.get('tradeId') # income uses tranId, trades use tradeId
+                tran_id = item.get('tranId')
                 if not tran_id:
                     continue
-                    
-                # Check if exists globally (transaction_id is unique)
                 exists = db.query(TransactionHistory).filter(
                     TransactionHistory.transaction_id == str(tran_id)
                 ).first()
-                
                 if not exists:
-                    # Map Binance Income to TransactionHistory
-                    # Income types: TRANSFER, WELCOME_BONUS, REALIZED_PNL, FUNDING_FEE, COMMISSION, INSURANCE_CLEAR
-                    
                     db_item = TransactionHistory(
                         account_id=account_id,
                         symbol=item.get('symbol'),
                         type=item.get('incomeType'),
-                        side=None, # Income doesn't usually have side
+                        side=None,
                         price=None,
                         qty=None,
                         quote_qty=None,
                         commission=None,
                         commission_asset=item.get('asset'),
-                        realized_pnl=float(item.get('income')), # For PnL/Funding/Commission, income is the amount
-                        time=datetime.fromtimestamp(item.get('time') / 1000),
+                        realized_pnl=float(item.get('income')),
+                        time=datetime.utcfromtimestamp(item.get('time') / 1000),
                         transaction_id=str(tran_id)
                     )
                     db.add(db_item)
                     count += 1
-            db.commit()
-            
+
+        # Process Trades (Aggregated by orderId)
+        if user_trades:
+            aggregated_trades = {}
+            for trade in user_trades:
+                oid = str(trade.get('orderId'))
+                if not oid: continue
+                
+                if oid not in aggregated_trades:
+                    aggregated_trades[oid] = {
+                        'symbol': trade.get('symbol'),
+                        'side': trade.get('side'),
+                        'price_sum': float(trade.get('price', 0)) * float(trade.get('qty', 0)),
+                        'qty': float(trade.get('qty', 0)),
+                        'quote_qty': float(trade.get('quoteQty', 0)),
+                        'commission': float(trade.get('commission', 0)),
+                        'commission_asset': trade.get('commissionAsset'),
+                        'realized_pnl': float(trade.get('realizedPnl', 0)),
+                        'time': trade.get('time')
+                    }
+                else:
+                    item = aggregated_trades[oid]
+                    item['price_sum'] += float(trade.get('price', 0)) * float(trade.get('qty', 0))
+                    item['qty'] += float(trade.get('qty', 0))
+                    item['quote_qty'] += float(trade.get('quoteQty', 0))
+                    item['commission'] += float(trade.get('commission', 0))
+                    item['realized_pnl'] += float(trade.get('realizedPnl', 0))
+                    item['time'] = max(item['time'], trade.get('time'))
+
+            for oid, data in aggregated_trades.items():
+                global_id = f"ORDER_{oid}"
+                exists = db.query(TransactionHistory).filter(
+                    TransactionHistory.transaction_id == global_id
+                ).first()
+                
+                avg_price = data['price_sum'] / data['qty'] if data['qty'] > 0 else 0
+                
+                if not exists:
+                    db_item = TransactionHistory(
+                        account_id=account_id,
+                        symbol=data['symbol'],
+                        type="TRADE",
+                        side=data['side'],
+                        price=avg_price,
+                        qty=data['qty'],
+                        quote_qty=data['quote_qty'],
+                        commission=data['commission'],
+                        commission_asset=data['commission_asset'],
+                        realized_pnl=data['realized_pnl'],
+                        time=datetime.utcfromtimestamp(data['time'] / 1000),
+                        order_id=oid,
+                        transaction_id=global_id
+                    )
+                    db.add(db_item)
+                    count += 1
+                else:
+                    # Update existing aggregated record
+                    exists.price = avg_price
+                    exists.qty = data['qty']
+                    exists.quote_qty = data['quote_qty']
+                    exists.commission = data['commission']
+                    exists.realized_pnl = data['realized_pnl']
+                    exists.time = datetime.fromtimestamp(data['time'] / 1000)
+                    db.add(exists)
+
+        db.commit()
         return {"message": f"Synced {count} history items"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

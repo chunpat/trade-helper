@@ -57,12 +57,23 @@ export default createStore({
     ,
     UPDATE_POSITION(state, updatedPosition) {
       const idx = state.positions.findIndex(p => p.id === updatedPosition.id)
+      
+      // If position is no longer active, remove it from the list
+      if (updatedPosition.is_active === false) {
+        if (idx !== -1) {
+          state.positions.splice(idx, 1)
+        }
+        return
+      }
+
       if (idx !== -1) {
         // merge the updated fields into existing position
         state.positions.splice(idx, 1, { ...state.positions[idx], ...updatedPosition })
       } else {
-        // if not found, push to list
-        state.positions.push(updatedPosition)
+        // if not found and is active, push to list
+        if (updatedPosition.is_active !== false) {
+          state.positions.push(updatedPosition)
+        }
       }
     }
   },

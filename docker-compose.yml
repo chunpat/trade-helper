@@ -73,7 +73,7 @@ services:
       - "8029:8000"
     environment:
       - DB_HOST=mysql
-      - DB_PORT=3306
+      - DB_PORT=${DB_PORT}
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_NAME=${DB_NAME}

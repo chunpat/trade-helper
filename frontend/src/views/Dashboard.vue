@@ -45,7 +45,7 @@
             </div>
           </template>
           <div class="card-value" :class="{ 'profit': dailyPnL >= 0, 'loss': dailyPnL < 0 }">
-            {{ dailyPnL >= 0 ? '+' : '' }}{{ dailyPnL }}
+            {{ dailyPnL >= 0 ? '+' : '' }}${{ dailyPnL.toLocaleString() }}
           </div>
           <div class="pnl-ratio">收益率: {{ pnlRatio }}%</div>
         </el-card>

@@ -68,7 +68,7 @@ class RiskConfigInDB(RiskConfigBase):
 class PositionBase(BaseModel):
     symbol: str = Field(..., description="交易对")
     position_side: Optional[str] = Field(None, description="持仓方向 LONG/SHORT/NET")
-    size: float = Field(..., gt=0, description="持仓大小")
+    size: float = Field(..., ge=0, description="持仓大小")
     entry_price: float = Field(..., gt=0, description="入场价格")
     leverage: float = Field(..., ge=1, description="杠杆倍数")
 
@@ -179,6 +179,7 @@ class TransactionHistoryBase(BaseModel):
     commission_asset: Optional[str]
     realized_pnl: Optional[float]
     time: datetime
+    order_id: Optional[str]
     transaction_id: Optional[str]
 
 class TransactionHistoryCreate(TransactionHistoryBase):

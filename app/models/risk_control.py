@@ -1,5 +1,6 @@
 from sqlalchemy import Column, String, Float, Boolean, JSON, ForeignKey, Enum, Integer, DateTime
 from sqlalchemy.orm import relationship
+from datetime import datetime
 import enum
 from .base import Base, BaseMixin
 
@@ -123,6 +124,17 @@ class TransactionHistory(Base, BaseMixin):
     commission_asset = Column(String(10))
     realized_pnl = Column(Float)
     time = Column(DateTime, nullable=False)
-    transaction_id = Column(String(100), unique=True) # tradeId or tranId
+    order_id = Column(String(100), index=True) # Added for aggregating trades
+    transaction_id = Column(String(100), unique=True) # tradeId or tranId or orderId
+
+    account = relationship("Account")
+
+class AccountSnapshot(Base, BaseMixin):
+    __tablename__ = "account_snapshots"
+
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    total_equity = Column(Float, nullable=False)
+    total_balance = Column(Float, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
     account = relationship("Account")
