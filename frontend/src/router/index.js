@@ -40,6 +40,12 @@ const routes = [
     name: 'Settings',
     component: () => import('../views/Settings.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/market-insight',
+    name: 'MarketInsight',
+    component: () => import('../views/MarketInsight.vue'),
+    meta: { requiresAuth: true }
   }
 ]
 

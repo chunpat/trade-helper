@@ -1,5 +1,5 @@
-# Use Python base image
-FROM python:3.11-slim
+# Use Python base image (explicitly use bookworm to avoid version issues)
+FROM python:3.11-slim-bookworm
 
 # Set working directory
 WORKDIR /app
@@ -10,7 +10,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Install system dependencies
 RUN set -ex; \
-    # 替换主 sources.list，彻底使用阿里云源，避免 fallback 到 deb.debian.org
+    # 彻底清理并替换所有软件源为阿里云，解决 deb.debian.org 连通性问题
+    rm -rf /etc/apt/sources.list.d/*; \
     echo "deb http://mirrors.aliyun.com/debian/ bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
     echo "deb http://mirrors.aliyun.com/debian/ bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
     echo "deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
@@ -19,6 +20,7 @@ RUN set -ex; \
     apt-get install -y --no-install-recommends \
         build-essential \
         libpq-dev \
+        curl \
         && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements file

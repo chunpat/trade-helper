@@ -121,6 +121,15 @@ export const riskControl = {
   }
 }
 
+export const marketInsight = {
+  getDashboard(params) {
+    return api.get('/market-insight/dashboard', { params })
+  },
+  getKlines(params) {
+    return api.get('/market-insight/klines', { params })
+  }
+}
+
 export const dashboard = {
   getSummary() {
     return api.get('/dashboard/summary')
@@ -138,5 +147,6 @@ export const dashboard = {
 
 export default {
   riskControl,
-  dashboard
+  dashboard,
+  marketInsight
 }

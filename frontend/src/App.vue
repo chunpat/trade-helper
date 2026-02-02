@@ -12,12 +12,16 @@
           <el-icon><DataLine /></el-icon>
           <span>风控仪表盘</span>
         </el-menu-item>
+        <el-menu-item index="/market-insight">
+          <el-icon><TrendCharts /></el-icon>
+          <span>市场洞察</span>
+        </el-menu-item>
         <el-menu-item index="/accounts">
           <el-icon><Wallet /></el-icon>
           <span>账户管理</span>
         </el-menu-item>
         <el-menu-item index="/positions">
-          <el-icon><TrendCharts /></el-icon>
+          <el-icon><Histogram /></el-icon>
           <span>持仓监控</span>
         </el-menu-item>
         <el-menu-item index="/risk-alerts">
@@ -64,7 +68,7 @@
 </template>
 
 <script>
-import { DataLine, Wallet, TrendCharts, Warning, Setting, CaretBottom } from '@element-plus/icons-vue'
+import { DataLine, Wallet, TrendCharts, Histogram, Warning, Setting, CaretBottom } from '@element-plus/icons-vue'
 
 export default {
   name: 'App',
@@ -78,6 +82,7 @@ export default {
     DataLine,
     Wallet,
     TrendCharts,
+    Histogram,
     Warning,
     Setting,
     CaretBottom
