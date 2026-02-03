@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import math
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 import httpx
@@ -12,7 +13,9 @@ from app.schemas.market_insight import (
     MarketSentiment,
     MarketNews,
     TradingSignal,
-    MarketOverview
+    MarketOverview,
+    FearGreedIndex,
+    RainbowBand
 )
 
 logger = logging.getLogger(__name__)
@@ -23,7 +26,7 @@ class MarketInsightService:
     
     整合多个数据源提供：
     - 市场情绪指标（恐惧贪婪指数、资金费率、多空比）
-    - 价格涨跌幅排行
+    - 价格涨跌幅排行（Binance合约）
     - 成交量数据
     - 市场新闻消息
     - 交易信号生成
@@ -32,6 +35,7 @@ class MarketInsightService:
     BINANCE_API = "https://api.binance.com/api/v3"
     BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
     COINGECKO_API = "https://api.coingecko.com/api/v3"
+    ALTERNATIVE_ME_API = "https://api.alternative.me/fng/"
     
     # 默认关注的交易对
     DEFAULT_WATCHLIST = [
@@ -51,8 +55,8 @@ class MarketInsightService:
         
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # 获取币安24小时ticker统计
-                response = await client.get(f"{self.BINANCE_API}/ticker/24hr")
+                # 获取币安合约24小时ticker统计 (用户要求看合约)
+                response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
                 tickers = response.json()
                 
                 # 计算总成交量
@@ -85,22 +89,22 @@ class MarketInsightService:
             return MarketOverview(timestamp=datetime.now())
     
     async def get_top_gainers(self, limit: int = 10) -> List[MarketMetrics]:
-        """获取涨幅榜"""
+        """获取合约涨幅榜"""
         return await self._get_top_movers(limit, ascending=False)
     
     async def get_top_losers(self, limit: int = 10) -> List[MarketMetrics]:
-        """获取跌幅榜"""
+        """获取合约跌幅榜"""
         return await self._get_top_movers(limit, ascending=True)
     
     async def get_top_volume(self, limit: int = 10) -> List[MarketMetrics]:
-        """获取成交量排行"""
+        """获取合约成交量排行"""
         cache_key = f"top_volume_{limit}"
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]["data"]
         
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{self.BINANCE_API}/ticker/24hr")
+                response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
                 tickers = response.json()
                 
                 # 过滤USDT交易对并按成交量排序
@@ -120,13 +124,13 @@ class MarketInsightService:
             return []
     
     async def get_watchlist_metrics(self, symbols: Optional[List[str]] = None) -> List[MarketMetrics]:
-        """获取自选币种数据"""
+        """获取自选币种数据（优先从合约获取）"""
         if not symbols:
             symbols = self.DEFAULT_WATCHLIST
         
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{self.BINANCE_API}/ticker/24hr")
+                response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
                 tickers = response.json()
                 
                 # 筛选自选币种
@@ -139,6 +143,72 @@ class MarketInsightService:
             logger.error(f"Error fetching watchlist metrics: {e}")
             return []
     
+    async def get_fear_greed_data(self, limit: int = 30) -> Dict[str, Any]:
+        """从 alternative.me 获取恐惧贪婪指数数据"""
+        cache_key = f"fear_greed_{limit}"
+        if self._is_cache_valid(cache_key):
+            return self._cache[cache_key]["data"]
+            
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self.ALTERNATIVE_ME_API}", params={"limit": limit})
+                data = response.json()
+                
+                history = []
+                for item in data.get("data", []):
+                    history.append(FearGreedIndex(
+                        value=int(item["value"]),
+                        value_classification=item["value_classification"],
+                        timestamp=datetime.fromtimestamp(int(item["timestamp"])).strftime('%Y-%m-%d')
+                    ))
+                
+                result = {
+                    "current": history[0] if history else None,
+                    "history": history
+                }
+                self._update_cache(cache_key, result)
+                return result
+        except Exception as e:
+            logger.error(f"Error fetching fear grease index: {e}")
+            return {"current": None, "history": []}
+            
+    async def get_rainbow_bands(self) -> List[RainbowBand]:
+        """计算 BTC 彩虹图带价格区间"""
+        # Formula: price = 10^(2.9065 * log10(days) - 19.493)
+        # Bands are offsets from this base power
+        genesis_date = datetime(2009, 1, 3)
+        today = datetime.now()
+        days = (today - genesis_date).days
+        
+        if days <= 0: return []
+        
+        # log10_price = 2.9065 * math.log10(days) - 19.493
+        # Current "fair value" index is around the middle bands
+        
+        bands_config = [
+            {"name": "极度泡沫", "color": "#FF0000", "offset": 2.5},
+            {"name": "卖出！", "color": "#FF4500", "offset": 2.1},
+            {"name": "郁金香泡沫？", "color": "#FFA500", "offset": 1.7},
+            {"name": "由于FOMO增加", "color": "#FFD700", "offset": 1.3},
+            {"name": "持有", "color": "#00FF00", "offset": 0.9},
+            {"name": "仍处于廉价", "color": "#20B2AA", "offset": 0.5},
+            {"name": "积累", "color": "#4682B4", "offset": 0.1},
+            {"name": "买入！", "color": "#0000FF", "offset": -0.3},
+            {"name": "基本上是甩卖", "color": "#4B0082", "offset": -0.7},
+        ]
+        
+        base_val = 2.9065 * math.log10(days) - 19.493
+        
+        results = []
+        for b in bands_config:
+            price = 10**(base_val + b["offset"])
+            results.append(RainbowBand(
+                name=b["name"],
+                color=b["color"],
+                price=price
+            ))
+        return results
+
     async def get_market_sentiment(self, symbols: Optional[List[str]] = None) -> List[MarketSentiment]:
         """获取市场情绪数据"""
         if not symbols:
@@ -251,6 +321,8 @@ class MarketInsightService:
             volume_task = self.get_top_volume(10)
             watchlist_task = self.get_watchlist_metrics(watchlist)
             sentiment_task = self.get_market_sentiment()
+            fear_greed_task = self.get_fear_greed_data(30)
+            rainbow_task = self.get_rainbow_bands()
             news_task = self.get_market_news(20)
             signals_task = self.generate_trading_signals(watchlist)
             
@@ -261,6 +333,8 @@ class MarketInsightService:
                 volume_task,
                 watchlist_task,
                 sentiment_task,
+                fear_greed_task,
+                rainbow_task,
                 news_task,
                 signals_task,
                 return_exceptions=True
@@ -273,12 +347,14 @@ class MarketInsightService:
             volume = results[3] if not isinstance(results[3], Exception) else []
             watchlist_metrics = results[4] if not isinstance(results[4], Exception) else []
             sentiment = results[5] if not isinstance(results[5], Exception) else []
-            news = results[6] if not isinstance(results[6], Exception) else []
-            signals = results[7] if not isinstance(results[7], Exception) else []
+            fear_greed_data = results[6] if not isinstance(results[6], Exception) else {"current": None, "history": []}
+            rainbow_bands = results[7] if not isinstance(results[7], Exception) else []
+            news = results[8] if not isinstance(results[8], Exception) else []
+            signals = results[9] if not isinstance(results[9], Exception) else []
             
             # GPT-5.1 深度分析 (如果启用)
             ai_analysis = None
-            if os.getenv("ENABLE_GPT_5_1", "False").lower() == "true":
+            if os.getenv("ENABLE_GPT_5_1", "True").lower() == "true":
                 ai_analysis = self._generate_gpt5_analysis(overview, sentiment, signals)
             
             return MarketInsightDashboard(
@@ -288,6 +364,9 @@ class MarketInsightService:
                 top_volume=volume,
                 watchlist=watchlist_metrics,
                 sentiment=sentiment,
+                fear_greed_index=fear_greed_data.get("current"),
+                fear_greed_history=fear_greed_data.get("history", []),
+                rainbow_bands=rainbow_bands,
                 news=news,
                 signals=signals,
                 ai_analysis=ai_analysis,
@@ -305,14 +384,15 @@ class MarketInsightService:
     # Helper methods
     
     async def _get_top_movers(self, limit: int, ascending: bool) -> List[MarketMetrics]:
-        """获取涨跌幅排行"""
+        """获取合约涨跌幅排行"""
         cache_key = f"top_{'losers' if ascending else 'gainers'}_{limit}"
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]["data"]
         
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{self.BINANCE_API}/ticker/24hr")
+                # 使用合约 API
+                response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
                 tickers = response.json()
                 
                 # 过滤USDT交易对并排序

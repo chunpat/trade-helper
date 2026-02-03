@@ -114,10 +114,86 @@
       </el-row>
     </el-card>
 
-    <!-- 市场情绪 -->
+    <!-- 市场情绪 & 宏观 -->
+    <el-row :gutter="16" class="sentiment-rankings">
+      <!-- 恐惧贪婪指数 -->
+      <el-col :xs="24" :md="12">
+        <el-card class="sentiment-macro-card" shadow="hover">
+          <template #header>
+            <div class="card-header">
+              <span>😱 恐惧与贪婪指数</span>
+              <el-tag v-if="fearGreedIndex" :type="getFngTagType(fearGreedIndex.value_classification)">
+                {{ fearGreedIndex.value_classification }} ({{ fearGreedIndex.value }})
+              </el-tag>
+            </div>
+          </template>
+          <div class="fng-container">
+            <div class="fng-gauge">
+              <div class="fng-value" :style="{ color: getFngColor(fearGreedIndex?.value) }">
+                {{ fearGreedIndex?.value || '--' }}
+              </div>
+              <div class="fng-label">当前指数</div>
+            </div>
+            <div class="fng-history">
+              <div v-for="(item, idx) in fearGreedHistory.slice(0, 5)" :key="idx" class="history-item">
+                <span class="date">{{ item.timestamp }}</span>
+                <span class="val" :style="{ color: getFngColor(item.value) }">{{ item.value }}</span>
+                <span class="desc">{{ item.value_classification }}</span>
+              </div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+
+      <!-- 彩虹图价格带 -->
+      <el-col :xs="24" :md="12">
+        <el-card class="sentiment-macro-card" shadow="hover">
+          <template #header>
+            <div class="card-header">
+              <span>🌈 BTC 彩虹图指标</span>
+              <el-tag v-if="btcCurrentPrice" type="info" size="small">
+                BTC: ${{ formatNumber(btcCurrentPrice) }}
+              </el-tag>
+            </div>
+          </template>
+          <div class="rainbow-visual-container">
+            <div class="rainbow-bar">
+              <div 
+                v-for="band in [...rainbowBands].reverse()" 
+                :key="band.name" 
+                class="bar-segment"
+                :style="{ backgroundColor: band.color, flex: 1 }"
+                :title="band.name"
+              ></div>
+              <div 
+                v-if="rainbowIndicatorPos >= 0" 
+                class="price-indicator" 
+                :style="{ left: rainbowIndicatorPos + '%' }"
+              >
+                <div class="indicator-arrow"></div>
+                <div class="indicator-label">当前价</div>
+              </div>
+            </div>
+            <div class="rainbow-bands-list">
+              <div 
+                v-for="band in rainbowBands" 
+                :key="band.name" 
+                class="rainbow-band"
+                :style="{ backgroundColor: band.color + '22', borderLeft: '4px solid ' + band.color }"
+              >
+                <span class="band-name">{{ band.name }}</span>
+                <span class="band-price">${{ formatNumber(band.price) }}</span>
+              </div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 市场情绪细节 -->
     <el-card class="sentiment-card" shadow="hover">
       <template #header>
-        <span>💭 市场情绪</span>
+        <span>💭 合约市场统计</span>
       </template>
       <el-row :gutter="16">
         <el-col 
@@ -149,7 +225,7 @@
                 </span>
               </div>
               <div class="data-row" v-if="item.open_interest">
-                <span class="label">未平仓:</span>
+                <span class="label">未平仓合约:</span>
                 <span>{{ formatNumber(item.open_interest) }}</span>
               </div>
             </div>
@@ -164,7 +240,7 @@
       <el-col :xs="24" :md="8">
         <el-card shadow="hover">
           <template #header>
-            <span>📈 涨幅榜</span>
+            <span>📈 合约涨幅榜 (24H)</span>
           </template>
           <el-table 
             :data="topGainers" 
@@ -180,7 +256,7 @@
             </el-table-column>
             <el-table-column align="right">
               <template #default="{ row }">
-                <span class="price">${{ row.last_price.toFixed(2) }}</span>
+                <span class="price">${{ row.last_price.toFixed(row.last_price < 1 ? 4 : 2) }}</span>
               </template>
             </el-table-column>
             <el-table-column width="100" align="right">
@@ -198,7 +274,7 @@
       <el-col :xs="24" :md="8">
         <el-card shadow="hover">
           <template #header>
-            <span>📉 跌幅榜</span>
+            <span>📉 合约跌幅榜 (24H)</span>
           </template>
           <el-table 
             :data="topLosers" 
@@ -214,7 +290,7 @@
             </el-table-column>
             <el-table-column align="right">
               <template #default="{ row }">
-                <span class="price">${{ row.last_price.toFixed(2) }}</span>
+                <span class="price">${{ row.last_price.toFixed(row.last_price < 1 ? 4 : 2) }}</span>
               </template>
             </el-table-column>
             <el-table-column width="100" align="right">
@@ -232,7 +308,7 @@
       <el-col :xs="24" :md="8">
         <el-card shadow="hover">
           <template #header>
-            <span>💰 成交量榜</span>
+            <span>💰 合约成交量榜</span>
           </template>
           <el-table 
             :data="topVolume" 
@@ -351,7 +427,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { marketInsight } from '@/api'
 import { ElMessage } from 'element-plus'
@@ -367,9 +443,36 @@ const topLosers = ref([])
 const topVolume = ref([])
 const watchlist = ref([])
 const sentiment = ref([])
+const fearGreedIndex = ref(null)
+const fearGreedHistory = ref([])
+const rainbowBands = ref([])
 const signals = ref([])
 const aiAnalysis = ref('')
 const currentChartSymbol = ref('BTCUSDT')
+
+// 计算当前 BTC 在彩虹图中的位置
+const btcCurrentPrice = computed(() => {
+  const btcInWatch = watchlist.value.find(i => i.symbol === 'BTCUSDT')
+  if (btcInWatch) return btcInWatch.last_price
+  return 0
+})
+
+const rainbowIndicatorPos = computed(() => {
+  if (!btcCurrentPrice.value || rainbowBands.value.length === 0) return -1
+  
+  const price = btcCurrentPrice.value
+  const bands = [...rainbowBands.value].reverse() // 从低价到高价排序
+  
+  const minPrice = bands[0].price * 0.8
+  const maxPrice = bands[bands.length - 1].price * 1.2
+  
+  if (price <= minPrice) return 0
+  if (price >= maxPrice) return 100
+  
+  // 简单的对数比例计算（彩虹图是基于对数增长的）
+  const pos = (Math.log10(price) - Math.log10(minPrice)) / (Math.log10(maxPrice) - Math.log10(minPrice))
+  return pos * 100
+})
 
 // 自选管理
 const showWatchlistDialog = ref(false)
@@ -408,6 +511,9 @@ async function loadData(silent = false) {
     topVolume.value = response.top_volume
     watchlist.value = response.watchlist
     sentiment.value = response.sentiment
+    fearGreedIndex.value = response.fear_greed_index
+    fearGreedHistory.value = response.fear_greed_history
+    rainbowBands.value = response.rainbow_bands
     signals.value = response.signals
     aiAnalysis.value = response.ai_analysis
     
@@ -519,6 +625,24 @@ function getSignalColor(type) {
     neutral: '#909399'
   }
   return colors[type] || '#909399'
+}
+
+function getFngTagType(label) {
+  if (!label) return 'info'
+  const l = label.toLowerCase()
+  if (l.includes('extreme greed')) return 'success'
+  if (l.includes('greed')) return 'warning'
+  if (l.includes('fear')) return 'danger'
+  return 'info'
+}
+
+function getFngColor(val) {
+  if (!val) return '#909399'
+  if (val >= 75) return '#67C23A' // Extreme Greed
+  if (val >= 55) return '#E6A23C' // Greed
+  if (val >= 45) return '#909399' // Neutral
+  if (val >= 25) return '#F56C6C' // Fear
+  return '#FF0000' // Extreme Fear
 }
 
 function addToWatchlist() {
@@ -731,6 +855,116 @@ function removeFromWatchlist(symbol) {
 .rankings {
   margin-bottom: 20px;
 }
+
+.sentiment-rankings {
+  margin-bottom: 20px;
+}
+
+.sentiment-macro-card {
+  height: 100%;
+}
+
+.fng-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 10px 0;
+}
+
+.fng-gauge {
+  text-align: center;
+}
+
+.fng-value {
+  font-size: 48px;
+  font-weight: bold;
+}
+
+.fng-label {
+  color: #909399;
+  font-size: 14px;
+}
+
+.fng-history {
+  border-left: 1px solid #EBEEF5;
+  padding-left: 20px;
+}
+
+.history-item {
+  display: flex;
+  justify-content: space-between;
+  width: 200px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.history-item .date { color: #909399; }
+.history-item .val { font-weight: bold; width: 30px; text-align: right; }
+.history-item .desc { width: 100px; text-align: right; }
+
+.rainbow-visual-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.rainbow-bar {
+  height: 12px;
+  display: flex;
+  position: relative;
+  border-radius: 6px;
+  overflow: visible;
+  margin: 30px 10px 10px 10px;
+}
+
+.bar-segment:first-child { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
+.bar-segment:last-child { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+
+.price-indicator {
+  position: absolute;
+  top: -25px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 10;
+  transition: left 0.5s ease;
+}
+
+.indicator-arrow {
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 8px solid #303133;
+  margin-top: 2px;
+}
+
+.indicator-label {
+  background: #303133;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.rainbow-bands-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rainbow-band {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.band-name { font-weight: 500; }
+.band-price { font-family: monospace; }
 
 .symbol-name {
   font-weight: bold;

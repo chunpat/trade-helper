@@ -1,7 +1,21 @@
 """市场洞察数据看板相关Schema"""
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
+
+
+class FearGreedIndex(BaseModel):
+    """恐惧贪婪指数"""
+    value: int = Field(..., description="指数值 0-100")
+    value_classification: str = Field(..., description="分类: Extreme Fear, Fear, Neutral, Greed, Extreme Greed")
+    timestamp: str = Field(..., description="时间戳")
+
+
+class RainbowBand(BaseModel):
+    """彩虹图带信息"""
+    name: str = Field(..., description="带等级名称")
+    color: str = Field(..., description="颜色")
+    price: float = Field(..., description="该等级对应价格")
 
 
 class MarketSentiment(BaseModel):
@@ -69,6 +83,9 @@ class MarketInsightDashboard(BaseModel):
     top_volume: List[MarketMetrics] = Field(default_factory=list, description="成交量榜前10")
     watchlist: List[MarketMetrics] = Field(default_factory=list, description="自选币种数据")
     sentiment: List[MarketSentiment] = Field(default_factory=list, description="主要币种情绪")
+    fear_greed_index: Optional[FearGreedIndex] = Field(None, description="当前恐惧贪婪指数")
+    fear_greed_history: List[FearGreedIndex] = Field(default_factory=list, description="历史恐惧贪婪指数")
+    rainbow_bands: List[RainbowBand] = Field(default_factory=list, description="BTC彩虹图带价格")
     news: List[MarketNews] = Field(default_factory=list, description="最新市场消息")
     signals: List[TradingSignal] = Field(default_factory=list, description="交易信号")
     ai_analysis: Optional[str] = Field(None, description="GPT-5.1 提供的深度市场分析")
