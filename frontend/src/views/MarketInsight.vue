@@ -57,7 +57,79 @@
 
     <!-- K 线图 -->
     <el-card class="kline-card" shadow="hover">
-      <KlineChart :symbol="currentChartSymbol" />
+      <KlineChart 
+        ref="chartRef"
+        :symbol="currentChartSymbol" 
+        :tolerance="patternTolerance"
+      />
+    </el-card>
+
+    <!-- 谐波形态扫描器 -->
+    <el-card class="scanner-card" shadow="hover">
+      <template #header>
+        <div class="card-header">
+          <div class="header-left">
+            <span>🛡️ 谐波形态扫描器 (Harmonic Scanner)</span>
+          </div>
+          <div class="header-controls">
+             <span class="control-label">容错率:</span>
+             <el-slider 
+               v-model="patternTolerance" 
+               :min="0.05" 
+               :max="0.4" 
+               :step="0.01" 
+               :format-tooltip="val => (val*100).toFixed(0) + '%'"
+               style="width: 150px; margin-right: 20px;"
+             />
+            <el-button 
+              type="primary" 
+              size="small" 
+              :loading="scanning"
+              @click="scanPatterns"
+            >
+              扫描市场
+            </el-button>
+          </div>
+        </div>
+      </template>
+      
+      <div v-if="scanning" class="scanning-placeholder">
+        <el-icon class="is-loading"><Loading /></el-icon>
+        <span>正在扫描市场Top20活跃币种以及潜在机会...</span>
+      </div>
+
+      <div v-if="!scanning && scanResults.length === 0" class="empty-scan">
+        暂无发现近期形态，请稍后刷新。
+      </div>
+
+      <el-row v-else :gutter="16">
+        <el-col 
+          v-for="(res, idx) in scanResults" 
+          :key="idx"
+          :xs="24" :sm="12" :md="6"
+        >
+          <div 
+            class="scan-item" 
+            :class="res.pattern.direction === 'Bullish' ? 'bullish' : 'bearish'"
+            @click="handlePatternClick(res)"
+          >
+            <div class="scan-header">
+              <span class="scan-symbol">{{ formatSymbol(res.symbol) }}</span>
+              <el-tag size="small" :type="res.pattern.direction === 'Bullish' ? 'success' : 'danger'">
+                {{ res.pattern.direction }}
+              </el-tag>
+            </div>
+            <div class="scan-body">
+              <div class="pattern-name">{{ res.pattern.name }}</div>
+              <div class="pattern-info">
+                周期: 1H | 
+                <span v-if="res.pattern.name.includes('Potential')">潜在反转区</span>
+                <span v-else>形态完成</span>
+              </div>
+            </div>
+          </div>
+        </el-col>
+      </el-row>
     </el-card>
 
     <!-- 交易信号 -->
@@ -343,11 +415,11 @@
     </el-row>
 
     <!-- 自选币种 -->
-    <el-card v-if="watchlist.length > 0" shadow="hover">
+    <el-card shadow="hover" style="margin-top: 20px">
       <template #header>
         <div class="card-header">
           <span>⭐ 自选币种</span>
-          <el-button size="small" @click="showWatchlistDialog = true">
+          <el-button size="small" type="primary" plain @click="showWatchlistDialog = true">
             管理自选
           </el-button>
         </div>
@@ -357,7 +429,11 @@
         stripe
         @row-click="selectSymbol"
         row-class-name="clickable-row"
+        v-loading="loading && watchlist.length === 0"
       >
+        <template #empty>
+          <el-empty description="暂无自选币种，请点击管理自选添加" />
+        </template>
         <el-table-column label="币种" width="120">
           <template #default="{ row }">
             <strong>{{ formatSymbol(row.symbol) }}</strong>
@@ -450,6 +526,13 @@ const signals = ref([])
 const aiAnalysis = ref('')
 const currentChartSymbol = ref('BTCUSDT')
 
+// Scanner State
+const scanning = ref(false)
+const scanResults = ref([])
+const chartRef = ref(null) // Reference to KlineChart component
+
+const patternTolerance = ref(0.2) // Default 20%
+
 // 计算当前 BTC 在彩虹图中的位置
 const btcCurrentPrice = computed(() => {
   const btcInWatch = watchlist.value.find(i => i.symbol === 'BTCUSDT')
@@ -477,12 +560,32 @@ const rainbowIndicatorPos = computed(() => {
 // 自选管理
 const showWatchlistDialog = ref(false)
 const newWatchSymbol = ref('')
-const userWatchlist = ref(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'])
+const userWatchlist = ref([])
+
+// 从 localStorage 加载自选
+const loadUserWatchlist = () => {
+  const saved = localStorage.getItem('user_watchlist')
+  if (saved) {
+    try {
+      userWatchlist.value = JSON.parse(saved)
+    } catch (e) {
+      userWatchlist.value = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ORDIUSDT']
+    }
+  } else {
+    userWatchlist.value = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'ORDIUSDT']
+  }
+}
+
+// 保存自选到 localStorage
+const saveUserWatchlist = () => {
+  localStorage.setItem('user_watchlist', JSON.stringify(userWatchlist.value))
+}
 
 // 自动刷新定时器
 let refreshTimer = null
 
 onMounted(() => {
+  loadUserWatchlist()
   loadData()
   // 每30秒自动刷新
   refreshTimer = setInterval(() => {
@@ -495,6 +598,36 @@ onUnmounted(() => {
     clearInterval(refreshTimer)
   }
 })
+
+const handlePatternClick = (res) => {
+  currentChartSymbol.value = res.symbol
+  // Focus logic: wait for chart to update symbol and load data, then focus
+  // We can pass the pattern to the chart component to focus on
+  // But chart reloads on symbol change.
+  // Actually, we can use a ref method on the chart component.
+  // Wait for next tick or event?
+  // Let's rely on watch within KlineChart? 
+  // Better: KlineChart exposes a focus method. But symbol change triggers reload.
+  // We can pass "focusTarget" prop? or just call method after a delay.
+  setTimeout(() => {
+    if (chartRef.value) {
+      chartRef.value.focusOnPattern(res.pattern)
+    }
+  }, 1000) // Delay to allow fetch. Refine later with events if needed.
+}
+
+async function scanPatterns() {
+  scanning.value = true
+  scanResults.value = []
+  try {
+    const res = await marketInsight.scanPatterns('1h')
+    scanResults.value = res || []
+  } catch (err) {
+    console.error(err)
+  } finally {
+    scanning.value = false
+  }
+}
 
 async function loadData(silent = false) {
   if (!silent) {
@@ -646,10 +779,15 @@ function getFngColor(val) {
 }
 
 function addToWatchlist() {
-  const symbol = newWatchSymbol.value.trim().toUpperCase()
+  let symbol = newWatchSymbol.value.trim().toUpperCase()
   if (!symbol) {
     ElMessage.warning('请输入币种符号')
     return
+  }
+  
+  // 智能补充 USDT
+  if (!symbol.endsWith('USDT') && !symbol.endsWith('BUSD')) {
+    symbol = symbol + 'USDT'
   }
   
   if (userWatchlist.value.includes(symbol)) {
@@ -658,6 +796,7 @@ function addToWatchlist() {
   }
   
   userWatchlist.value.push(symbol)
+  saveUserWatchlist() // 保存到本地存储
   newWatchSymbol.value = ''
   ElMessage.success('添加成功')
   loadData(true)
@@ -667,6 +806,7 @@ function removeFromWatchlist(symbol) {
   const index = userWatchlist.value.indexOf(symbol)
   if (index > -1) {
     userWatchlist.value.splice(index, 1)
+    saveUserWatchlist() // 保存到本地存储
     ElMessage.success('移除成功')
     loadData(true)
   }
@@ -695,6 +835,80 @@ function removeFromWatchlist(symbol) {
 .kline-card {
   margin-bottom: 20px;
   padding: 0;
+}
+
+.scanner-card {
+  margin-bottom: 20px;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+}
+
+.control-label {
+  font-size: 14px;
+  color: #606266;
+  margin-right: 10px;
+}
+
+.scanning-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 30px;
+  color: #909399;
+}
+
+.empty-scan {
+  text-align: center;
+  padding: 30px;
+  color: #909399;
+}
+
+.scan-item {
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  padding: 15px;
+  margin-bottom: 15px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.scan-item:hover {
+  box-shadow: 0 2px 12px 0 rgba(0,0,0,.1);
+}
+
+.scan-item.bullish {
+  border-left: 4px solid #67C23A;
+}
+
+.scan-item.bearish {
+  border-left: 4px solid #F56C6C;
+}
+
+.scan-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.scan-symbol {
+  font-weight: bold;
+  font-size: 16px;
+}
+
+.pattern-name {
+  font-size: 14px;
+  color: #303133;
+  margin-bottom: 5px;
+}
+
+.pattern-info {
+  font-size: 12px;
+  color: #909399;
 }
 
 .ai-analysis-card {

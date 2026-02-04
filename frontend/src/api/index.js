@@ -127,6 +127,12 @@ export const marketInsight = {
   },
   getKlines(params) {
     return api.get('/market-insight/klines', { params })
+  },
+  getPatterns(params) {
+    return api.get('/market-insight/patterns', { params })
+  },
+  scanPatterns(interval) {
+    return api.get('/market-insight/patterns/scan', { params: { interval } })
   }
 }
 

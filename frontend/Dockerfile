@@ -1,5 +1,5 @@
 # Build stage
-FROM node:16-alpine as build-stage
+FROM public.ecr.aws/docker/library/node:20-alpine AS build-stage
 
 # Set working directory
 WORKDIR /app
@@ -28,7 +28,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM nginx:stable-alpine as production-stage
+FROM public.ecr.aws/nginx/nginx:stable-alpine AS production-stage
 
 # Add runtime configurations
 RUN mkdir -p /usr/share/nginx/html/config

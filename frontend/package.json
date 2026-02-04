@@ -17,6 +17,7 @@
     "vue-router": "^4.0.0",
     "vuex": "^4.0.0",
     "echarts": "^5.2.0",
+    "lightweight-charts": "^4.1.0",
     "moment": "^2.29.0"
   },
   "devDependencies": {

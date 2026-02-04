@@ -17,6 +17,7 @@ from app.schemas.market_insight import (
     FearGreedIndex,
     RainbowBand
 )
+from app.services.pattern_recognition import pattern_recognizer
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +311,100 @@ class MarketInsightService:
         except Exception as e:
             logger.error(f"Error fetching klines: {e}")
             return []
-    
+
+    async def get_harmonic_patterns(self, symbol: str, interval: str = "1h", limit: int = 500, tolerance: float = 0.2) -> List[Dict[str, Any]]:
+        """识别谐波形态"""
+        try:
+            # Need sufficient data for patterns, fetch more history using requested limit
+            # limit should be passed
+            if limit > 1500: limit = 1500 # Binance Max
+            
+            klines = await self.get_klines(symbol, interval, limit=limit)
+            if not klines:
+                return []
+            
+            # Run analysis (CPU bound, could offload to thread pool if heavy, but ok for now)
+            patterns = pattern_recognizer.analyze(klines, tolerance=tolerance)
+            # Convert dataclasses to dicts for JSON serialization
+            return [
+                {
+                    "name": p.name,
+                    "direction": p.direction,
+                    "error": p.error,
+                    "points": [
+                        {"index": pt.index, "price": pt.price, "time": pt.time} 
+                        for pt in p.points
+                    ]
+                }
+                for p in patterns
+            ]
+        except Exception as e:
+            logger.error(f"Error analyzing patterns: {e}")
+            return []
+
+    async def scan_harmonic_patterns(self, symbols: List[str] = None, interval: str = "1h") -> List[Dict[str, Any]]:
+        """扫描多个币种的最新谐波形态"""
+        if not symbols:
+            # Default to top volume if no list provided
+            top_vol = await self.get_top_volume(20)
+            symbols = [m.symbol for m in top_vol]
+        
+        results = []
+        
+        # Limit concurrency
+        chunk_size = 5
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i+chunk_size]
+            tasks = []
+            for sym in chunk:
+                # We only need latest patterns, so limit klines to e.g. 200 is enough for detection 
+                # but for big patterns we might need more. 500 is safe.
+                tasks.append(self.get_harmonic_patterns(sym, interval, limit=500))
+            
+            chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for sym, patterns in zip(chunk, chunk_results):
+                if isinstance(patterns, list) and patterns:
+                    # Filter for RECENT patterns only
+                    # Check if the last point (D) is within recent candles
+                    # But pattern points have 'time' (timestamp).
+                    # Let's say within last 12 hours for 1h chart? Or just last available pattern?
+                    # Let's pick patterns where 'D' point index is close to end.
+                    # Since we don't have total length here easily without klines, use timestamp.
+                    # Actually, we can just return the latest one found.
+                    
+                    # Sort by last point time
+                    if not patterns: continue
+                    
+                    # Get latest pattern
+                    latest = max(patterns, key=lambda p: p['points'][-1]['time'])
+                    
+                    # Check if it's "fresh" (e.g. formed in last 5 candles?)
+                    # If we don't check freshness, we just show "Latest pattern on this chart"
+                    # User wants to find opportunities. So recent is better.
+                    # Let's assume Klines end at NOW. 
+                    # 1h interval = 3600*1000 ms.
+                    # 5 candles = 5 hours.
+                    
+                    now = datetime.now().timestamp() * 1000
+                    last_point_time = latest['points'][-1]['time']
+                    
+                    # Diff in ms
+                    diff = now - last_point_time
+                    # Interval in ms parsing: 1h, 4h, 15m
+                    duration_map = {"15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+                    minutes = duration_map.get(interval, 60)
+                    ms_per_candle = minutes * 60 * 1000
+                    
+                    # If within last 10 candles
+                    if diff < (10 * ms_per_candle):
+                         results.append({
+                             "symbol": sym,
+                             "pattern": latest
+                         })
+                         
+        return results
+
     async def get_dashboard_data(self, watchlist: Optional[List[str]] = None) -> MarketInsightDashboard:
         """获取完整的市场洞察数据看板"""
         try:
