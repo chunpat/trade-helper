@@ -66,6 +66,13 @@ class TradingSignal(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
+class FundingRateRanking(BaseModel):
+    """资金费率排名"""
+    symbol: str = Field(..., description="币种")
+    rate: float = Field(..., description="资金费率(百分比)")
+    exchange: Optional[str] = Field(None, description="交易所")
+
+
 class MarketOverview(BaseModel):
     """市场总览"""
     total_market_cap: Optional[float] = Field(None, description="总市值")
@@ -82,6 +89,8 @@ class MarketInsightDashboard(BaseModel):
     top_losers: List[MarketMetrics] = Field(default_factory=list, description="跌幅榜前10")
     top_volume: List[MarketMetrics] = Field(default_factory=list, description="成交量榜前10")
     watchlist: List[MarketMetrics] = Field(default_factory=list, description="自选币种数据")
+    funding_rate_high: List[FundingRateRanking] = Field(default_factory=list, description="正费率最高排名")
+    funding_rate_low: List[FundingRateRanking] = Field(default_factory=list, description="负费率最高排名")
     sentiment: List[MarketSentiment] = Field(default_factory=list, description="主要币种情绪")
     fear_greed_index: Optional[FearGreedIndex] = Field(None, description="当前恐惧贪婪指数")
     fear_greed_history: List[FearGreedIndex] = Field(default_factory=list, description="历史恐惧贪婪指数")

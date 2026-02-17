@@ -334,48 +334,26 @@ function renderChart(rawData, patterns = []) {
   patternSeriesList = []
   
   if (patterns && patterns.length > 0) {
-    patterns.forEach((pat, idx) => {
-        const color = pat.direction === 'Bullish' ? '#00E396' : '#FF4560'
+    const markers = []
+    
+    patterns.forEach((pat) => {
+        const color = pat.direction === 'Bullish' ? '#00E396' : (pat.direction === 'Bearish' ? '#FF4560' : '#B2B5BE')
+        const lastPoint = pat.points[pat.points.length - 1]
         
-        const linePoints = pat.points.map(p => ({
-            time: p.time / 1000,
-            value: p.price
-        }))
-        
-        const series = chart.addLineSeries({
-            color: color,
-            lineWidth: 2,
-            lineType: 0,
-            crosshairMarkerVisible: false,
-            lastValueVisible: false,
-            priceLineVisible: false
-        })
-        
-        series.setData(linePoints)
-        
-        const labels = ['X', 'A', 'B', 'C', 'D']
-        const markers = pat.points.map((p, i) => ({
-            time: p.time / 1000,
-            position: pat.direction === 'Bullish' ? (i%2===0 ? 'belowBar' : 'aboveBar') : (i%2===0 ? 'aboveBar' : 'belowBar'),
-            color: color,
-            shape: 'circle',
-            text: labels[i],
-            size: 1
-        }))
-
         markers.push({
-            time: pat.points[pat.points.length-1].time / 1000,
-            position: pat.direction === 'Bullish' ? 'belowBar' : 'aboveBar',
+            time: lastPoint.time / 1000,
+            position: pat.direction === 'Bullish' ? 'belowBar' : (pat.direction === 'Bearish' ? 'aboveBar' : 'inBar'),
             color: color,
-            shape: pat.direction === 'Bullish' ? 'arrowUp' : 'arrowDown',
-            text: pat.name + (pat.name.includes('Potential') ? '?' : ' ✅'),
-            size: 2
+            shape: pat.direction === 'Bullish' ? 'arrowUp' : (pat.direction === 'Bearish' ? 'arrowDown' : 'circle'),
+            text: pat.name,
+            size: 1
         })
-        
-        markers.sort((a,b) => a.time - b.time)
-        series.setMarkers(markers)
-        patternSeriesList.push(series)
     })
+    
+    markers.sort((a,b) => a.time - b.time)
+    candleSeries.setMarkers(markers)
+  } else {
+    candleSeries.setMarkers([])
   }
 }
 </script>

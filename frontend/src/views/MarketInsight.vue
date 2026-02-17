@@ -64,30 +64,21 @@
       />
     </el-card>
 
-    <!-- 谐波形态扫描器 -->
+    <!-- K线形态捕捉器 -->
     <el-card class="scanner-card" shadow="hover">
       <template #header>
         <div class="card-header">
           <div class="header-left">
-            <span>🛡️ 谐波形态扫描器 (Harmonic Scanner)</span>
+            <span>🕯️ K线形态捕捉器 (Candlestick Patterns)</span>
           </div>
           <div class="header-controls">
-             <span class="control-label">容错率:</span>
-             <el-slider 
-               v-model="patternTolerance" 
-               :min="0.05" 
-               :max="0.4" 
-               :step="0.01" 
-               :format-tooltip="val => (val*100).toFixed(0) + '%'"
-               style="width: 150px; margin-right: 20px;"
-             />
             <el-button 
               type="primary" 
               size="small" 
               :loading="scanning"
               @click="scanPatterns"
             >
-              扫描市场
+              扫描形态
             </el-button>
           </div>
         </div>
@@ -168,17 +159,22 @@
               </div>
             </div>
             <div v-if="signal.suggested_entry" class="signal-prices">
-              <div class="price-item">
-                <span class="label">入场:</span>
-                <span class="value">${{ signal.suggested_entry.toFixed(2) }}</span>
+              <div class="price-item entry">
+                <span class="label">建仓:</span>
+                <span class="value">${{ formatPrice(signal.suggested_entry) }}</span>
               </div>
-              <div class="price-item">
-                <span class="label">止损:</span>
-                <span class="value danger">${{ signal.suggested_stop_loss?.toFixed(2) }}</span>
+              <div class="price-row">
+                <div class="price-item sl">
+                  <span class="label">止损:</span>
+                  <span class="value danger">${{ formatPrice(signal.suggested_stop_loss) }}</span>
+                </div>
+                <div class="price-item tp">
+                  <span class="label">止盈:</span>
+                  <span class="value success">${{ formatPrice(signal.suggested_take_profit) }}</span>
+                </div>
               </div>
-              <div class="price-item">
-                <span class="label">止盈:</span>
-                <span class="value success">${{ signal.suggested_take_profit?.toFixed(2) }}</span>
+              <div class="rr-ratio">
+                期望盈亏比: <el-tag size="mini" type="info">1 : 2.5</el-tag>
               </div>
             </div>
           </div>
@@ -414,6 +410,59 @@
       </el-col>
     </el-row>
 
+    <!-- 资金费率排行 (Coinglass 聚合/Binance 合约) -->
+    <el-row :gutter="16" class="rankings" style="margin-top: 20px;">
+      <!-- 正费率榜 -->
+      <el-col :xs="24" :md="12">
+        <el-card shadow="hover">
+          <template #header>
+            <div class="card-header">
+              <span>🚀 资金费率排行榜 (Highest)</span>
+              <el-tag size="small" type="success">多头情绪高涨</el-tag>
+            </div>
+          </template>
+          <el-table :data="fundingRateHigh" size="small" @row-click="selectSymbol" row-class-name="clickable-row">
+            <el-table-column prop="symbol" label="交易对" width="120">
+               <template #default="{ row }">
+                <span class="symbol-name">{{ formatSymbol(row.symbol) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="rate" label="8H费率" align="right">
+              <template #default="{ row }">
+                <span class="bullish-text" style="font-weight: bold;">{{ row.rate.toFixed(4) }}%</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="exchange" label="来源" align="right" width="80" />
+          </el-table>
+        </el-card>
+      </el-col>
+
+      <!-- 负费率榜 -->
+      <el-col :xs="24" :md="12">
+        <el-card shadow="hover">
+          <template #header>
+            <div class="card-header">
+              <span>🩸 资金费率排行榜 (Lowest)</span>
+              <el-tag size="small" type="danger">空头极度密集</el-tag>
+            </div>
+          </template>
+          <el-table :data="fundingRateLow" size="small" @row-click="selectSymbol" row-class-name="clickable-row">
+            <el-table-column prop="symbol" label="交易对" width="120">
+               <template #default="{ row }">
+                <span class="symbol-name">{{ formatSymbol(row.symbol) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="rate" label="8H费率" align="right">
+              <template #default="{ row }">
+                <span class="bearish-text" style="font-weight: bold;">{{ row.rate.toFixed(4) }}%</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="exchange" label="来源" align="right" width="80" />
+          </el-table>
+        </el-card>
+      </el-col>
+    </el-row>
+
     <!-- 自选币种 -->
     <el-card shadow="hover" style="margin-top: 20px">
       <template #header>
@@ -518,6 +567,8 @@ const topGainers = ref([])
 const topLosers = ref([])
 const topVolume = ref([])
 const watchlist = ref([])
+const fundingRateHigh = ref([])
+const fundingRateLow = ref([])
 const sentiment = ref([])
 const fearGreedIndex = ref(null)
 const fearGreedHistory = ref([])
@@ -643,6 +694,8 @@ async function loadData(silent = false) {
     topLosers.value = response.top_losers
     topVolume.value = response.top_volume
     watchlist.value = response.watchlist
+    fundingRateHigh.value = response.funding_rate_high || []
+    fundingRateLow.value = response.funding_rate_low || []
     sentiment.value = response.sentiment
     fearGreedIndex.value = response.fear_greed_index
     fearGreedHistory.value = response.fear_greed_history
@@ -691,6 +744,13 @@ function renderMarkdown(text) {
 
 function formatSymbol(symbol) {
   return symbol.replace('USDT', '')
+}
+
+function formatPrice(price) {
+  if (!price) return '0.00'
+  if (price < 1) return price.toFixed(4)
+  if (price < 10) return price.toFixed(3)
+  return price.toFixed(2)
 }
 
 function formatNumber(num) {
@@ -1021,6 +1081,22 @@ function removeFromWatchlist(symbol) {
 .price-item .value.danger {
   color: #F56C6C;
   font-weight: bold;
+}
+
+.price-row {
+  display: flex;
+  gap: 10px;
+}
+
+.price-row .price-item {
+  flex: 1;
+}
+
+.rr-ratio {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #909399;
+  text-align: right;
 }
 
 .sentiment-card {

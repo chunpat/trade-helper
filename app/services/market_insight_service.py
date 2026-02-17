@@ -15,7 +15,8 @@ from app.schemas.market_insight import (
     TradingSignal,
     MarketOverview,
     FearGreedIndex,
-    RainbowBand
+    RainbowBand,
+    FundingRateRanking
 )
 from app.services.pattern_recognition import pattern_recognizer
 
@@ -312,27 +313,26 @@ class MarketInsightService:
             logger.error(f"Error fetching klines: {e}")
             return []
 
-    async def get_harmonic_patterns(self, symbol: str, interval: str = "1h", limit: int = 500, tolerance: float = 0.2) -> List[Dict[str, Any]]:
-        """识别谐波形态"""
+    async def get_patterns(self, symbol: str, interval: str = "1h", limit: int = 500, tolerance: float = 0.2) -> List[Dict[str, Any]]:
+        """识别 K 线形态（单K线形态如锤子线、吞没等）"""
         try:
-            # Need sufficient data for patterns, fetch more history using requested limit
-            # limit should be passed
-            if limit > 1500: limit = 1500 # Binance Max
-            
             klines = await self.get_klines(symbol, interval, limit=limit)
             if not klines:
                 return []
             
-            # Run analysis (CPU bound, could offload to thread pool if heavy, but ok for now)
+            # Run analysis
             patterns = pattern_recognizer.analyze(klines, tolerance=tolerance)
-            # Convert dataclasses to dicts for JSON serialization
+            # Convert dataclasses to dicts for JSON serialization with standard types
             return [
                 {
                     "name": p.name,
                     "direction": p.direction,
-                    "error": p.error,
                     "points": [
-                        {"index": pt.index, "price": pt.price, "time": pt.time} 
+                        {
+                            "index": int(pt.index), 
+                            "price": float(pt.price), 
+                            "time": int(pt.time)
+                        } 
                         for pt in p.points
                     ]
                 }
@@ -342,8 +342,8 @@ class MarketInsightService:
             logger.error(f"Error analyzing patterns: {e}")
             return []
 
-    async def scan_harmonic_patterns(self, symbols: List[str] = None, interval: str = "1h") -> List[Dict[str, Any]]:
-        """扫描多个币种的最新谐波形态"""
+    async def scan_patterns(self, symbols: List[str] = None, interval: str = "1h") -> List[Dict[str, Any]]:
+        """扫描多个币种的最新 K 线形态"""
         if not symbols:
             # Default to top volume if no list provided
             top_vol = await self.get_top_volume(20)
@@ -357,53 +357,68 @@ class MarketInsightService:
             chunk = symbols[i:i+chunk_size]
             tasks = []
             for sym in chunk:
-                # We only need latest patterns, so limit klines to e.g. 200 is enough for detection 
-                # but for big patterns we might need more. 500 is safe.
-                tasks.append(self.get_harmonic_patterns(sym, interval, limit=500))
+                tasks.append(self.get_patterns(sym, interval, limit=150)) # 只看最近的
             
             chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
             
             for sym, patterns in zip(chunk, chunk_results):
                 if isinstance(patterns, list) and patterns:
-                    # Filter for RECENT patterns only
-                    # Check if the last point (D) is within recent candles
-                    # But pattern points have 'time' (timestamp).
-                    # Let's say within last 12 hours for 1h chart? Or just last available pattern?
-                    # Let's pick patterns where 'D' point index is close to end.
-                    # Since we don't have total length here easily without klines, use timestamp.
-                    # Actually, we can just return the latest one found.
-                    
-                    # Sort by last point time
-                    if not patterns: continue
-                    
-                    # Get latest pattern
+                    # 获取最新的一个形态
                     latest = max(patterns, key=lambda p: p['points'][-1]['time'])
-                    
-                    # Check if it's "fresh" (e.g. formed in last 5 candles?)
-                    # If we don't check freshness, we just show "Latest pattern on this chart"
-                    # User wants to find opportunities. So recent is better.
-                    # Let's assume Klines end at NOW. 
-                    # 1h interval = 3600*1000 ms.
-                    # 5 candles = 5 hours.
                     
                     now = datetime.now().timestamp() * 1000
                     last_point_time = latest['points'][-1]['time']
                     
-                    # Diff in ms
-                    diff = now - last_point_time
-                    # Interval in ms parsing: 1h, 4h, 15m
+                    # 检查是否是最近 5 根 K 线内形成的
                     duration_map = {"15m": 15, "1h": 60, "4h": 240, "1d": 1440}
                     minutes = duration_map.get(interval, 60)
                     ms_per_candle = minutes * 60 * 1000
                     
-                    # If within last 10 candles
-                    if diff < (10 * ms_per_candle):
+                    if now - last_point_time < (5 * ms_per_candle):
                          results.append({
                              "symbol": sym,
                              "pattern": latest
                          })
                          
         return results
+
+    async def get_funding_rate_rankings(self) -> Dict[str, List[FundingRateRanking]]:
+        """获取全市场资金费率排行 (优先使用 Binance 合约全量数据作为代表)"""
+        cache_key = "funding_rate_rankings"
+        if self._is_cache_valid(cache_key):
+            return self._cache[cache_key]["data"]
+            
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Binance Premium Index API 返回所有合约的最新资金费率
+                response = await client.get(f"{self.BINANCE_FAPI}/premiumIndex")
+                data = response.json()
+                
+                rates = []
+                for item in data:
+                    symbol = item.get("symbol", "")
+                    if not symbol.endswith("USDT"): continue
+                    
+                    rate = float(item.get("lastFundingRate", 0))
+                    rates.append(FundingRateRanking(
+                        symbol=symbol,
+                        rate=round(rate * 100, 4), # 转换为百分比
+                        exchange="Binance"
+                    ))
+                
+                # 排序获取两极
+                high_rates = sorted(rates, key=lambda x: x.rate, reverse=True)[:10]
+                low_rates = sorted(rates, key=lambda x: x.rate)[:10]
+                
+                result = {
+                    "high": high_rates,
+                    "low": low_rates
+                }
+                self._update_cache(cache_key, result)
+                return result
+        except Exception as e:
+            logger.error(f"Error fetching funding rate rankings: {e}")
+            return {"high": [], "low": []}
 
     async def get_dashboard_data(self, watchlist: Optional[List[str]] = None) -> MarketInsightDashboard:
         """获取完整的市场洞察数据看板"""
@@ -419,6 +434,7 @@ class MarketInsightService:
             rainbow_task = self.get_rainbow_bands()
             news_task = self.get_market_news(20)
             signals_task = self.generate_trading_signals(watchlist)
+            funding_task = self.get_funding_rate_rankings()
             
             results = await asyncio.gather(
                 overview_task,
@@ -431,6 +447,7 @@ class MarketInsightService:
                 rainbow_task,
                 news_task,
                 signals_task,
+                funding_task,
                 return_exceptions=True
             )
             
@@ -445,11 +462,12 @@ class MarketInsightService:
             rainbow_bands = results[7] if not isinstance(results[7], Exception) else []
             news = results[8] if not isinstance(results[8], Exception) else []
             signals = results[9] if not isinstance(results[9], Exception) else []
+            funding_rates = results[10] if not isinstance(results[10], Exception) else {"high": [], "low": []}
             
             # GPT-5.1 深度分析 (如果启用)
             ai_analysis = None
             if os.getenv("ENABLE_GPT_5_1", "True").lower() == "true":
-                ai_analysis = self._generate_gpt5_analysis(overview, sentiment, signals)
+                ai_analysis = self._generate_gpt5_analysis(overview, sentiment, signals, funding_rates)
             
             return MarketInsightDashboard(
                 overview=overview,
@@ -457,6 +475,8 @@ class MarketInsightService:
                 top_losers=losers,
                 top_volume=volume,
                 watchlist=watchlist_metrics,
+                funding_rate_high=funding_rates.get("high", []),
+                funding_rate_low=funding_rates.get("low", []),
                 sentiment=sentiment,
                 fear_greed_index=fear_greed_data.get("current"),
                 fear_greed_history=fear_greed_data.get("history", []),
@@ -590,14 +610,20 @@ class MarketInsightService:
         if not reasons or strength < 60:
             return None
         
-        # 生成建议价格
+        # 生成更专业的建议价格 (动态 RR 2.0-3.0)
         suggested_entry = metric.last_price
+        
+        # 计算 ATR 估算 (简单使用 24h 波动率的 1/10)
+        volatility = (metric.high_24h - metric.low_24h) / metric.last_price if metric.last_price > 0 else 0.05
+        sl_percent = max(min(volatility * 0.5, 0.05), 0.015) # 1.5% - 5.0% 止损
+        tp_percent = sl_percent * 2.5 # 盈亏比 2.5
+        
         if signal_type == "long":
-            suggested_stop_loss = metric.last_price * 0.97  # 3%止损
-            suggested_take_profit = metric.last_price * 1.06  # 6%止盈
+            suggested_stop_loss = metric.last_price * (1 - sl_percent)
+            suggested_take_profit = metric.last_price * (1 + tp_percent)
         elif signal_type == "short":
-            suggested_stop_loss = metric.last_price * 1.03
-            suggested_take_profit = metric.last_price * 0.94
+            suggested_stop_loss = metric.last_price * (1 + sl_percent)
+            suggested_take_profit = metric.last_price * (1 - tp_percent)
         else:
             suggested_stop_loss = None
             suggested_take_profit = None
@@ -613,39 +639,67 @@ class MarketInsightService:
             timestamp=datetime.now()
         )
     
-    def _generate_gpt5_analysis(self, overview: MarketOverview, sentiments: List[MarketSentiment], signals: List[TradingSignal]) -> str:
-        """GPT-5.1 模拟分析逻辑"""
+    def _generate_gpt5_analysis(self, overview: MarketOverview, sentiments: List[MarketSentiment], signals: List[TradingSignal], funding_rates: Dict[str, List[FundingRateRanking]]) -> str:
+        """GPT-5.1 模拟分析逻辑 - 提供更详细的操作建议"""
         btc_sentiment = next((s for s in sentiments if s.symbol == "BTCUSDT"), None)
         
-        analysis = "### GPT-5.1 深度市场洞察\n\n"
+        analysis = "### 🤖 GPT-5.1 深度市场操作建议\n\n"
         
-        # 宏观视角
+        # 1. 宏观环境分析
+        analysis += "#### 📊 宏观环境\n"
         if overview.btc_dominance:
-            if overview.btc_dominance > 50:
-                analysis += " 目前 BTC 市占率处于高位（{:.2f}%），市场资金主要集中在主流资产。".format(overview.btc_dominance)
+            dom = overview.btc_dominance
+            if dom > 55:
+                analysis += "- **吸血行情：** BTC 市占率高达 {:.1f}%。目前资金正在由山寨币流向 BTC，建议减少山寨币持仓，关注 BTC 突破机会。\n".format(dom)
+            elif dom < 45:
+                analysis += "- **山寨季活跃：** BTC 市占率处于低位（{:.1f}%）。市场处于高风险偏好阶段，山寨币波动性剧增，适合进行短线捕捉。\n".format(dom)
             else:
-                analysis += " BTC 市占率较低（{:.2f}%），山寨币季节（Altseason）迹象明显。".format(overview.btc_dominance)
+                analysis += "- **震荡行情：** BTC 市占率（{:.1f}%）稳定。市场正在寻找方向，建议以区间交易为主。\n".format(dom)
         
-        # 情绪视角
+        # 2. 资金面分析 (新增加 Coinglass 逻辑)
+        analysis += "\n#### 🌊 资金面分析 (Coinglass/Binance)\n"
+        high_fr = funding_rates.get("high", [])
+        low_fr = funding_rates.get("low", [])
+        
+        if high_fr:
+            top_positive = high_fr[0]
+            analysis += "- **过热预警：** **{}** 资金费率高达 **{:.4f}%**。该币种多头极度拥挤，随时可能发生清算导致价格快速回撤。\n".format(top_positive.symbol, top_positive.rate)
+        
+        if low_fr:
+            top_negative = low_fr[0]
+            if top_negative.rate < -0.01:
+                analysis += "- **扎空潜力：** **{}** 处于负费率状态（{:.4f}%）。空头高度集结，极易引发爆发式反弹。\n".format(top_negative.symbol, top_negative.rate)
+        
+        # 3. 情绪评级
+        analysis += "\n#### 🌪️ 情绪评级\n"
         if btc_sentiment:
-            analysis += " BTC 当前情绪评级为 **{}**。".format(btc_sentiment.sentiment_score.upper())
-            if btc_sentiment.funding_rate and btc_sentiment.funding_rate > 0.0001:
-                analysis += " 资金费率偏正，显示多头情绪高涨，需警惕多头挤压（Long Squeeze）。"
-            elif btc_sentiment.funding_rate and btc_sentiment.funding_rate < 0:
-                analysis += " 资金费率转负，空头密集，可能存在空头平仓引发的反弹风险。"
+            score = btc_sentiment.sentiment_score.upper()
+            analysis += "- **当前评级：** **{}**\n".format(score)
         
-        # 交易机会
+        # 4. 具体操作策略
+        analysis += "\n#### 🚀 核心操作策略\n"
         if signals:
             long_signals = [s for s in signals if s.signal_type == "long"]
             short_signals = [s for s in signals if s.signal_type == "short"]
             
-            analysis += "\n\n**核心监控：**\n"
             if long_signals:
-                analysis += "- 看多机会：{}。\n".format(", ".join([s.symbol for s in long_signals[:3]]))
+                analysis += "**看多布局（推荐）：**\n"
+                for s in long_signals[:2]:
+                    analysis += "- **{}**：参考入场点 ${:,.2f}。".format(s.symbol, s.suggested_entry or 0)
+                    analysis += " 目标 **${:,.2f}**。".format(s.suggested_take_profit or 0)
+                    analysis += " 止损 ${:,.2f}。\n".format(s.suggested_stop_loss or 0)
+            
             if short_signals:
-                analysis += "- 看空机会：{}。\n".format(", ".join([s.symbol for s in short_signals[:3]]))
+                analysis += "**看空布局（谨慎）：**\n"
+                for s in short_signals[:2]:
+                    analysis += "- **{}**：参考压制位 ${:,.2f}。".format(s.symbol, s.suggested_entry or 0)
+                    analysis += " 目标 **${:,.2f}**。".format(s.suggested_take_profit or 0)
+                    analysis += " 止损 ${:,.2f}。\n".format(s.suggested_stop_loss or 0)
         
-        analysis += "\n\n**GPT-5.1 风险提示：** 市场处于波动期，建议分批入场，严格执行风控参数。"
+        if not signals:
+            analysis += "目前全市场未捕捉到高确定性交易信号，建议保持离场观望，重点关注是否有 **锤子线** 或 **吞没形态** 在关键支撑位出现。\n"
+        
+        analysis += "\n**📢 GPT-5.1 最终提醒：** 当前识别已调整为 **单K线形态捕捉器**。寻找“刺透”、“锤子线”等反转信号结合高低资金费率进行博弈。操作前请确保您的单笔风险敞口。"
         
         return analysis
 

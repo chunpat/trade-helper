@@ -102,22 +102,22 @@ async def get_klines(
 
 
 @router.get("/patterns")
-async def get_harmonic_patterns(
+async def get_patterns(
     symbol: str = Query(..., description="交易对"),
     interval: str = Query("1h", description="时间周期"),
     limit: int = Query(500, description="数据条数"),
     tolerance: float = Query(0.2, description="容错率")
 ):
-    """识别谐波形态"""
-    return await market_insight_service.get_harmonic_patterns(symbol, interval, limit, tolerance)
+    """识别 K 线形态（单K线形态如锤子线、吞没等）"""
+    return await market_insight_service.get_patterns(symbol, interval, limit, tolerance)
 
 @router.get("/patterns/scan")
-async def scan_harmonic_patterns(
+async def scan_patterns(
     interval: str = Query("1h", description="时间周期"),
     symbols: Optional[List[str]] = Query(None, description="指定扫描币种列表")
 ):
-    """扫描市场寻找最新谐波形态"""
-    return await market_insight_service.scan_harmonic_patterns(symbols, interval)
+    """扫描市场寻找最新 K 线形态"""
+    return await market_insight_service.scan_patterns(symbols, interval)
 
 
 
