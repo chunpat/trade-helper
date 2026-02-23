@@ -125,6 +125,99 @@ def get_position_chart(time_range: str = "today", db: Session = Depends(get_db))
         ]
     )
 
+@router.get("/charts/equity", response_model=PositionChartData)
+def get_equity_chart(time_range: str = "month", db: Session = Depends(get_db)):
+    now_utc = datetime.utcnow()
+    
+    if time_range == "today":
+        start_time = now_utc - timedelta(days=1)
+        interval_minutes = 5
+    elif time_range == "week":
+        start_time = now_utc - timedelta(days=7)
+        interval_minutes = 60
+    else: # month
+        start_time = now_utc - timedelta(days=30)
+        interval_minutes = 240 # 4 hours
+        
+    # Generate time points
+    time_points = []
+    current_time = start_time
+    while current_time <= now_utc:
+        time_points.append(current_time)
+        current_time += timedelta(minutes=interval_minutes)
+        
+    if time_points[-1] < now_utc:
+        time_points.append(now_utc)
+        
+    # Format x-axis labels
+    if time_range == "today":
+        date_strs = [t.strftime("%H:%M") for t in time_points]
+    else:
+        date_strs = [t.strftime("%m-%d %H:%M") for t in time_points]
+    
+    accounts = db.query(Account).filter(Account.is_active == True).all()
+    account_ids = [acc.id for acc in accounts]
+    
+    if not account_ids:
+        return PositionChartData(xAxis=date_strs, series=[])
+        
+    # Fetch all snapshots since start_time
+    snapshots = db.query(AccountSnapshot).filter(
+        AccountSnapshot.account_id.in_(account_ids),
+        AccountSnapshot.timestamp >= start_time
+    ).order_by(AccountSnapshot.timestamp.asc()).all()
+    
+    # Fetch the latest snapshot before start_time for each account
+    initial_snapshots = []
+    for acc_id in account_ids:
+        snap = db.query(AccountSnapshot).filter(
+            AccountSnapshot.account_id == acc_id,
+            AccountSnapshot.timestamp < start_time
+        ).order_by(AccountSnapshot.timestamp.desc()).first()
+        if snap:
+            initial_snapshots.append(snap)
+            
+    all_snapshots = initial_snapshots + snapshots
+    
+    # Group snapshots by account
+    snapshots_by_acc = {acc_id: [] for acc_id in account_ids}
+    for snap in all_snapshots:
+        snapshots_by_acc[snap.account_id].append(snap)
+    
+    # Total equity series
+    total_equity_data = []
+    
+    # Account equity series
+    account_series_map = {acc.id: {"name": acc.name or f"Account {acc.id}", "data": []} for acc in accounts}
+    
+    for t in time_points:
+        daily_total = 0.0
+        for acc in accounts:
+            acc_snaps = snapshots_by_acc[acc.id]
+            
+            latest_equity = 0.0
+            for snap in reversed(acc_snaps):
+                if snap.timestamp <= t:
+                    latest_equity = snap.total_equity
+                    break
+            
+            account_series_map[acc.id]["data"].append(round(latest_equity, 2))
+            daily_total += latest_equity
+            
+        total_equity_data.append(round(daily_total, 2))
+        
+    series = [
+        ChartSeries(name="总资金", type="line", data=total_equity_data)
+    ]
+    
+    for acc_id, acc_data in account_series_map.items():
+        series.append(ChartSeries(name=acc_data["name"], type="line", data=acc_data["data"]))
+        
+    return PositionChartData(
+        xAxis=date_strs,
+        series=series
+    )
+
 @router.get("/charts/risk", response_model=List[RiskDistributionItem])
 def get_risk_chart(db: Session = Depends(get_db)):
     # Only count active positions

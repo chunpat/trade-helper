@@ -143,6 +143,9 @@ export const dashboard = {
   getPositionChart(timeRange) {
     return api.get('/dashboard/charts/position', { params: { time_range: timeRange } })
   },
+  getEquityChart(timeRange) {
+    return api.get('/dashboard/charts/equity', { params: { time_range: timeRange } })
+  },
   getRiskChart() {
     return api.get('/dashboard/charts/risk')
   },

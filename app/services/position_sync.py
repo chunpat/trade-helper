@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from typing import List, Dict
+from datetime import datetime, timedelta
 
 from app.core.database import SessionLocal
 from app.services.exchange.binance_adapter import create_adapter_for_account
@@ -46,12 +47,12 @@ class PositionSyncService:
                         db_account.total_balance = float(account_info.get('totalWalletBalance', 0))
                         db_account.total_equity = float(account_info.get('totalMarginBalance', 0))
                         
-                        # Take a snapshot if the last one was more than 1 hour ago
+                        # Take a snapshot if the last one was more than 5 minutes ago
                         last_snapshot = db.query(AccountSnapshot).filter(
                             AccountSnapshot.account_id == account.id
                         ).order_by(AccountSnapshot.timestamp.desc()).first()
                         
-                        if not last_snapshot or (datetime.utcnow() - last_snapshot.timestamp) > timedelta(hours=1):
+                        if not last_snapshot or (datetime.utcnow() - last_snapshot.timestamp) > timedelta(minutes=5):
                             snapshot = AccountSnapshot(
                                 account_id=account.id,
                                 total_equity=db_account.total_equity,

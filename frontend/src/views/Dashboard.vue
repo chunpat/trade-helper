@@ -66,6 +66,27 @@
       </el-col>
     </el-row>
 
+    <!-- Equity Chart Section -->
+    <el-row :gutter="20" class="charts-section">
+      <el-col :span="24">
+        <el-card shadow="hover">
+          <template #header>
+            <div class="card-header">
+              <span>资金曲线</span>
+              <el-select v-model="equityTimeRange" size="small">
+                <el-option label="今日" value="today" />
+                <el-option label="近7天" value="week" />
+                <el-option label="近30天" value="month" />
+              </el-select>
+            </div>
+          </template>
+          <div class="chart-container">
+            <div ref="equityChart" style="height: 350px;"></div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
     <!-- Charts Section -->
     <el-row :gutter="20" class="charts-section">
       <el-col :span="16">
@@ -143,8 +164,10 @@ export default {
   setup() {
     const router = useRouter()
     const timeRange = ref('today')
+    const equityTimeRange = ref('today')
     const positionChart = ref(null)
     const riskPieChart = ref(null)
+    const equityChart = ref(null)
 
     // Data refs
     const totalPositionValue = ref('0')
@@ -164,6 +187,7 @@ export default {
 
     let positionChartInstance = null
     let riskPieChartInstance = null
+    let equityChartInstance = null
 
     const fetchData = async () => {
       try {
@@ -200,6 +224,16 @@ export default {
           })
         }
 
+        // Equity Chart
+        const equityData = await dashboard.getEquityChart(equityTimeRange.value)
+        if (equityChartInstance) {
+          equityChartInstance.setOption({
+            xAxis: { data: equityData.xAxis },
+            legend: { data: equityData.series.map(s => s.name) },
+            series: equityData.series
+          })
+        }
+
         // Risk Chart
         const riskData = await dashboard.getRiskChart()
         if (riskPieChartInstance) {
@@ -216,6 +250,7 @@ export default {
       // Initialize instances
       positionChartInstance = echarts.init(positionChart.value)
       riskPieChartInstance = echarts.init(riskPieChart.value)
+      equityChartInstance = echarts.init(equityChart.value)
 
       // Set initial options (skeleton)
       positionChartInstance.setOption({
@@ -223,6 +258,14 @@ export default {
         legend: { data: ['BTC', 'ETH', 'Others'] },
         xAxis: { type: 'category', data: [] },
         yAxis: { type: 'value' },
+        series: []
+      })
+
+      equityChartInstance.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: [] },
+        xAxis: { type: 'category', data: [] },
+        yAxis: { type: 'value', scale: true },
         series: []
       })
 
@@ -247,6 +290,7 @@ export default {
       window.addEventListener('resize', () => {
         positionChartInstance && positionChartInstance.resize()
         riskPieChartInstance && riskPieChartInstance.resize()
+        equityChartInstance && equityChartInstance.resize()
       })
       
       await updateCharts()
@@ -254,6 +298,21 @@ export default {
 
     watch(timeRange, () => {
       updateCharts()
+    })
+
+    watch(equityTimeRange, async () => {
+      try {
+        const equityData = await dashboard.getEquityChart(equityTimeRange.value)
+        if (equityChartInstance) {
+          equityChartInstance.setOption({
+            xAxis: { data: equityData.xAxis },
+            legend: { data: equityData.series.map(s => s.name) },
+            series: equityData.series
+          })
+        }
+      } catch (error) {
+        console.error('Failed to fetch equity chart data:', error)
+      }
     })
 
     const getRiskLevelType = (level) => {
@@ -276,8 +335,10 @@ export default {
 
     return {
       timeRange,
+      equityTimeRange,
       positionChart,
       riskPieChart,
+      equityChart,
       totalPositionValue,
       positionValueStatus,
       dayChange,
