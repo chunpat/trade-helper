@@ -15,6 +15,7 @@ class AccountBase(BaseModel):
     api_key: str = Field(..., description="API Key")
     api_secret: str = Field(..., description="API Secret")
     settings: Optional[Dict] = Field(default={}, description="账户设置")
+    initial_balance: Optional[float] = Field(0.0, description="初始资金/总投入本金")
 
 class AccountCreate(AccountBase):
     pass
@@ -26,6 +27,8 @@ class AccountUpdate(BaseModel):
     api_secret: Optional[str] = None
     settings: Optional[Dict] = None
     is_active: Optional[bool] = None
+    initial_balance: Optional[float] = None
+
 
 class AccountInDB(AccountBase):
     id: int

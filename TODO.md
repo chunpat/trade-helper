@@ -39,7 +39,7 @@
 - [ ] 添加MACD（移动平均收敛发散）指标
 - [ ] 添加布林带分析
 - [ ] 添加成交量加权平均价格(VWAP)
-- [ ] K线图表集成（使用TradingView或ECharts）
+- [ ] K线图表集成（使用TradingView）
 
 #### 情绪指标增强
 - [ ] 恐惧贪婪指数实时更新（集成Alternative.me API）

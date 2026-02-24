@@ -24,6 +24,7 @@ class Account(Base, BaseMixin):
     total_equity = Column(Float, default=0.0)
     total_balance = Column(Float, default=0.0)
     today_pnl = Column(Float, default=0.0)
+    initial_balance = Column(Float, default=0.0)
     
     risk_configs = relationship("RiskConfig", back_populates="account")
     positions = relationship("Position", back_populates="account")

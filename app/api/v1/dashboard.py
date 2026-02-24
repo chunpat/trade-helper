@@ -190,12 +190,33 @@ def get_equity_chart(time_range: str = "month", db: Session = Depends(get_db)):
     # Account equity series
     account_series_map = {acc.id: {"name": acc.name or f"Account {acc.id}", "data": []} for acc in accounts}
     
+    # Calculate Principal (Initial + Net Transfers)
+    # Fetch all transfers for active accounts
+    # Common incomeTypes for transfers: TRANSFER, INTERNAL_TRANSFER
+    all_transfers = db.query(TransactionHistory).filter(
+        TransactionHistory.account_id.in_(account_ids),
+        TransactionHistory.type.in_(['TRANSFER', 'INTERNAL_TRANSFER']) 
+    ).order_by(TransactionHistory.time.asc()).all()
+    
+    # Map transfers by account
+    transfers_by_acc = {id: [] for id in account_ids}
+    for tr in all_transfers:
+        transfers_by_acc[tr.account_id].append(tr)
+
+    principal_data = [] # Series for principal line
+    
     for t in time_points:
         daily_total = 0.0
+        daily_principal = 0.0
+        
         for acc in accounts:
-            acc_snaps = snapshots_by_acc[acc.id]
-            
+            # Equity Logic
+            acc_snaps = snapshots_by_acc.get(acc.id, [])
             latest_equity = 0.0
+            
+            # Find latest snapshot at or before time t
+            # Since snapshots are sorted ascending, we can iterate or use bisect
+            # For simplicity, we iterate backwards as we likely want the last one
             for snap in reversed(acc_snaps):
                 if snap.timestamp <= t:
                     latest_equity = snap.total_equity
@@ -204,10 +225,28 @@ def get_equity_chart(time_range: str = "month", db: Session = Depends(get_db)):
             account_series_map[acc.id]["data"].append(round(latest_equity, 2))
             daily_total += latest_equity
             
+            # Principal Logic
+            # Base principal is initial_balance (set by user)
+            acc_principal = acc.initial_balance or 0.0
+            
+            # Add net transfers up to time t
+            acc_transfers = transfers_by_acc.get(acc.id, [])
+            for tr in acc_transfers:
+                if tr.time <= t:
+                    # In binance futures, incomeType TRANSFER: income is the amount
+                    # Positive for deposit, negative for withdrawal
+                    acc_principal += (tr.realized_pnl or 0.0)
+                else:
+                    break # since sorted by time
+            
+            daily_principal += acc_principal
+            
         total_equity_data.append(round(daily_total, 2))
+        principal_data.append(round(daily_principal, 2))
         
     series = [
-        ChartSeries(name="总资金", type="line", data=total_equity_data)
+        ChartSeries(name="总资金", type="line", data=total_equity_data),
+        ChartSeries(name="总投入", type="line", data=principal_data)
     ]
     
     for acc_id, acc_data in account_series_map.items():

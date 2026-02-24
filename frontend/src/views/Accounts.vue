@@ -28,6 +28,11 @@
             {{ formatMoney(scope.row.total_equity) }}
           </template>
         </el-table-column>
+        <el-table-column prop="initial_balance" label="初始资金" width="150">
+          <template #default="scope">
+            {{ formatMoney(scope.row.initial_balance) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="is_active" label="状态" width="100">
           <template #default="scope">
             <el-switch
@@ -75,6 +80,9 @@
         <el-form-item label="API Secret" prop="api_secret">
           <el-input v-model="form.api_secret" type="password" placeholder="请输入API Secret" show-password></el-input>
         </el-form-item>
+        <el-form-item label="初始资金" prop="initial_balance">
+          <el-input-number v-model="form.initial_balance" :min="0" :precision="2" :step="1000" style="width: 100%"></el-input-number>
+        </el-form-item>
         <el-form-item label="状态" prop="is_active">
           <el-switch v-model="form.is_active"></el-switch>
         </el-form-item>
@@ -110,6 +118,7 @@ export default {
       exchange: 'binance',
       api_key: '',
       api_secret: '',
+      initial_balance: 0.0,
       is_active: true
     })
 
@@ -142,6 +151,7 @@ export default {
       form.exchange = 'binance'
       form.api_key = ''
       form.api_secret = ''
+      form.initial_balance = 0.0
       form.is_active = true
       dialogVisible.value = true
     }
@@ -152,7 +162,8 @@ export default {
       form.name = row.name
       form.exchange = row.exchange
       form.api_key = row.api_key
-      form.api_secret = row.api_secret // Note: API secret might not be returned fully or at all for security, but here we assume it is or user re-enters
+      form.api_secret = row.api_secret 
+      form.initial_balance = row.initial_balance || 0.0
       form.is_active = row.is_active
       dialogVisible.value = true
     }
@@ -202,6 +213,7 @@ export default {
                 exchange: form.exchange,
                 api_key: form.api_key,
                 api_secret: form.api_secret,
+                initial_balance: form.initial_balance,
                 is_active: form.is_active
               })
               ElMessage.success('更新成功')
@@ -211,7 +223,8 @@ export default {
                 exchange: form.exchange,
                 api_key: form.api_key,
                 api_secret: form.api_secret,
-                settings: {} // Default empty settings
+                initial_balance: form.initial_balance,
+                settings: {}
               })
               ElMessage.success('创建成功')
             }

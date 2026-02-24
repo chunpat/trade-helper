@@ -25,6 +25,11 @@ def add_columns():
             print("Adding today_pnl column...")
             conn.execute(text("ALTER TABLE accounts ADD COLUMN today_pnl FLOAT DEFAULT 0.0"))
             
+        result = conn.execute(text("SHOW COLUMNS FROM accounts LIKE 'initial_balance'"))
+        if not result.fetchone():
+            print("Adding initial_balance column...")
+            conn.execute(text("ALTER TABLE accounts ADD COLUMN initial_balance FLOAT DEFAULT 0.0"))
+            
         conn.commit()
         print("Columns added successfully or already exist.")
 
