@@ -1,23 +1,23 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-import uvicorn
-from dotenv import load_dotenv
+import asyncio
+import json
+import logging
 import os
 
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+
+# Load environment variables before importing singleton services.
+load_dotenv()
+
+from app.api.v1 import router as api_router
 from app.core.database import init_db
 from app.services.anomaly_monitor_service import anomaly_monitor_service
 from app.services.market_data import get_poller_from_env
 from app.services.position_sync import get_position_sync_from_env
-from fastapi import WebSocket, WebSocketDisconnect
-import asyncio
-import json
-import logging
 from app.services.ws_broadcast import manager as ws_manager
-from app.api.v1 import router as api_router
-
-# Load environment variables
-load_dotenv()
 
 app = FastAPI(
     title=os.getenv("APP_NAME", "Trade Helper"),
@@ -30,6 +30,13 @@ app = FastAPI(
 
 # configure basic logging so our service-level logs show up in docker/uvicorn output
 logging.basicConfig(level=logging.INFO)
+
+
+def _read_bool_env(key: str, default: bool) -> bool:
+    raw_value = os.getenv(key)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 # Configure CORS
 app.add_middleware(
@@ -59,18 +66,33 @@ async def startup_event():
     """Initialize services on startup"""
     # Initialize database
     init_db()
-    logging.info("startup: initializing market poller")
-    # start market-data poller (background task)
-    app.state.market_poller = get_poller_from_env()
-    app.state.market_poller.start()
-    # start position-sync service for real account positions
-    app.state.position_sync = get_position_sync_from_env()
-    app.state.position_sync.start()
-    app.state.anomaly_monitor = anomaly_monitor_service
-    app.state.anomaly_monitor.start()
-    # confirm task scheduled
-    poller = app.state.market_poller
-    logging.info("startup: poller task=%s running=%s", getattr(poller, '_task', None), getattr(poller, '_running', None))
+    app.state.market_poller = None
+    app.state.position_sync = None
+    app.state.anomaly_monitor = None
+
+    if _read_bool_env("START_MARKET_POLLER", True):
+        logging.info("startup: initializing market poller")
+        app.state.market_poller = get_poller_from_env()
+        app.state.market_poller.start()
+        poller = app.state.market_poller
+        logging.info("startup: poller task=%s running=%s", getattr(poller, '_task', None), getattr(poller, '_running', None))
+    else:
+        logging.info("startup: market poller disabled")
+
+    if _read_bool_env("START_POSITION_SYNC", True):
+        logging.info("startup: initializing position sync")
+        app.state.position_sync = get_position_sync_from_env()
+        app.state.position_sync.start()
+    else:
+        logging.info("startup: position sync disabled")
+
+    if _read_bool_env("START_ANOMALY_MONITOR", True):
+        logging.info("startup: initializing anomaly monitor")
+        app.state.anomaly_monitor = anomaly_monitor_service
+        app.state.anomaly_monitor.start()
+    else:
+        logging.info("startup: anomaly monitor disabled")
+
     # ensure websocket manager is available on app state (no-op but explicit)
     app.state.ws_manager = ws_manager
 

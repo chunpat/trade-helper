@@ -108,3 +108,22 @@ def test_to_jsonable_serializes_market_news_datetime_fields_for_json_columns():
 
     assert payload["published_at"] == published_at.isoformat()
     assert payload["symbols"] == ["TRUMP"]
+
+
+def test_get_last_scan_at_falls_back_to_latest_snapshot(monkeypatch):
+    service = AnomalyMonitorService(interval=300)
+    snapshot_time = datetime(2026, 3, 14, 12, 0, 0)
+
+    monkeypatch.setattr(service, "_get_latest_snapshot_captured_at", lambda: snapshot_time)
+
+    assert service.get_last_scan_at() == snapshot_time
+
+
+def test_get_last_scan_at_returns_newer_in_memory_timestamp(monkeypatch):
+    service = AnomalyMonitorService(interval=300)
+    snapshot_time = datetime(2026, 3, 14, 12, 0, 0)
+    service._last_scan_at = datetime(2026, 3, 14, 12, 5, 0)
+
+    monkeypatch.setattr(service, "_get_latest_snapshot_captured_at", lambda: snapshot_time)
+
+    assert service.get_last_scan_at() == service._last_scan_at

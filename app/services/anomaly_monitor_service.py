@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 class AnomalyMonitorService:
     BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
+    BINANCE_FUTURES_DATA = "https://fapi.binance.com/futures/data"
 
     def __init__(self, interval: Optional[int] = None):
         self.interval = interval or int(os.getenv("ANOMALY_SCAN_INTERVAL", "300"))
@@ -143,7 +144,22 @@ class AnomalyMonitorService:
             db.close()
 
     def get_last_scan_at(self) -> Optional[datetime]:
-        return self._last_scan_at
+        latest_snapshot_at = self._get_latest_snapshot_captured_at()
+        if latest_snapshot_at and self._last_scan_at:
+            return max(self._last_scan_at, latest_snapshot_at)
+        return latest_snapshot_at or self._last_scan_at
+
+    def _get_latest_snapshot_captured_at(self) -> Optional[datetime]:
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(MarketMetricSnapshot.captured_at)
+                .order_by(MarketMetricSnapshot.captured_at.desc())
+                .first()
+            )
+            return row[0] if row else None
+        finally:
+            db.close()
 
     async def _fetch_top_tickers(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
         response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
@@ -253,7 +269,7 @@ class AnomalyMonitorService:
         funding_data, open_interest_data, ratio_data, klines = await asyncio.gather(
             self._safe_get(client, f"{self.BINANCE_FAPI}/premiumIndex", {"symbol": symbol}),
             self._safe_get(client, f"{self.BINANCE_FAPI}/openInterest", {"symbol": symbol}),
-            self._safe_get(client, f"{self.BINANCE_FAPI}/topLongShortAccountRatio", {"symbol": symbol, "period": "5m", "limit": 1}),
+            self._safe_get(client, f"{self.BINANCE_FUTURES_DATA}/topLongShortAccountRatio", {"symbol": symbol, "period": "5m", "limit": 1}),
             self._safe_get(client, f"{self.BINANCE_FAPI}/klines", {"symbol": symbol, "interval": "5m", "limit": 12}),
         )
 

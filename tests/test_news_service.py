@@ -230,6 +230,22 @@ def test_fetch_symbol_news_caches_fallback_search_results(monkeypatch):
     assert len(second_items) == 1
 
 
+def test_default_rss_feeds_include_panewslab(monkeypatch):
+    monkeypatch.delenv("NEWS_RSS_FEED_URLS", raising=False)
+
+    service = NewsService()
+
+    assert "https://www.panewslab.com/zh/rss/newsflash.xml" in service.rss_feed_urls
+
+
+def test_env_rss_feeds_still_append_panewslab(monkeypatch):
+    monkeypatch.setenv("NEWS_RSS_FEED_URLS", "https://www.coindesk.com/arc/outboundfeeds/rss/,https://cointelegraph.com/rss")
+
+    service = NewsService()
+
+    assert service.rss_feed_urls[-1] == "https://www.panewslab.com/zh/rss/newsflash.xml"
+
+
 def test_parse_rss_feed_returns_market_news_items():
         service = NewsService()
         pub_date = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")

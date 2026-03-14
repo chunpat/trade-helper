@@ -162,7 +162,12 @@ async def get_trading_signals(
 async def get_klines(
     symbol: str = Query(..., description="交易对符号，如: BTCUSDT"),
     interval: str = Query("1h", description="时间间隔: 1m, 5m, 15m, 1h, 4h, 1d"),
-    limit: int = Query(100, ge=1, le=1000, description="返回数量")
+    limit: int = Query(
+        100,
+        ge=1,
+        le=market_insight_service.MAX_KLINES_LIMIT,
+        description="返回数量，Binance 合约最大 1500",
+    )
 ):
     """获取历史K线数据"""
     return await market_insight_service.get_klines(symbol, interval, limit)

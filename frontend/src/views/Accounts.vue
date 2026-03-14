@@ -48,8 +48,14 @@
             {{ formatDate(scope.row.updated_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" fixed="right" width="200">
+        <el-table-column label="操作" fixed="right" width="280">
           <template #default="scope">
+            <el-button
+              size="small"
+              type="success"
+              @click="handleTestConnectivity(scope.row)"
+              :loading="testingAccountId === scope.row.id"
+            >测试连接</el-button>
             <el-button size="small" @click="handleEdit(scope.row)">编辑</el-button>
             <el-button size="small" type="danger" @click="handleDelete(scope.row)">删除</el-button>
           </template>
@@ -110,6 +116,7 @@ export default {
     const dialogVisible = ref(false)
     const submitting = ref(false)
     const isEdit = ref(false)
+    const testingAccountId = ref(null)
     const formRef = ref(null)
 
     const form = reactive({
@@ -200,6 +207,55 @@ export default {
       }
     }
 
+    const escapeHtml = (value) => {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+    }
+
+    const buildConnectivityCheckHtml = (title, check) => {
+      const lines = [
+        `${title}: ${check.ok ? '正常' : '失败'}${check.status_code ? ` (HTTP ${check.status_code})` : ''}`,
+        check.message ? `返回: ${check.message}` : null,
+        check.hint ? `提示: ${check.hint}` : null
+      ].filter(Boolean)
+
+      return lines.map(line => escapeHtml(line)).join('<br>')
+    }
+
+    const buildConnectivityDialogHtml = (row, result) => {
+      return [
+        `<strong>${escapeHtml(row.name || `账户 ${row.id}`)}</strong>`,
+        buildConnectivityCheckHtml('现货账户接口', result.spot_account),
+        buildConnectivityCheckHtml('合约账户接口', result.futures_account),
+        result.overall_hint ? escapeHtml(`综合判断: ${result.overall_hint}`) : '',
+        result.account_mode_note ? escapeHtml(`账户模式说明: ${result.account_mode_note}`) : ''
+      ].filter(Boolean).join('<br><br>')
+    }
+
+    const handleTestConnectivity = async (row) => {
+      testingAccountId.value = row.id
+      try {
+        const result = await riskControl.testAccountConnectivity(row.id)
+        await ElMessageBox.alert(
+          buildConnectivityDialogHtml(row, result),
+          '账户连通性检测',
+          {
+            confirmButtonText: '知道了',
+            dangerouslyUseHTMLString: true
+          }
+        )
+      } catch (error) {
+        console.error('Failed to test account connectivity:', error)
+        ElMessage.error('账户连通性检测失败')
+      } finally {
+        testingAccountId.value = null
+      }
+    }
+
     const submitForm = async () => {
       if (!formRef.value) return
       
@@ -267,11 +323,13 @@ export default {
       form,
       rules,
       formRef,
+      testingAccountId,
       dialogTitle,
       showAddDialog,
       handleEdit,
       handleDelete,
       handleStatusChange,
+      handleTestConnectivity,
       submitForm,
       maskApiKey,
       formatMoney,

@@ -42,6 +42,27 @@ class AccountInDB(AccountBase):
     class Config:
         orm_mode = True
 
+
+class AccountConnectivityCheck(BaseModel):
+    scope: str
+    endpoint: str
+    ok: bool
+    status_code: int
+    code: Optional[int] = None
+    message: Optional[str] = None
+    hint: Optional[str] = None
+
+
+class AccountConnectivityResult(BaseModel):
+    account_id: int
+    exchange: str
+    account_name: Optional[str] = None
+    key_masked: str
+    overall_hint: Optional[str] = None
+    account_mode_note: Optional[str] = None
+    spot_account: AccountConnectivityCheck
+    futures_account: AccountConnectivityCheck
+
 class RiskConfigBase(BaseModel):
     max_leverage: float = Field(..., ge=1, description="最大杠杆倍数")
     max_position_value: float = Field(..., gt=0, description="最大持仓价值")

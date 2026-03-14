@@ -1,157 +1,243 @@
 # 数字货币合约交易风控系统
 
-一个基于Python和Vue.js的完整的数字货币合约交易风险管控系统，提供实时监控、风险预警、资金管理等功能。
+这是一个基于 FastAPI 和 Vue 3 的数字货币合约交易风控与监控系统，侧重实时监控、风险预警、异常新闻归因和辅助决策，不直接代替用户自动执行交易。
 
-## 系统架构
+## 项目定位
 
-### 后端技术栈
+- 面向数字货币合约交易场景的风控监控平台
+- 提供市场洞察、账户同步、风险检查和异常事件追踪
+- 支持将异常扫描和新闻入库拆成独立 worker，提高信息库更新稳定性
 
-- **Web框架**: FastAPI
-- **数据库**: MySQL
-- **消息队列**: Redis PubSub
-- **缓存系统**: Redis
+## 技术栈
 
-### 前端技术栈
+### 后端
 
-- **框架**: Vue 3
-- **状态管理**: Vuex 4
-- **路由**: Vue Router 4
-- **UI库**: Element Plus
-- **图表**: ECharts
-- **构建工具**: Vite
+- Web 框架: FastAPI
+- 数据库: MySQL
+- 缓存: Redis
+- HTTP 客户端: httpx
+- ORM: SQLAlchemy
 
-## 功能特点
+### 前端
 
-### 1. 市场洞察数据看板 🆕
-- **市场总览**: 24小时总成交量、总市值、BTC市值占比、活跃币种数
-- **排行榜**: 涨幅榜、跌幅榜、成交量榜Top10实时更新
-- **市场情绪**: 
-  - 恐惧贪婪指数监测
-  - 资金费率分析
-  - 多空比数据
-  - 未平仓合约量追踪
-- **交易信号**: 
-  - 基于市场情绪的智能信号生成
-  - 做多/做空建议
-  - 入场、止损、止盈价格推荐
-- **异常代币监控**:
-  - 后台持续扫描 Binance USDT 永续前100成交额币种
-  - 优先从全局 RSS 新闻池和公告源抓取新闻并在本地匹配异常币种
-  - 对异常币种抓取相关新闻并标注来源
-  - 结合可选远程 LLM 或本地启发式规则输出真实性评级与交易建议
-- **自选币种**: 自定义监控币种，实时查看价格、涨跌幅、成交量
-- **自动刷新**: 每30秒自动更新数据，把握市场脉搏
+- 框架: Vue 3
+- 状态管理: Vuex 4
+- 路由: Vue Router 4
+- UI: Element Plus
+- 图表: ECharts
+- 构建工具: Vite
 
-### 2. 资金风控
-- 总资金监控与预警
-- 单币种资金上限控制
-- 资金利用率实时计算
-- 智能资金分配策略
+## 核心功能
 
-### 3. 仓位风控
-- 最大仓位限制
-- 杠杆倍数管理
-- 强平风险预警系统
-- 仓位集中度监控
+### 市场洞察看板
 
-### 4. 订单风控
-- 订单频率限制
-- 单笔订单规模控制
-- 委托价格偏离度检查
-- 错误订单智能拦截
+- 24 小时成交量、总市值、BTC 市值占比、活跃币种数
+- 涨幅榜、跌幅榜、成交量榜 Top 10
+- 恐惧贪婪指数、资金费率、多空比、未平仓合约量
+- 市场情绪驱动的交易信号和价格区间建议
 
-### 5. 账户风控
-- 实时盈亏监控
-- 风险度动态计算
-- 多级风险预警
-- 账户异常行为检测
+### 异常代币监控
+
+- 持续扫描 Binance USDT 永续前 100 成交额币种
+- 优先使用官方公告源和 RSS 新闻池做低成本匹配
+- 对异常事件抓取相关新闻、标注来源并给出可信度判断
+- 结合本地启发式规则或可选远程 LLM 输出交易建议
+
+### 风控能力
+
+- 资金上限、仓位规模、杠杆倍数、订单频率控制
+- 强平风险预警、账户风险度计算、多级告警
+- 账户异常行为检测与风险配置管理
+
+### 实时同步与推送
+
+- Binance 持仓同步
+- 行情轮询与看板刷新
+- WebSocket 实时推送
+
+## 运行角色
+
+项目现在支持两种后端运行方式。
+
+| 角色 | 负责内容 | 关键开关 |
+| --- | --- | --- |
+| backend | API、WebSocket、行情轮询、仓位同步 | `START_MARKET_POLLER=True` `START_POSITION_SYNC=True` `START_ANOMALY_MONITOR=False` |
+| insight-worker | 异常扫描、新闻抓取、信息库更新 | `START_MARKET_POLLER=False` `START_POSITION_SYNC=False` `START_ANOMALY_MONITOR=True` |
+| 单进程开发 | 本地快速调试，全部任务在一个进程里跑 | 三个开关都设为 `True` |
+
+使用 Docker Compose 时，默认已经拆成 `backend` 和 `insight-worker` 两个角色。
+
+## 新闻与异常监控说明
+
+- 官方源优先: Binance、OKX、Bybit、Coinbase
+- 默认 RSS 池包含 CoinDesk、Cointelegraph、PANews 中文快讯、Decrypt、Blockworks、The Block、CryptoSlate、Bitcoin Magazine、The Defiant、AMBCrypto、CoinGape、Bitcoin.com News
+- PANews 当前可用中文 RSS 地址是 `https://www.panewslab.com/zh/rss/newsflash.xml`
+- `zh.panewslab.com` 目前没有可解析的 RSS 主机记录，不建议配置到源列表里
+- `NEWS_PROVIDER=auto` 时，只有当主新闻池没有命中时，才会回退到 CryptoPanic 或 Brave News Search
+- `NEWS_SYMBOL_ALIAS_MAP` 和 `NEWS_SYMBOL_OFFICIAL_FEEDS` 都是 JSON 字符串，用来提升币种匹配和补充项目方官方 feed
+- `ENABLE_GPT_5_1` 只控制市场看板里的本地摘要文案，不会触发 OpenAI 请求
+- 异常新闻真实性分析是否调用远程模型，由 `ANOMALY_LLM_PROVIDER` 决定；设为 `disabled` 时只走本地启发式分析
 
 ## 系统要求
 
 - Python 3.8+
-- Node.js >= 14.0.0
+- Node.js >= 14
 - MySQL 8.0+
 - Redis 6+
 - npm >= 6.14.0
-- Docker (可选，用于容器化部署)
+- Docker，可选
 
 ## 目录结构
 
-```
+```text
 trade-helper/
-├── app/                 # 后端应用
-│   ├── api/            # API 路由
-│   ├── core/           # 核心功能模块
-│   ├── models/         # 数据模型
-│   ├── schemas/        # Pydantic 模型
-│   └── services/       # 业务逻辑服务
-├── frontend/           # 前端应用
+├── app/                  # 后端应用
+│   ├── api/              # API 路由
+│   ├── core/             # 核心模块
+│   ├── models/           # SQLAlchemy 模型
+│   ├── schemas/          # Pydantic 模型
+│   └── services/         # 业务服务
+├── config/               # 配置文件
+├── frontend/             # 前端应用
 │   ├── src/
-│   │   ├── api/       # API请求
-│   │   ├── components/# 通用组件
-│   │   ├── router/    # 路由配置
-│   │   ├── store/     # Vuex状态管理
-│   │   ├── views/     # 页面视图
-│   │   └── main.js    # 应用入口
-│   └── package.json   
-├── config/             # 配置文件
-├── scripts/            # 管理脚本
-├── tests/             # 测试用例
-└── requirements.txt    # Python依赖
+│   │   ├── api/          # 前端 API 封装
+│   │   ├── components/   # 通用组件
+│   │   ├── router/       # 路由配置
+│   │   ├── store/        # Vuex 状态管理
+│   │   ├── views/        # 页面视图
+│   │   └── main.js       # 应用入口
+│   └── package.json
+├── scripts/              # 管理脚本
+├── tests/                # 测试用例
+├── docker-compose.yml    # 本地容器编排
+├── Dockerfile            # 后端镜像定义
+└── requirements.txt      # Python 依赖
 ```
 
 ## 快速开始
 
-### 后端设置
+### 1. 后端开发
 
-1. 创建并激活Python虚拟环境：
+1. 创建并激活虚拟环境
+
 ```bash
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或
-.\venv\Scripts\activate  # Windows
+source venv/bin/activate
 ```
 
-2. 安装Python依赖：
+Windows:
+
+```bash
+.\venv\Scripts\activate
+```
+
+2. 安装依赖
+
 ```bash
 pip install -r requirements.txt
 ```
 
-3. 配置环境变量：
+3. 复制环境变量文件
+
 ```bash
 cp .env.example .env
-# 编辑 .env 文件，填入必要的配置信息
 ```
 
-异常代币监控功能需要额外配置以下变量：
+4. 初始化数据库
+
 ```bash
-ENABLE_GPT_5_1=False
-ANOMALY_LLM_PROVIDER=disabled
-NEWS_PROVIDER=auto
-NEWS_API_KEY=your-cryptopanic-token
-BRAVE_SEARCH_API_KEY=your-brave-search-token
-NEWS_ENABLE_BINANCE_ANNOUNCEMENTS=True
-NEWS_ENABLE_OKX_ANNOUNCEMENTS=True
-NEWS_ENABLE_BYBIT_ANNOUNCEMENTS=True
-NEWS_ENABLE_COINBASE_BLOG=True
-NEWS_OFFICIAL_PAGE_ITEM_LIMIT=12
-NEWS_RSS_FEED_URLS=https://www.coindesk.com/arc/outboundfeeds/rss/,https://cointelegraph.com/rss,https://decrypt.co/feed,https://blockworks.co/feed,https://www.theblock.co/rss.xml
-NEWS_SYMBOL_OFFICIAL_FEEDS={"KAT":["https://medium.com/feed/@katana"]}
-ANOMALY_SCAN_INTERVAL=300
-ANOMALY_ALERT_THRESHOLD=0.58
-ANOMALY_COOLDOWN_MINUTES=30
+python scripts/init_db.py
 ```
 
-说明：
-- `ENABLE_GPT_5_1` 只控制市场看板里的本地摘要文案，不会调用 OpenAI。
-- 异常新闻真实性分析是否调用远程模型由 `ANOMALY_LLM_PROVIDER` 控制；设为 `disabled` 时只走本地启发式分析，不产生 OpenAI 费用。
-- Binance 目前我没有接入稳定 RSS，因为探测到常见 RSS 路径只返回 202 空壳；现在改为直接抓 Binance 官方公告 CMS 接口，作为全局新闻池的一部分。
-- 新闻获取默认先走 Binance / OKX / Bybit 官方公告、Coinbase 官方博客和 RSS 全局新闻池，再在本地按币种匹配；只有主新闻池没有命中时，`NEWS_PROVIDER=auto` 才会尝试 CryptoPanic 和 Brave News Search 兜底。
-- 默认 RSS 源已经扩展到 CoinDesk、Cointelegraph、Decrypt、Blockworks、The Block、CryptoSlate、Bitcoin Magazine、The Defiant、AMBCrypto、CoinGape、Bitcoin.com News。
-- 可以通过 `NEWS_SYMBOL_ALIAS_MAP` 给歧义币种补充别名，例如 `TRUMP -> official trump`，提升本地匹配率。
-- 可以通过 `NEWS_SYMBOL_OFFICIAL_FEEDS` 按币种补充项目方官方 RSS / Atom / Medium feed，例如 `KAT -> https://medium.com/feed/@katana`；这些官方 feed 会在外部搜索之前优先使用。
-- `NEWS_SEARCH_CACHE_SECONDS` 和 `NEWS_SEARCH_EMPTY_CACHE_SECONDS` 用于降低 Brave/CryptoPanic 的重复查询频率。
-- 如果仍需接入兼容 OpenAI 的接口，可配置：
+5. 启动后端
+
+```bash
+python main.py
+```
+
+默认地址:
+
+- API 文档: http://localhost:8000/api/docs
+- 健康检查: http://localhost:8000/health
+- API 基础路径: http://localhost:8000/api/v1
+
+### 2. 前端开发
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+默认前端开发地址:
+
+- http://localhost:3000
+
+构建生产包:
+
+```bash
+npm run build
+```
+
+本地预览构建结果:
+
+```bash
+npm run preview
+```
+
+### 3. 推荐的分离运行模式
+
+如果你希望“信息库更新”和 API 分开跑，建议使用两个进程。
+
+API 进程:
+
+```bash
+START_ANOMALY_MONITOR=False python main.py
+```
+
+异常扫描 worker:
+
+```bash
+python scripts/run_anomaly_worker.py
+```
+
+### 4. Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+默认服务角色:
+
+- `backend`: API、WebSocket、行情轮询、仓位同步
+- `insight-worker`: 异常扫描、新闻抓取、信息库更新
+- `mysql`: MySQL 8
+- `redis`: Redis 6
+- `frontend`: Nginx 承载的前端静态页面
+
+默认容器访问地址:
+
+- API 文档: http://localhost:8029/api/docs
+- 前端页面: http://localhost:8030
+
+## 关键环境变量
+
+完整示例请看 `.env.example`。下面是最常用的一组。
+
+| 变量 | 作用 |
+| --- | --- |
+| `START_MARKET_POLLER` | 控制当前进程是否启动行情轮询 |
+| `START_POSITION_SYNC` | 控制当前进程是否启动仓位同步 |
+| `START_ANOMALY_MONITOR` | 控制当前进程是否启动异常扫描和新闻入库 |
+| `ANOMALY_LLM_PROVIDER` | 异常新闻分析模式，常见值为 `disabled` 或 `openai-compatible` |
+| `NEWS_PROVIDER` | 新闻兜底提供方，常见值为 `auto`、`brave`、`cryptopanic` |
+| `NEWS_RSS_FEED_URLS` | 逗号分隔的 RSS 源列表 |
+| `NEWS_SYMBOL_ALIAS_MAP` | 币种别名 JSON，用于提升匹配率 |
+| `NEWS_SYMBOL_OFFICIAL_FEEDS` | 币种到官方 RSS 的 JSON 映射 |
+| `BRAVE_SEARCH_API_KEY` | Brave Search API Key，`NEWS_PROVIDER=auto` 或 `brave` 时可用 |
+| `NEWS_API_KEY` | CryptoPanic API Key，`NEWS_PROVIDER=auto` 或 `cryptopanic` 时可用 |
+
+如果你要启用兼容 OpenAI 的远程分析接口，可以额外配置:
 
 ```bash
 ANOMALY_LLM_PROVIDER=openai-compatible
@@ -160,66 +246,9 @@ LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
 ```
 
-4. 初始化数据库：
-```bash
-python scripts/init_db.py
-```
+## 风控规则配置示例
 
-5. 启动后端服务：
-```bash
-python main.py
-```
-
-后端服务将在以下地址提供：
-- API文档：http://localhost:8000/api/docs
-- 健康检查：http://localhost:8000/health
-- API基础URL：http://localhost:8000/api/v1
-
-### 前端设置
-
-1. 安装前端依赖：
-```bash
-cd frontend
-npm install
-```
-
-2. 启动开发服务器：
-```bash
-npm run serve
-```
-
-3. 构建生产版本：
-```bash
-npm run build
-```
-
-前端应用将在以下地址提供：
-- 开发环境：http://localhost:3000
-- 生产环境：将dist目录部署到Web服务器
-
-## 部署
-
-### Docker部署
-
-1. 构建后端镜像：
-```bash
-docker build -t trade-helper-backend .
-```
-
-2. 构建前端镜像：
-```bash
-cd frontend
-docker build -t trade-helper-frontend .
-```
-
-3. 使用docker-compose启动服务：
-```bash
-docker-compose up -d
-```
-
-## 风控规则配置
-
-系统支持灵活的风控规则配置，可以通过配置文件或管理界面设置：
+系统支持通过配置或管理界面设置核心风控规则。
 
 ```yaml
 risk_control:
@@ -236,35 +265,35 @@ risk_control:
     risk_level_threshold: 0.9
 ```
 
-## 告警配置
+## 告警方式
 
-支持多种告警方式：
+当前支持以下告警通道:
+
 - 邮件通知
-- Webhook回调
-- 企业微信/钉钉集成
+- Webhook 回调
+- 企业微信
 - Telegram Bot
 
-## 📊 项目当前进度 (Current Status)
+## 项目当前状态
 
-这是一个 **数字货币合约交易风控监控系统**，主要侧重于**监控**和**风险预警**，而非自动交易执行。
+### 后端
 
-### 3. 后端 (Backend - FastAPI)
-*   **基础架构**: FastAPI 框架搭建完成，数据库 (MySQL) 和缓存 (Redis) 连接已配置。
-*   **核心服务**:
-    *   `Auth`: 用户认证 (JWT) 已实现。
-    *   `RiskControlService`: 实现了核心风控逻辑（持仓价值检查、杠杆检查、订单风险检查）。
-    *   `PositionSyncService`: 实现了从 Binance 合约接口**同步持仓**的功能（目前是轮询机制）。
-    *   `MarketDataService`: 实现了市场价格的**轮询获取**，用于计算持仓盈亏和风险。
-    *   `WSBroadcast`: 实现了 WebSocket 广播，用于向前端推送实时数据。
-*   **API 接口**: 暴露了 `auth`, `market`, `risk_control` 等 API。
+- FastAPI 主框架、MySQL、Redis 已接通
+- 用户认证和核心风控逻辑已实现
+- PositionSyncService 已支持 Binance 合约持仓同步
+- MarketDataService 已支持行情轮询和看板数据更新
+- 异常扫描支持独立 worker 运行
 
-### 4. 前端 (Frontend - Vue 3)
-*   **页面结构**: 搭建了 Dashboard, Login, Positions, RiskAlerts, Settings, Accounts 等页面。
-*   **Dashboard**: 实现了总持仓价值、风险预警数、日内盈亏的展示组件。
-*   **交互**: 初步集成了 WebSocket (`wsClient.js`) 用于接收后端推送。
+### 前端
 
-### 5. 基础设施 (Infrastructure)
-*   **Docker**: 完整的 `docker-compose.yml`，包含 MySQL, Redis, Backend, Frontend 服务。
+- 已包含 Dashboard、Login、Positions、RiskAlerts、Settings、Accounts 等页面
+- 已接入 WebSocket 客户端用于接收后端推送
+- Vite 开发和生产构建链路可用
+
+### 基础设施
+
+- `docker-compose.yml` 已包含 MySQL、Redis、Backend、Insight Worker、Frontend
+- 本地容器模式已支持 API 与信息库更新分离部署
 
 ## 贡献指南
 
@@ -279,6 +308,6 @@ MIT License
 
 ## 联系方式
 
-- 项目维护者：[Your Name]
-- 邮箱：[Your Email]
-- 项目Issues：[Repository Issues URL]
+- 项目维护者: [Your Name]
+- 邮箱: [Your Email]
+- 项目 Issues: [Repository Issues URL]

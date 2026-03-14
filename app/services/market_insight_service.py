@@ -39,6 +39,8 @@ class MarketInsightService:
     
     BINANCE_API = "https://api.binance.com/api/v3"
     BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
+    BINANCE_FUTURES_DATA = "https://fapi.binance.com/futures/data"
+    MAX_KLINES_LIMIT = 1500
     COINGECKO_API = "https://api.coingecko.com/api/v3"
     ALTERNATIVE_ME_API = "https://api.alternative.me/fng/"
     
@@ -225,28 +227,38 @@ class MarketInsightService:
                 for symbol in symbols:
                     try:
                         # 获取资金费率
-                        funding_response = await client.get(
+                        funding_data = await self._request_json(
+                            client,
                             f"{self.BINANCE_FAPI}/fundingRate",
-                            params={"symbol": symbol, "limit": 1}
+                            {"symbol": symbol, "limit": 1},
+                            context=f"funding rate for {symbol}",
                         )
-                        funding_data = funding_response.json()
                         funding_rate = float(funding_data[0].get("fundingRate", 0)) if funding_data else None
                         
                         # 获取多空比
-                        ratio_response = await client.get(
-                            f"{self.BINANCE_FAPI}/topLongShortAccountRatio",
-                            params={"symbol": symbol, "period": "5m", "limit": 1}
+                        ratio_data = await self._request_json(
+                            client,
+                            f"{self.BINANCE_FUTURES_DATA}/topLongShortAccountRatio",
+                            {"symbol": symbol, "period": "5m", "limit": 1},
+                            context=f"top long short ratio for {symbol}",
                         )
-                        ratio_data = ratio_response.json()
+                        if not ratio_data:
+                            ratio_data = await self._request_json(
+                                client,
+                                f"{self.BINANCE_FUTURES_DATA}/globalLongShortAccountRatio",
+                                {"symbol": symbol, "period": "5m", "limit": 1},
+                                context=f"global long short ratio for {symbol}",
+                            )
                         long_short_ratio = float(ratio_data[0].get("longShortRatio", 0)) if ratio_data else None
                         
                         # 获取未平仓合约
-                        oi_response = await client.get(
+                        oi_data = await self._request_json(
+                            client,
                             f"{self.BINANCE_FAPI}/openInterest",
-                            params={"symbol": symbol}
+                            {"symbol": symbol},
+                            context=f"open interest for {symbol}",
                         )
-                        oi_data = oi_response.json()
-                        open_interest = float(oi_data.get("openInterest", 0)) if oi_response.status_code == 200 else None
+                        open_interest = float(oi_data.get("openInterest", 0)) if oi_data else None
                         
                         # 计算情绪评分
                         sentiment_score = self._calculate_sentiment_score(funding_rate, long_short_ratio)
@@ -267,6 +279,39 @@ class MarketInsightService:
             logger.error(f"Error in get_market_sentiment: {e}")
         
         return sentiments
+
+    async def _request_json(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        params: Dict[str, Any],
+        context: str,
+    ) -> Optional[Any]:
+        try:
+            response = await client.get(url, params=params)
+        except Exception as exc:
+            logger.warning("Error requesting %s: %s", context, exc)
+            return None
+
+        if response.status_code != 200:
+            log = logger.debug if response.status_code in {400, 404} else logger.warning
+            log(
+                "Skipped %s: status=%s body=%s",
+                context,
+                response.status_code,
+                response.text[:200],
+            )
+            return None
+
+        try:
+            return response.json()
+        except ValueError:
+            logger.warning(
+                "Skipped %s: non-json response body=%s",
+                context,
+                response.text[:200],
+            )
+            return None
     
     async def get_market_news(self, limit: int = 20) -> List[MarketNews]:
         """获取市场新闻"""
@@ -296,6 +341,7 @@ class MarketInsightService:
 
     async def get_klines(self, symbol: str, interval: str = "1h", limit: int = 100) -> List[List[Any]]:
         """获取K线数据"""
+        normalized_limit = max(1, min(limit, self.MAX_KLINES_LIMIT))
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
@@ -303,7 +349,7 @@ class MarketInsightService:
                     params={
                         "symbol": symbol.upper(),
                         "interval": interval,
-                        "limit": limit
+                        "limit": normalized_limit
                     }
                 )
                 if response.status_code == 200:

@@ -84,6 +84,8 @@ class NewsService:
         "Listing Billboard",
     }
 
+    PANEWS_NEWSFLASH_RSS_URL = "https://www.panewslab.com/zh/rss/newsflash.xml"
+
     SYMBOL_STOP_WORDS = {
         "APR",
         "BUSD",
@@ -99,6 +101,7 @@ class NewsService:
     DEFAULT_RSS_FEED_URLS = (
         "https://www.coindesk.com/arc/outboundfeeds/rss/",
         "https://cointelegraph.com/rss",
+        PANEWS_NEWSFLASH_RSS_URL,
         "https://decrypt.co/feed",
         "https://blockworks.co/feed",
         "https://www.theblock.co/rss.xml",
@@ -835,7 +838,10 @@ class NewsService:
     def _load_rss_feed_urls(self) -> List[str]:
         raw_value = os.getenv("NEWS_RSS_FEED_URLS", "").strip()
         if raw_value:
-            return [item.strip() for item in raw_value.split(",") if item.strip()]
+            feed_urls = [item.strip() for item in raw_value.split(",") if item.strip()]
+            if self.PANEWS_NEWSFLASH_RSS_URL not in feed_urls:
+                feed_urls.append(self.PANEWS_NEWSFLASH_RSS_URL)
+            return feed_urls
         return list(self.DEFAULT_RSS_FEED_URLS)
 
     def _load_symbol_alias_map(self) -> Dict[str, List[str]]:

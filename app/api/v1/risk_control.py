@@ -236,6 +236,33 @@ async def trigger_account_sync(account_id: int, db: Session = Depends(get_db), c
     return {"status": "account sync scheduled", "account_id": account_id}
 
 
+@router.get('/accounts/{account_id}/connectivity', response_model=schemas.AccountConnectivityResult)
+async def test_account_connectivity(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Run spot/futures connectivity checks for an account and return actionable hints."""
+    from app.models.risk_control import Account
+    from app.services.exchange.binance_adapter import create_adapter_for_account
+
+    acct = db.query(Account).filter(Account.id == account_id).first()
+    if not acct:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    adapter = create_adapter_for_account(acct)
+    if not adapter:
+        raise HTTPException(status_code=400, detail="Adapter not available for this account")
+
+    connectivity = await adapter.test_connectivity()
+    return {
+        "account_id": acct.id,
+        "exchange": acct.exchange,
+        "account_name": acct.name,
+        **connectivity,
+    }
+
+
 @router.get('/accounts/{account_id}/positions/test')
 async def test_account_positions(account_id: int, current_user=Depends(get_current_user)):
     """Debug endpoint: call adapter for an account and return raw positions or error.

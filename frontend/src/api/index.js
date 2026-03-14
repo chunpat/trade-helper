@@ -51,6 +51,9 @@ export const riskControl = {
   deleteAccount(accountId) {
     return api.delete(`/risk-control/accounts/${accountId}`)
   },
+  testAccountConnectivity(accountId) {
+    return api.get(`/risk-control/accounts/${accountId}/connectivity`)
+  },
   getRiskConfig(accountId) {
     return api.get(`/risk-control/accounts/${accountId}/risk-config`)
   },
