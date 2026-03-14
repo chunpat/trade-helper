@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import os
 
 from app.core.database import init_db
+from app.services.anomaly_monitor_service import anomaly_monitor_service
 from app.services.market_data import get_poller_from_env
 from app.services.position_sync import get_position_sync_from_env
 from fastapi import WebSocket, WebSocketDisconnect
@@ -65,6 +66,8 @@ async def startup_event():
     # start position-sync service for real account positions
     app.state.position_sync = get_position_sync_from_env()
     app.state.position_sync.start()
+    app.state.anomaly_monitor = anomaly_monitor_service
+    app.state.anomaly_monitor.start()
     # confirm task scheduled
     poller = app.state.market_poller
     logging.info("startup: poller task=%s running=%s", getattr(poller, '_task', None), getattr(poller, '_running', None))
@@ -83,6 +86,9 @@ async def shutdown_event():
     syncer = getattr(app.state, "position_sync", None)
     if syncer:
         syncer.stop()
+    anomaly_monitor = getattr(app.state, "anomaly_monitor", None)
+    if anomaly_monitor:
+        anomaly_monitor.stop()
     # attempt to close any remaining websocket connections
     mgr = getattr(app.state, "ws_manager", None)
     if mgr:

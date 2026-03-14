@@ -125,6 +125,15 @@ export const marketInsight = {
   getDashboard(params) {
     return api.get('/market-insight/dashboard', { params })
   },
+  getAnomalies(params) {
+    return api.get('/market-insight/anomalies', { params })
+  },
+  getAnomalyDetail(eventId) {
+    return api.get(`/market-insight/anomalies/${eventId}`)
+  },
+  scanAnomalies(limit = 10) {
+    return api.post('/market-insight/anomalies/scan', null, { params: { limit } })
+  },
   getKlines(params) {
     return api.get('/market-insight/klines', { params })
   },

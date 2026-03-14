@@ -61,6 +61,11 @@ def init_db():
         OrderLog,
         TickerHistory
     )
+    from app.models.market_anomaly import (
+        MarketMetricSnapshot,
+        AnomalyEvent,
+        AnomalyNews,
+    )
     
     Base.metadata.create_all(bind=engine)
 

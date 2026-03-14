@@ -34,6 +34,11 @@
   - 基于市场情绪的智能信号生成
   - 做多/做空建议
   - 入场、止损、止盈价格推荐
+- **异常代币监控**:
+  - 后台持续扫描 Binance USDT 永续前100成交额币种
+  - 优先从全局 RSS 新闻池和公告源抓取新闻并在本地匹配异常币种
+  - 对异常币种抓取相关新闻并标注来源
+  - 结合可选远程 LLM 或本地启发式规则输出真实性评级与交易建议
 - **自选币种**: 自定义监控币种，实时查看价格、涨跌幅、成交量
 - **自动刷新**: 每30秒自动更新数据，把握市场脉搏
 
@@ -116,6 +121,43 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # 编辑 .env 文件，填入必要的配置信息
+```
+
+异常代币监控功能需要额外配置以下变量：
+```bash
+ENABLE_GPT_5_1=False
+ANOMALY_LLM_PROVIDER=disabled
+NEWS_PROVIDER=auto
+NEWS_API_KEY=your-cryptopanic-token
+BRAVE_SEARCH_API_KEY=your-brave-search-token
+NEWS_ENABLE_BINANCE_ANNOUNCEMENTS=True
+NEWS_ENABLE_OKX_ANNOUNCEMENTS=True
+NEWS_ENABLE_BYBIT_ANNOUNCEMENTS=True
+NEWS_ENABLE_COINBASE_BLOG=True
+NEWS_OFFICIAL_PAGE_ITEM_LIMIT=12
+NEWS_RSS_FEED_URLS=https://www.coindesk.com/arc/outboundfeeds/rss/,https://cointelegraph.com/rss,https://decrypt.co/feed,https://blockworks.co/feed,https://www.theblock.co/rss.xml
+NEWS_SYMBOL_OFFICIAL_FEEDS={"KAT":["https://medium.com/feed/@katana"]}
+ANOMALY_SCAN_INTERVAL=300
+ANOMALY_ALERT_THRESHOLD=0.58
+ANOMALY_COOLDOWN_MINUTES=30
+```
+
+说明：
+- `ENABLE_GPT_5_1` 只控制市场看板里的本地摘要文案，不会调用 OpenAI。
+- 异常新闻真实性分析是否调用远程模型由 `ANOMALY_LLM_PROVIDER` 控制；设为 `disabled` 时只走本地启发式分析，不产生 OpenAI 费用。
+- Binance 目前我没有接入稳定 RSS，因为探测到常见 RSS 路径只返回 202 空壳；现在改为直接抓 Binance 官方公告 CMS 接口，作为全局新闻池的一部分。
+- 新闻获取默认先走 Binance / OKX / Bybit 官方公告、Coinbase 官方博客和 RSS 全局新闻池，再在本地按币种匹配；只有主新闻池没有命中时，`NEWS_PROVIDER=auto` 才会尝试 CryptoPanic 和 Brave News Search 兜底。
+- 默认 RSS 源已经扩展到 CoinDesk、Cointelegraph、Decrypt、Blockworks、The Block、CryptoSlate、Bitcoin Magazine、The Defiant、AMBCrypto、CoinGape、Bitcoin.com News。
+- 可以通过 `NEWS_SYMBOL_ALIAS_MAP` 给歧义币种补充别名，例如 `TRUMP -> official trump`，提升本地匹配率。
+- 可以通过 `NEWS_SYMBOL_OFFICIAL_FEEDS` 按币种补充项目方官方 RSS / Atom / Medium feed，例如 `KAT -> https://medium.com/feed/@katana`；这些官方 feed 会在外部搜索之前优先使用。
+- `NEWS_SEARCH_CACHE_SECONDS` 和 `NEWS_SEARCH_EMPTY_CACHE_SECONDS` 用于降低 Brave/CryptoPanic 的重复查询频率。
+- 如果仍需接入兼容 OpenAI 的接口，可配置：
+
+```bash
+ANOMALY_LLM_PROVIDER=openai-compatible
+LLM_API_KEY=your-llm-api-key
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o-mini
 ```
 
 4. 初始化数据库：

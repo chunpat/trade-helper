@@ -1,8 +1,10 @@
 """市场洞察API端点"""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 
 from app.schemas.market_insight import (
+    AnomalyEventDetail,
+    AnomalyEventSummary,
     MarketInsightDashboard,
     MarketMetrics,
     MarketSentiment,
@@ -10,6 +12,7 @@ from app.schemas.market_insight import (
     TradingSignal,
     MarketOverview
 )
+from app.services.anomaly_monitor_service import anomaly_monitor_service
 from app.services.market_insight_service import market_insight_service
 
 router = APIRouter(prefix="/market-insight", tags=["market-insight"])
@@ -59,7 +62,7 @@ async def get_top_losers(
 
 @router.get("/top-volume", response_model=List[MarketMetrics])
 async def get_top_volume(
-    limit: int = Query(10, ge=1, le=50, description="返回数量")
+    limit: int = Query(10, ge=1, le=100, description="返回数量")
 ):
     """获取成交量排行"""
     return await market_insight_service.get_top_volume(limit)
@@ -91,16 +94,6 @@ async def get_market_sentiment(
     return await market_insight_service.get_market_sentiment(symbol_list)
 
 
-@router.get("/klines")
-async def get_klines(
-    symbol: str = Query(..., description="交易对"),
-    interval: str = Query("1h", description="时间周期"),
-    limit: int = Query(100, description="数据条数")
-):
-    """获取K线数据"""
-    return await market_insight_service.get_klines(symbol, interval, limit)
-
-
 @router.get("/patterns")
 async def get_patterns(
     symbol: str = Query(..., description="交易对"),
@@ -118,6 +111,34 @@ async def scan_patterns(
 ):
     """扫描市场寻找最新 K 线形态"""
     return await market_insight_service.scan_patterns(symbols, interval)
+
+
+@router.get("/anomalies", response_model=List[AnomalyEventSummary])
+async def get_anomalies(
+    limit: int = Query(20, ge=1, le=100, description="返回数量"),
+    status: str = Query("active", description="状态: active, resolved, all")
+):
+    """获取异常事件列表"""
+    normalized_status = None if status == "all" else status
+    return await anomaly_monitor_service.list_anomalies(limit=limit, status=normalized_status)
+
+
+@router.get("/anomalies/{event_id}", response_model=AnomalyEventDetail)
+async def get_anomaly_detail(event_id: int):
+    """获取异常事件详情"""
+    detail = await anomaly_monitor_service.get_anomaly_detail(event_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Anomaly event not found")
+    return detail
+
+
+@router.post("/anomalies/scan", response_model=List[AnomalyEventSummary])
+async def trigger_anomaly_scan(
+    limit: int = Query(10, ge=1, le=100, description="返回最新活跃异常数量")
+):
+    """手动触发一次异常扫描"""
+    await anomaly_monitor_service.scan_once()
+    return await anomaly_monitor_service.list_active_anomalies(limit=limit)
 
 
 

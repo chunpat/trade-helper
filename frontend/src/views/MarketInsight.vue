@@ -123,6 +123,92 @@
       </el-row>
     </el-card>
 
+    <!-- 异常代币监控 -->
+    <el-card class="anomaly-card" shadow="hover">
+      <template #header>
+        <div class="card-header anomaly-header">
+          <div class="header-left">
+            <span>异常代币监控</span>
+            <el-tag size="small" type="warning" effect="plain">
+              Binance 前100成交额持续扫描
+            </el-tag>
+          </div>
+          <div class="header-controls">
+            <el-tag v-if="lastAnomalyScanAt" size="small" type="info" effect="plain">
+              最近扫描 {{ formatDateTime(lastAnomalyScanAt) }}
+            </el-tag>
+            <el-button
+              type="warning"
+              plain
+              size="small"
+              :loading="anomalyScanLoading"
+              @click="triggerAnomalyScan"
+            >
+              立即扫描
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <el-table
+        v-if="activeAnomalies.length > 0"
+        :data="activeAnomalies"
+        stripe
+        size="small"
+        @row-click="openAnomalyDetail"
+        row-class-name="clickable-row"
+      >
+        <el-table-column label="币种" min-width="110">
+          <template #default="{ row }">
+            <strong>{{ formatSymbol(row.symbol) }}</strong>
+          </template>
+        </el-table-column>
+        <el-table-column label="异常等级" width="110">
+          <template #default="{ row }">
+            <el-tag :type="getAnomalyLevelTagType(row.anomaly_level)" size="small">
+              {{ getAnomalyLevelLabel(row.anomaly_level) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="异常分" width="90" align="right">
+          <template #default="{ row }">
+            {{ (row.anomaly_score * 100).toFixed(0) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="24H涨跌" width="120" align="right">
+          <template #default="{ row }">
+            <el-tag :type="row.price_change_percent_24h >= 0 ? 'success' : 'danger'" size="small">
+              {{ row.price_change_percent_24h >= 0 ? '+' : '' }}{{ safeFixed(row.price_change_percent_24h, 2) }}%
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="真实性" width="120">
+          <template #default="{ row }">
+            <el-tag :type="getCredibilityTagType(row.credibility_label)" size="small">
+              {{ row.credibility_label }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="来源" min-width="180">
+          <template #default="{ row }">
+            <span class="source-summary">{{ row.source_summary || '暂无可靠来源' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="建议" width="100">
+          <template #default="{ row }">
+            <el-tag :type="getTradeBiasTagType(row.trade_bias)" size="small" effect="dark">
+              {{ getTradeBiasLabel(row.trade_bias) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <el-empty
+        v-else
+        description="暂无活跃异常事件，系统会后台持续扫描前100成交额币种。"
+      />
+    </el-card>
+
     <!-- 交易信号 -->
     <el-card v-if="signals.length > 0" class="signals-card" shadow="hover">
       <template #header>
@@ -548,6 +634,116 @@
         </el-tag>
       </div>
     </el-dialog>
+
+    <el-drawer
+      v-model="anomalyDrawerVisible"
+      title="异常事件详情"
+      size="45%"
+    >
+      <div v-loading="anomalyDetailLoading">
+        <template v-if="selectedAnomaly">
+          <div class="anomaly-detail-header">
+            <div>
+              <div class="detail-symbol">{{ formatSymbol(selectedAnomaly.symbol) }}</div>
+              <div class="detail-meta">{{ formatDateTime(selectedAnomaly.last_detected_at) }} 更新</div>
+            </div>
+            <div class="detail-tags">
+              <el-tag :type="getAnomalyLevelTagType(selectedAnomaly.anomaly_level)">
+                {{ getAnomalyLevelLabel(selectedAnomaly.anomaly_level) }}
+              </el-tag>
+              <el-tag :type="getCredibilityTagType(selectedAnomaly.credibility_label)">
+                {{ selectedAnomaly.credibility_label }}
+              </el-tag>
+              <el-tag :type="getTradeBiasTagType(selectedAnomaly.trade_bias)" effect="dark">
+                {{ getTradeBiasLabel(selectedAnomaly.trade_bias) }}
+              </el-tag>
+            </div>
+          </div>
+
+          <el-descriptions :column="2" border class="anomaly-descriptions">
+            <el-descriptions-item label="事件类型">{{ selectedAnomaly.event_type }}</el-descriptions-item>
+            <el-descriptions-item label="异常分">{{ (selectedAnomaly.anomaly_score * 100).toFixed(0) }}</el-descriptions-item>
+            <el-descriptions-item label="24H涨跌">
+              {{ safeFixed(selectedAnomaly.price_change_percent_24h, 2) }}%
+            </el-descriptions-item>
+            <el-descriptions-item label="24H成交额">
+              ${{ formatNumber(selectedAnomaly.quote_volume_24h) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="资金费率">
+              {{ selectedAnomaly.funding_rate != null ? `${(selectedAnomaly.funding_rate * 100).toFixed(4)}%` : '--' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="多空比">
+              {{ selectedAnomaly.long_short_ratio != null ? selectedAnomaly.long_short_ratio.toFixed(2) : '--' }}
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <div class="detail-section" v-if="selectedAnomaly.trigger_reasons?.length">
+            <div class="section-title">触发原因</div>
+            <div class="detail-bullets">
+              <div v-for="(reason, idx) in selectedAnomaly.trigger_reasons" :key="idx">• {{ reason }}</div>
+            </div>
+          </div>
+
+          <div class="detail-section" v-if="selectedAnomaly.evidence_summary">
+            <div class="section-title">证据摘要</div>
+            <div class="detail-paragraph">{{ selectedAnomaly.evidence_summary }}</div>
+          </div>
+
+          <div class="detail-section" v-if="selectedAnomaly.advice">
+            <div class="section-title">交易建议</div>
+            <div class="advice-grid">
+              <div class="advice-card">
+                <div class="advice-label">方向</div>
+                <div class="advice-value">{{ getTradeBiasLabel(selectedAnomaly.advice.bias) }}</div>
+              </div>
+              <div class="advice-card">
+                <div class="advice-label">置信度</div>
+                <div class="advice-value">{{ safeFixed(selectedAnomaly.advice.confidence, 0) }}</div>
+              </div>
+              <div class="advice-card">
+                <div class="advice-label">建议入场</div>
+                <div class="advice-value">{{ selectedAnomaly.advice.suggested_entry ? `$${formatPrice(selectedAnomaly.advice.suggested_entry)}` : '--' }}</div>
+              </div>
+              <div class="advice-card">
+                <div class="advice-label">建议止损</div>
+                <div class="advice-value">{{ selectedAnomaly.advice.suggested_stop_loss ? `$${formatPrice(selectedAnomaly.advice.suggested_stop_loss)}` : '--' }}</div>
+              </div>
+              <div class="advice-card">
+                <div class="advice-label">建议止盈</div>
+                <div class="advice-value">{{ selectedAnomaly.advice.suggested_take_profit ? `$${formatPrice(selectedAnomaly.advice.suggested_take_profit)}` : '--' }}</div>
+              </div>
+            </div>
+            <div class="detail-paragraph">{{ selectedAnomaly.advice.recommendation }}</div>
+            <div class="risk-note" v-if="selectedAnomaly.advice.risk_note">
+              风险提示：{{ selectedAnomaly.advice.risk_note }}
+            </div>
+          </div>
+
+          <div class="detail-section">
+            <div class="section-title">新闻来源</div>
+            <div v-if="selectedAnomaly.news?.length" class="news-list">
+              <a
+                v-for="item in selectedAnomaly.news"
+                :key="item.id || `${item.title}-${item.published_at}`"
+                class="news-item"
+                :href="item.url || '#'"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <div class="news-title">{{ item.title }}</div>
+                <div class="news-meta">
+                  <el-tag size="small" type="info">{{ item.source }}</el-tag>
+                  <span>{{ item.source_domain || '来源未标注' }}</span>
+                  <span>{{ formatDateTime(item.published_at) }}</span>
+                </div>
+                <div v-if="item.summary" class="news-summary">{{ item.summary }}</div>
+              </a>
+            </div>
+            <el-empty v-else description="暂未获取到相关新闻" />
+          </div>
+        </template>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -576,6 +772,12 @@ const rainbowBands = ref([])
 const signals = ref([])
 const aiAnalysis = ref('')
 const currentChartSymbol = ref('BTCUSDT')
+const activeAnomalies = ref([])
+const lastAnomalyScanAt = ref('')
+const anomalyScanLoading = ref(false)
+const anomalyDrawerVisible = ref(false)
+const anomalyDetailLoading = ref(false)
+const selectedAnomaly = ref(null)
 
 // Scanner State
 const scanning = ref(false)
@@ -702,6 +904,8 @@ async function loadData(silent = false) {
     rainbowBands.value = response.rainbow_bands
     signals.value = response.signals
     aiAnalysis.value = response.ai_analysis
+    activeAnomalies.value = response.active_anomalies || []
+    lastAnomalyScanAt.value = response.last_anomaly_scan_at || ''
     
     if (!silent) {
       ElMessage.success('数据加载成功')
@@ -718,6 +922,35 @@ async function loadData(silent = false) {
 
 function refreshData() {
   loadData()
+}
+
+async function triggerAnomalyScan() {
+  anomalyScanLoading.value = true
+  try {
+    const response = await marketInsight.scanAnomalies(8)
+    activeAnomalies.value = response || []
+    lastAnomalyScanAt.value = new Date().toISOString()
+    ElMessage.success('异常扫描已完成')
+  } catch (error) {
+    console.error('Failed to scan anomalies:', error)
+    ElMessage.error('异常扫描失败')
+  } finally {
+    anomalyScanLoading.value = false
+  }
+}
+
+async function openAnomalyDetail(row) {
+  if (!row?.id) return
+  anomalyDrawerVisible.value = true
+  anomalyDetailLoading.value = true
+  try {
+    selectedAnomaly.value = await marketInsight.getAnomalyDetail(row.id)
+  } catch (error) {
+    console.error('Failed to load anomaly detail:', error)
+    ElMessage.error('异常详情加载失败')
+  } finally {
+    anomalyDetailLoading.value = false
+  }
 }
 
 function selectSymbol(row) {
@@ -759,6 +992,70 @@ function formatNumber(num) {
   if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M'
   if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K'
   return num.toFixed(2)
+}
+
+function formatDateTime(rawValue) {
+  if (!rawValue) return '--'
+  const date = new Date(rawValue)
+  if (Number.isNaN(date.getTime())) return rawValue
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+function safeFixed(value, digits = 2) {
+  if (value == null || Number.isNaN(Number(value))) return '--'
+  return Number(value).toFixed(digits)
+}
+
+function getAnomalyLevelLabel(level) {
+  const labels = {
+    critical: '极高',
+    high: '高',
+    medium: '中',
+    low: '低'
+  }
+  return labels[level] || level || '未知'
+}
+
+function getAnomalyLevelTagType(level) {
+  const types = {
+    critical: 'danger',
+    high: 'danger',
+    medium: 'warning',
+    low: 'info'
+  }
+  return types[level] || 'info'
+}
+
+function getCredibilityTagType(label) {
+  const types = {
+    可信: 'success',
+    待核实: 'warning',
+    高风险谣言: 'danger'
+  }
+  return types[label] || 'info'
+}
+
+function getTradeBiasLabel(bias) {
+  const labels = {
+    long: '偏多',
+    short: '偏空',
+    neutral: '观望'
+  }
+  return labels[bias] || bias || '观望'
+}
+
+function getTradeBiasTagType(bias) {
+  const types = {
+    long: 'success',
+    short: 'danger',
+    neutral: 'info'
+  }
+  return types[bias] || 'info'
 }
 
 function getSentimentLabel(score) {
@@ -899,6 +1196,20 @@ function removeFromWatchlist(symbol) {
 
 .scanner-card {
   margin-bottom: 20px;
+}
+
+.anomaly-card {
+  margin-bottom: 20px;
+}
+
+.anomaly-header .header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.source-summary {
+  color: #606266;
 }
 
 .header-controls {
@@ -1283,5 +1594,138 @@ function removeFromWatchlist(symbol) {
   margin-top: 15px;
   padding-top: 15px;
   border-top: 1px solid #dcdfe6;
+}
+
+.anomaly-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  gap: 12px;
+}
+
+.detail-symbol {
+  font-size: 28px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.detail-meta {
+  color: #909399;
+  margin-top: 6px;
+}
+
+.detail-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.anomaly-descriptions {
+  margin-bottom: 20px;
+}
+
+.detail-section {
+  margin-bottom: 24px;
+}
+
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: #303133;
+}
+
+.detail-bullets {
+  display: grid;
+  gap: 8px;
+  color: #606266;
+}
+
+.detail-paragraph {
+  line-height: 1.7;
+  color: #606266;
+}
+
+.advice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.advice-card {
+  padding: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  background: #fafafa;
+}
+
+.advice-label {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 6px;
+}
+
+.advice-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.risk-note {
+  margin-top: 12px;
+  color: #e6a23c;
+}
+
+.news-list {
+  display: grid;
+  gap: 12px;
+}
+
+.news-item {
+  display: block;
+  padding: 14px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  background: #fff;
+  text-decoration: none;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.news-item:hover {
+  border-color: #dcdfe6;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.06);
+}
+
+.news-title {
+  color: #303133;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.news-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: #909399;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.news-summary {
+  color: #606266;
+  line-height: 1.6;
+}
+
+@media (max-width: 768px) {
+  .anomaly-detail-header {
+    flex-direction: column;
+  }
+
+  .advice-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

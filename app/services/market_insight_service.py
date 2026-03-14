@@ -8,6 +8,7 @@ from typing import List, Optional, Dict, Any
 import httpx
 
 from app.schemas.market_insight import (
+    AnomalyEventSummary,
     MarketInsightDashboard,
     MarketMetrics,
     MarketSentiment,
@@ -18,6 +19,8 @@ from app.schemas.market_insight import (
     RainbowBand,
     FundingRateRanking
 )
+from app.services.anomaly_monitor_service import anomaly_monitor_service
+from app.services.news_service import news_service
 from app.services.pattern_recognition import pattern_recognizer
 
 logger = logging.getLogger(__name__)
@@ -266,9 +269,8 @@ class MarketInsightService:
         return sentiments
     
     async def get_market_news(self, limit: int = 20) -> List[MarketNews]:
-        """获取市场新闻（模拟数据，实际需要接入新闻API）"""
-        # 这里返回模拟数据，实际应该接入CryptoPanic、CoinTelegraph等新闻API
-        return []
+        """获取市场新闻"""
+        return await news_service.fetch_general_news(limit=limit)
     
     async def generate_trading_signals(self, symbols: Optional[List[str]] = None) -> List[TradingSignal]:
         """生成交易信号"""
@@ -435,6 +437,7 @@ class MarketInsightService:
             news_task = self.get_market_news(20)
             signals_task = self.generate_trading_signals(watchlist)
             funding_task = self.get_funding_rate_rankings()
+            anomalies_task = anomaly_monitor_service.list_active_anomalies(8)
             
             results = await asyncio.gather(
                 overview_task,
@@ -448,6 +451,7 @@ class MarketInsightService:
                 news_task,
                 signals_task,
                 funding_task,
+                anomalies_task,
                 return_exceptions=True
             )
             
@@ -463,6 +467,8 @@ class MarketInsightService:
             news = results[8] if not isinstance(results[8], Exception) else []
             signals = results[9] if not isinstance(results[9], Exception) else []
             funding_rates = results[10] if not isinstance(results[10], Exception) else {"high": [], "low": []}
+            active_anomalies = results[11] if not isinstance(results[11], Exception) else []
+            last_anomaly_scan_at = anomaly_monitor_service.get_last_scan_at()
             
             # GPT-5.1 深度分析 (如果启用)
             ai_analysis = None
@@ -483,6 +489,8 @@ class MarketInsightService:
                 rainbow_bands=rainbow_bands,
                 news=news,
                 signals=signals,
+                active_anomalies=active_anomalies,
+                last_anomaly_scan_at=last_anomaly_scan_at,
                 ai_analysis=ai_analysis,
                 timestamp=datetime.now()
             )
@@ -533,6 +541,7 @@ class MarketInsightService:
             price_change_24h=float(ticker.get("priceChange", 0)),
             price_change_percent_24h=float(ticker.get("priceChangePercent", 0)),
             volume_24h=float(ticker.get("volume", 0)),
+            quote_volume_24h=float(ticker.get("quoteVolume", 0)),
             high_24h=float(ticker.get("highPrice", 0)),
             low_24h=float(ticker.get("lowPrice", 0)),
             timestamp=datetime.now()
