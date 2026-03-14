@@ -1,4 +1,6 @@
 """市场洞察API端点"""
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 
@@ -14,6 +16,7 @@ from app.schemas.market_insight import (
 )
 from app.services.anomaly_monitor_service import anomaly_monitor_service
 from app.services.market_insight_service import market_insight_service
+from app.services.news_archive_service import news_archive_service
 
 router = APIRouter(prefix="/market-insight", tags=["market-insight"])
 
@@ -111,6 +114,25 @@ async def scan_patterns(
 ):
     """扫描市场寻找最新 K 线形态"""
     return await market_insight_service.scan_patterns(symbols, interval)
+
+
+@router.get("/news", response_model=List[MarketNews])
+async def get_market_news(
+    limit: int = Query(20, ge=1, le=100, description="返回数量"),
+    symbol: Optional[str] = Query(None, description="按币种过滤，如: BTCUSDT"),
+    hours: Optional[int] = Query(None, ge=1, le=720, description="仅返回最近 N 小时的归档新闻"),
+):
+    """获取新闻归档列表"""
+    news_items = await market_insight_service.get_market_news(limit=limit, symbol=symbol, hours=hours)
+    if hours is None:
+        return news_items
+
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    filtered = [item for item in news_items if item.published_at >= cutoff]
+    if filtered:
+        return filtered[:limit]
+
+    return news_archive_service.list_news(limit=limit, symbol=symbol, hours=hours)
 
 
 @router.get("/anomalies", response_model=List[AnomalyEventSummary])

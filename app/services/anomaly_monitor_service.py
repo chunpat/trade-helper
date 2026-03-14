@@ -16,8 +16,8 @@ from app.schemas.market_insight import (
     AnomalyTradingAdvice,
     MarketNews,
 )
+from app.services.news_archive_service import news_archive_service
 from app.services.news_analysis_service import news_analysis_service
-from app.services.news_service import news_service
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ class AnomalyMonitorService:
             previous_snapshots = self._load_latest_snapshots([ticker["symbol"] for ticker in tickers])
             candidates = self._build_candidates(tickers, previous_snapshots)
             self._persist_snapshots(tickers)
+            await self._refresh_news_archive_if_needed()
 
             if not candidates:
                 self._last_scan_at = datetime.utcnow()
@@ -65,7 +66,7 @@ class AnomalyMonitorService:
             if result["anomaly_score"] < self.alert_threshold:
                 continue
 
-            news_items = await news_service.fetch_symbol_news(result["symbol"], self.news_limit)
+            news_items = await news_archive_service.ensure_symbol_news(result["symbol"], self.news_limit)
             analysis = await news_analysis_service.analyze_anomaly(result, news_items)
             stored = self._upsert_event(result, analysis, news_items)
             if stored:
@@ -160,6 +161,12 @@ class AnomalyMonitorService:
             return row[0] if row else None
         finally:
             db.close()
+
+    async def _refresh_news_archive_if_needed(self):
+        try:
+            await news_archive_service.refresh_general_news_if_stale()
+        except Exception:
+            logger.exception("anomaly-monitor: failed to refresh general news archive")
 
     async def _fetch_top_tickers(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
         response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")

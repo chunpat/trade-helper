@@ -65,6 +65,7 @@ def init_db():
         MarketMetricSnapshot,
         AnomalyEvent,
         AnomalyNews,
+        NewsArchive,
     )
     
     Base.metadata.create_all(bind=engine)

@@ -74,6 +74,7 @@
 - PANews 当前可用中文 RSS 地址是 `https://www.panewslab.com/zh/rss/newsflash.xml`
 - `zh.panewslab.com` 目前没有可解析的 RSS 主机记录，不建议配置到源列表里
 - `NEWS_PROVIDER=auto` 时，只有当主新闻池没有命中时，才会回退到 CryptoPanic 或 Brave News Search
+- 新闻会写入持久化归档表，Dashboard 和 `/api/v1/market-insight/news` 会优先读取归档，只有归档过期时才回源抓取
 - `NEWS_SYMBOL_ALIAS_MAP` 和 `NEWS_SYMBOL_OFFICIAL_FEEDS` 都是 JSON 字符串，用来提升币种匹配和补充项目方官方 feed
 - `ENABLE_GPT_5_1` 只控制市场看板里的本地摘要文案，不会触发 OpenAI 请求
 - 异常新闻真实性分析是否调用远程模型，由 `ANOMALY_LLM_PROVIDER` 决定；设为 `disabled` 时只走本地启发式分析
@@ -220,6 +221,51 @@ docker compose up -d --build
 - API 文档: http://localhost:8029/api/docs
 - 前端页面: http://localhost:8030
 
+## 常见部署场景
+
+### 场景一：本地单进程开发
+
+适合快速调试，所有任务都跑在一个后端进程里。
+
+```bash
+START_MARKET_POLLER=True \
+START_POSITION_SYNC=True \
+START_ANOMALY_MONITOR=True \
+python main.py
+```
+
+### 场景二：本地双进程开发
+
+适合稳定观察“信息库”更新，不让异常扫描影响 API 响应。
+
+API 进程：
+
+```bash
+START_MARKET_POLLER=True \
+START_POSITION_SYNC=True \
+START_ANOMALY_MONITOR=False \
+python main.py
+```
+
+Worker 进程：
+
+```bash
+START_MARKET_POLLER=False \
+START_POSITION_SYNC=False \
+START_ANOMALY_MONITOR=True \
+python scripts/run_anomaly_worker.py
+```
+
+### 场景三：Docker Compose
+
+适合本地完整联调和长期运行。
+
+```bash
+docker compose up -d --build
+```
+
+默认会启动 `backend` 和 `insight-worker` 两个后端角色，不需要再手工拆进程。
+
 ## 关键环境变量
 
 完整示例请看 `.env.example`。下面是最常用的一组。
@@ -231,11 +277,19 @@ docker compose up -d --build
 | `START_ANOMALY_MONITOR` | 控制当前进程是否启动异常扫描和新闻入库 |
 | `ANOMALY_LLM_PROVIDER` | 异常新闻分析模式，常见值为 `disabled` 或 `openai-compatible` |
 | `NEWS_PROVIDER` | 新闻兜底提供方，常见值为 `auto`、`brave`、`cryptopanic` |
+| `NEWS_ARCHIVE_ENABLED` | 是否启用持久化新闻归档 |
+| `NEWS_ARCHIVE_STALE_AFTER_SECONDS` | 全局新闻归档多久视为过期 |
 | `NEWS_RSS_FEED_URLS` | 逗号分隔的 RSS 源列表 |
 | `NEWS_SYMBOL_ALIAS_MAP` | 币种别名 JSON，用于提升匹配率 |
 | `NEWS_SYMBOL_OFFICIAL_FEEDS` | 币种到官方 RSS 的 JSON 映射 |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API Key，`NEWS_PROVIDER=auto` 或 `brave` 时可用 |
 | `NEWS_API_KEY` | CryptoPanic API Key，`NEWS_PROVIDER=auto` 或 `cryptopanic` 时可用 |
+
+新闻归档接口示例:
+
+```bash
+curl "http://localhost:8000/api/v1/market-insight/news?limit=20&symbol=BTCUSDT&hours=24"
+```
 
 如果你要启用兼容 OpenAI 的远程分析接口，可以额外配置:
 

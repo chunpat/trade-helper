@@ -20,7 +20,7 @@ from app.schemas.market_insight import (
     FundingRateRanking
 )
 from app.services.anomaly_monitor_service import anomaly_monitor_service
-from app.services.news_service import news_service
+from app.services.news_archive_service import news_archive_service
 from app.services.pattern_recognition import pattern_recognizer
 
 logger = logging.getLogger(__name__)
@@ -313,9 +313,16 @@ class MarketInsightService:
             )
             return None
     
-    async def get_market_news(self, limit: int = 20) -> List[MarketNews]:
+    async def get_market_news(
+        self,
+        limit: int = 20,
+        symbol: Optional[str] = None,
+        hours: Optional[int] = None,
+    ) -> List[MarketNews]:
         """获取市场新闻"""
-        return await news_service.fetch_general_news(limit=limit)
+        if symbol:
+            return await news_archive_service.ensure_symbol_news(symbol=symbol, limit=limit, hours=hours)
+        return await news_archive_service.ensure_general_news(limit=limit, hours=hours)
     
     async def generate_trading_signals(self, symbols: Optional[List[str]] = None) -> List[TradingSignal]:
         """生成交易信号"""

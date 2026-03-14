@@ -85,3 +85,21 @@ class AnomalyNews(Base, BaseMixin):
     raw_payload = Column(JSON)
 
     event = relationship("AnomalyEvent", back_populates="news_items")
+
+
+class NewsArchive(Base, BaseMixin):
+    __tablename__ = "news_archive"
+
+    dedupe_key = Column(String(64), nullable=False, unique=True, index=True)
+    title = Column(String(500), nullable=False)
+    source = Column(String(120), nullable=False, index=True)
+    source_domain = Column(String(255), index=True)
+    url = Column(String(1000))
+    published_at = Column(DateTime, nullable=False, index=True)
+    sentiment = Column(String(20))
+    summary = Column(Text)
+    symbols = Column(JSON)
+    symbols_text = Column(String(500), index=True)
+    first_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    raw_payload = Column(JSON)
