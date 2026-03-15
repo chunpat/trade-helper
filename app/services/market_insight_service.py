@@ -181,34 +181,33 @@ class MarketInsightService:
             
     async def get_rainbow_bands(self) -> List[RainbowBand]:
         """计算 BTC 彩虹图带价格区间"""
-        # Formula: price = 10^(2.9065 * log10(days) - 19.493)
-        # Bands are offsets from this base power
+        # Use a log-power approximation for BTC fair value and derive rainbow
+        # bands around it. The previous coefficients produced near-zero prices,
+        # which broke the frontend reference line and always pushed BTC into the
+        # highest band.
         genesis_date = datetime(2009, 1, 3)
         today = datetime.now()
         days = (today - genesis_date).days
         
         if days <= 0: return []
         
-        # log10_price = 2.9065 * math.log10(days) - 19.493
-        # Current "fair value" index is around the middle bands
-        
         bands_config = [
-            {"name": "极度泡沫", "color": "#FF0000", "offset": 2.5},
-            {"name": "卖出！", "color": "#FF4500", "offset": 2.1},
-            {"name": "郁金香泡沫？", "color": "#FFA500", "offset": 1.7},
-            {"name": "由于FOMO增加", "color": "#FFD700", "offset": 1.3},
-            {"name": "持有", "color": "#00FF00", "offset": 0.9},
-            {"name": "仍处于廉价", "color": "#20B2AA", "offset": 0.5},
-            {"name": "积累", "color": "#4682B4", "offset": 0.1},
-            {"name": "买入！", "color": "#0000FF", "offset": -0.3},
-            {"name": "基本上是甩卖", "color": "#4B0082", "offset": -0.7},
+            {"name": "极度泡沫", "color": "#FF0000", "offset": 0.42},
+            {"name": "卖出！", "color": "#FF4500", "offset": 0.30},
+            {"name": "郁金香泡沫？", "color": "#FFA500", "offset": 0.18},
+            {"name": "由于FOMO增加", "color": "#FFD700", "offset": 0.08},
+            {"name": "持有", "color": "#00C853", "offset": 0.00},
+            {"name": "仍处于廉价", "color": "#20B2AA", "offset": -0.10},
+            {"name": "积累", "color": "#4682B4", "offset": -0.20},
+            {"name": "买入！", "color": "#3F51B5", "offset": -0.30},
+            {"name": "基本上是甩卖", "color": "#4B0082", "offset": -0.40},
         ]
-        
-        base_val = 2.9065 * math.log10(days) - 19.493
+
+        base_log10_price = (3.465 * math.log10(days)) - 8.17
         
         results = []
         for b in bands_config:
-            price = 10**(base_val + b["offset"])
+            price = 10 ** (base_log10_price + b["offset"])
             results.append(RainbowBand(
                 name=b["name"],
                 color=b["color"],

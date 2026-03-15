@@ -96,3 +96,16 @@ def test_get_market_sentiment_falls_back_to_global_ratio_when_top_ratio_unavaila
     assert len(sentiments) == 1
     assert sentiments[0].long_short_ratio == 1.4981
     assert sentiments[0].sentiment_score in {"neutral", "greed", "fear", "extreme_greed", "extreme_fear"}
+
+
+def test_get_rainbow_bands_returns_positive_realistic_price_ranges():
+    service = MarketInsightService()
+
+    bands = asyncio.run(service.get_rainbow_bands())
+
+    assert len(bands) == 9
+    prices = [band.price for band in bands]
+    assert prices == sorted(prices, reverse=True)
+    assert all(price > 1000 for price in prices)
+    hold_band = next(band for band in bands if band.name == "持有")
+    assert 10000 < hold_band.price < 500000

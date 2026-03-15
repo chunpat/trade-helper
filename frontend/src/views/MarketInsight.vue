@@ -334,20 +334,27 @@
               </el-tag>
             </div>
           </template>
-          <div class="fng-container">
-            <div class="fng-gauge">
-              <div class="fng-value" :style="{ color: getFngColor(fearGreedIndex?.value) }">
-                {{ fearGreedIndex?.value || '--' }}
+          <div class="macro-compact-card">
+            <div class="macro-summary-row">
+              <div class="macro-hero">
+                <div class="macro-hero-label">当前情绪</div>
+                <div class="macro-hero-value" :style="{ color: getFngColor(fearGreedIndex?.value) }">
+                  {{ fearGreedIndex?.value ?? '--' }}
+                </div>
+                <div class="macro-hero-subtitle">{{ fearGreedIndex?.value_classification || '暂无数据' }}</div>
               </div>
-              <div class="fng-label">当前指数</div>
-            </div>
-            <div class="fng-history">
-              <div v-for="(item, idx) in fearGreedHistory.slice(0, 5)" :key="idx" class="history-item">
-                <span class="date">{{ item.timestamp }}</span>
-                <span class="val" :style="{ color: getFngColor(item.value) }">{{ item.value }}</span>
-                <span class="desc">{{ item.value_classification }}</span>
+              <div class="macro-meta-list">
+                <div class="macro-meta-item">
+                  <span class="meta-label">30日均值</span>
+                  <strong class="meta-value">{{ fearGreed30DayAverageLabel }}</strong>
+                </div>
+                <div class="macro-meta-item">
+                  <span class="meta-label">近一日变化</span>
+                  <strong class="meta-value" :class="fearGreedDeltaClass">{{ fearGreedDeltaLabel }}</strong>
+                </div>
               </div>
             </div>
+            <div ref="fearGreedChartRef" class="macro-chart"></div>
           </div>
         </el-card>
       </el-col>
@@ -363,35 +370,25 @@
               </el-tag>
             </div>
           </template>
-          <div class="rainbow-visual-container">
-            <div class="rainbow-bar">
-              <div 
-                v-for="band in [...rainbowBands].reverse()" 
-                :key="band.name" 
-                class="bar-segment"
-                :style="{ backgroundColor: band.color, flex: 1 }"
-                :title="band.name"
-              ></div>
-              <div 
-                v-if="rainbowIndicatorPos >= 0" 
-                class="price-indicator" 
-                :style="{ left: rainbowIndicatorPos + '%' }"
-              >
-                <div class="indicator-arrow"></div>
-                <div class="indicator-label">当前价</div>
+          <div class="macro-compact-card">
+            <div class="macro-summary-row">
+              <div class="macro-hero">
+                <div class="macro-hero-label">当前区间</div>
+                <div class="macro-hero-value rainbow-price">${{ formatNumber(btcCurrentPrice) }}</div>
+                <div class="macro-hero-subtitle">{{ rainbowCurrentBandLabel }}</div>
+              </div>
+              <div class="macro-meta-list">
+                <div class="macro-meta-item">
+                  <span class="meta-label">参考线</span>
+                  <strong class="meta-value">{{ rainbowReferencePriceLabel }}</strong>
+                </div>
+                <div class="macro-meta-item">
+                  <span class="meta-label">相对偏离</span>
+                  <strong class="meta-value">{{ rainbowDistanceLabel }}</strong>
+                </div>
               </div>
             </div>
-            <div class="rainbow-bands-list">
-              <div 
-                v-for="band in rainbowBands" 
-                :key="band.name" 
-                class="rainbow-band"
-                :style="{ backgroundColor: band.color + '22', borderLeft: '4px solid ' + band.color }"
-              >
-                <span class="band-name">{{ band.name }}</span>
-                <span class="band-price">${{ formatNumber(band.price) }}</span>
-              </div>
-            </div>
+            <div ref="rainbowChartRef" class="macro-chart"></div>
           </div>
         </el-card>
       </el-col>
@@ -801,8 +798,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
+import * as echarts from 'echarts'
 import { marketInsight } from '@/api'
 import { ElMessage } from 'element-plus'
 import KlineChart from '@/components/KlineChart.vue'
@@ -836,6 +834,11 @@ const selectedAnomaly = ref(null)
 const scanning = ref(false)
 const scanResults = ref([])
 const chartRef = ref(null) // Reference to KlineChart component
+const fearGreedChartRef = ref(null)
+const rainbowChartRef = ref(null)
+
+let fearGreedChart = null
+let rainbowChart = null
 
 const patternTolerance = ref(0.35)
 const patternToleranceOptions = [
@@ -861,28 +864,100 @@ const filteredScanResults = computed(() => {
   return scanResults.value.filter(item => selectedPatternTypes.value.includes(getPatternType(item?.pattern?.name)))
 })
 
-// 计算当前 BTC 在彩虹图中的位置
+const fearGreedDelta = computed(() => {
+  const current = Number(fearGreedHistory.value?.[0]?.value)
+  const previous = Number(fearGreedHistory.value?.[1]?.value)
+  if (Number.isNaN(current) || Number.isNaN(previous)) return null
+  return current - previous
+})
+
+const fearGreed30DaySeries = computed(() => {
+  return [...(fearGreedHistory.value || [])]
+    .slice(0, 30)
+    .reverse()
+    .map(item => ({
+      label: formatShortDate(item.timestamp),
+      value: Number(item.value)
+    }))
+    .filter(item => !Number.isNaN(item.value))
+})
+
+const fearGreed30DayAverageLabel = computed(() => {
+  if (!fearGreed30DaySeries.value.length) {
+    return '--'
+  }
+  const total = fearGreed30DaySeries.value.reduce((sum, item) => sum + item.value, 0)
+  return (total / fearGreed30DaySeries.value.length).toFixed(1)
+})
+
+const fearGreedDeltaLabel = computed(() => {
+  if (fearGreedDelta.value == null) {
+    return '--'
+  }
+  if (fearGreedDelta.value === 0) {
+    return '0.0'
+  }
+  return `${fearGreedDelta.value > 0 ? '+' : ''}${fearGreedDelta.value.toFixed(1)}`
+})
+
+const fearGreedDeltaClass = computed(() => {
+  if (fearGreedDelta.value == null || fearGreedDelta.value === 0) {
+    return ''
+  }
+  return fearGreedDelta.value > 0 ? 'is-up' : 'is-down'
+})
+
 const btcCurrentPrice = computed(() => {
   const btcInWatch = watchlist.value.find(i => i.symbol === 'BTCUSDT')
   if (btcInWatch) return btcInWatch.last_price
   return 0
 })
 
-const rainbowIndicatorPos = computed(() => {
-  if (!btcCurrentPrice.value || rainbowBands.value.length === 0) return -1
-  
-  const price = btcCurrentPrice.value
-  const bands = [...rainbowBands.value].reverse() // 从低价到高价排序
-  
-  const minPrice = bands[0].price * 0.8
-  const maxPrice = bands[bands.length - 1].price * 1.2
-  
-  if (price <= minPrice) return 0
-  if (price >= maxPrice) return 100
-  
-  // 简单的对数比例计算（彩虹图是基于对数增长的）
-  const pos = (Math.log10(price) - Math.log10(minPrice)) / (Math.log10(maxPrice) - Math.log10(minPrice))
-  return pos * 100
+const rainbowChartSeries = computed(() => {
+  return [...(rainbowBands.value || [])]
+    .reverse()
+    .map(item => ({
+      name: item.name,
+      price: Number(item.price),
+      color: item.color
+    }))
+    .filter(item => item.price > 0)
+})
+
+const rainbowCurrentBand = computed(() => {
+  if (!btcCurrentPrice.value || rainbowBands.value.length === 0) return null
+
+  return rainbowBands.value.reduce((closest, band) => {
+    if (!closest) return band
+    const currentDistance = Math.abs(Math.log(btcCurrentPrice.value / band.price))
+    const closestDistance = Math.abs(Math.log(btcCurrentPrice.value / closest.price))
+    return currentDistance < closestDistance ? band : closest
+  }, null)
+})
+
+const rainbowCurrentBandLabel = computed(() => {
+  if (!btcCurrentPrice.value || !rainbowCurrentBand.value) {
+    return '等待 BTC 价格和区间数据'
+  }
+  return `接近 ${rainbowCurrentBand.value.name}`
+})
+
+const rainbowReferencePriceLabel = computed(() => {
+  if (!rainbowCurrentBand.value?.price) {
+    return '--'
+  }
+  return `$${formatNumber(rainbowCurrentBand.value.price)}`
+})
+
+const rainbowDistanceLabel = computed(() => {
+  if (!btcCurrentPrice.value || !rainbowCurrentBand.value?.price) {
+    return '--'
+  }
+  const diff = ((btcCurrentPrice.value - rainbowCurrentBand.value.price) / rainbowCurrentBand.value.price) * 100
+  if (Math.abs(diff) < 0.1) {
+    return '接近参考线'
+  }
+  return `${diff > 0 ? '+' : '-'}${Math.abs(diff).toFixed(2)}%`
 })
 
 // 自选管理
@@ -912,9 +987,215 @@ const saveUserWatchlist = () => {
 // 自动刷新定时器
 let refreshTimer = null
 
+function initMacroCharts() {
+  if (fearGreedChartRef.value && !fearGreedChart) {
+    fearGreedChart = echarts.init(fearGreedChartRef.value)
+  }
+  if (rainbowChartRef.value && !rainbowChart) {
+    rainbowChart = echarts.init(rainbowChartRef.value)
+  }
+  updateFearGreedChart()
+  updateRainbowChart()
+}
+
+function disposeMacroCharts() {
+  if (fearGreedChart) {
+    fearGreedChart.dispose()
+    fearGreedChart = null
+  }
+  if (rainbowChart) {
+    rainbowChart.dispose()
+    rainbowChart = null
+  }
+}
+
+function resizeMacroCharts() {
+  fearGreedChart?.resize()
+  rainbowChart?.resize()
+}
+
+function updateFearGreedChart() {
+  if (!fearGreedChart) {
+    return
+  }
+
+  const series = fearGreed30DaySeries.value
+  fearGreedChart.setOption({
+    animation: false,
+    grid: {
+      left: 36,
+      right: 16,
+      top: 20,
+      bottom: 28
+    },
+    tooltip: {
+      trigger: 'axis',
+      formatter: params => {
+        const point = params?.[0]
+        if (!point) {
+          return ''
+        }
+        return `${point.axisValue}<br/>情绪值: ${point.data}`
+      }
+    },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: series.map(item => item.label),
+      axisLabel: {
+        color: '#909399',
+        fontSize: 11
+      },
+      axisLine: {
+        lineStyle: {
+          color: '#dcdfe6'
+        }
+      }
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: 100,
+      splitLine: {
+        lineStyle: {
+          color: '#f0f2f5'
+        }
+      },
+      axisLabel: {
+        color: '#909399',
+        fontSize: 11
+      }
+    },
+    series: [
+      {
+        type: 'line',
+        smooth: true,
+        symbol: 'none',
+        lineStyle: {
+          width: 3,
+          color: getFngColor(Number(fearGreedIndex.value?.value) || 50)
+        },
+        areaStyle: {
+          color: 'rgba(230, 162, 60, 0.10)'
+        },
+        data: series.map(item => item.value),
+        markPoint: series.length
+          ? {
+              symbol: 'circle',
+              symbolSize: 10,
+              data: [
+                {
+                  coord: [series[series.length - 1].label, series[series.length - 1].value],
+                  itemStyle: {
+                    color: getFngColor(Number(fearGreedIndex.value?.value) || 50)
+                  }
+                }
+              ]
+            }
+          : undefined
+      }
+    ]
+  })
+}
+
+function updateRainbowChart() {
+  if (!rainbowChart) {
+    return
+  }
+
+  const series = rainbowChartSeries.value
+  rainbowChart.setOption({
+    animation: false,
+    grid: {
+      left: 48,
+      right: 16,
+      top: 20,
+      bottom: 44
+    },
+    tooltip: {
+      trigger: 'axis',
+      formatter: params => {
+        const point = params?.[0]
+        if (!point) {
+          return ''
+        }
+        return `${point.axisValue}<br/>参考价: $${formatNumber(point.data)}`
+      }
+    },
+    xAxis: {
+      type: 'category',
+      data: series.map(item => item.name),
+      axisLabel: {
+        color: '#909399',
+        fontSize: 10,
+        interval: 0,
+        rotate: 24
+      },
+      axisLine: {
+        lineStyle: {
+          color: '#dcdfe6'
+        }
+      }
+    },
+    yAxis: {
+      type: 'log',
+      logBase: 10,
+      splitLine: {
+        lineStyle: {
+          color: '#f0f2f5'
+        }
+      },
+      axisLabel: {
+        color: '#909399',
+        fontSize: 11,
+        formatter: value => `$${formatNumber(value)}`
+      }
+    },
+    series: [
+      {
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 7,
+        lineStyle: {
+          width: 3,
+          color: '#ff8f00'
+        },
+        itemStyle: {
+          color: params => series[params.dataIndex]?.color || '#ff8f00'
+        },
+        data: series.map(item => item.price),
+        markLine: btcCurrentPrice.value
+          ? {
+              symbol: 'none',
+              label: {
+                show: true,
+                position: 'insideEndTop',
+                formatter: `BTC $${formatNumber(btcCurrentPrice.value)}`,
+                color: '#303133'
+              },
+              lineStyle: {
+                type: 'dashed',
+                width: 2,
+                color: '#303133'
+              },
+              data: [
+                {
+                  yAxis: btcCurrentPrice.value
+                }
+              ]
+            }
+          : undefined
+      }
+    ]
+  })
+}
+
 onMounted(() => {
   loadUserWatchlist()
+  initMacroCharts()
   loadData()
+  window.addEventListener('resize', resizeMacroCharts)
   // 每30秒自动刷新
   refreshTimer = setInterval(() => {
     loadData(true)
@@ -925,7 +1206,17 @@ onUnmounted(() => {
   if (refreshTimer) {
     clearInterval(refreshTimer)
   }
+  window.removeEventListener('resize', resizeMacroCharts)
+  disposeMacroCharts()
 })
+
+watch(fearGreed30DaySeries, () => {
+  updateFearGreedChart()
+}, { deep: true })
+
+watch([rainbowChartSeries, btcCurrentPrice], () => {
+  updateRainbowChart()
+}, { deep: true })
 
 const handlePatternClick = (res) => {
   currentChartSymbol.value = res.symbol
@@ -1103,6 +1394,18 @@ function formatDateTime(rawValue) {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit'
+  })
+}
+
+function formatShortDate(rawValue) {
+  if (!rawValue) return '--'
+  const date = new Date(rawValue)
+  if (Number.isNaN(date.getTime())) {
+    return String(rawValue)
+  }
+  return date.toLocaleDateString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit'
   })
 }
 
@@ -1598,107 +1901,88 @@ function removeFromWatchlist(symbol) {
   height: 100%;
 }
 
-.fng-container {
+.macro-compact-card {
+  border: 1px solid #ebeef5;
+  border-radius: 14px;
+  padding: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+}
+
+.macro-summary-row {
   display: flex;
-  align-items: center;
-  justify-content: space-around;
-  padding: 10px 0;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
 }
 
-.fng-gauge {
-  text-align: center;
+.macro-hero {
+  min-width: 0;
+  flex: 1;
 }
 
-.fng-value {
-  font-size: 48px;
-  font-weight: bold;
-}
-
-.fng-label {
+.macro-hero-label {
+  font-size: 12px;
   color: #909399;
-  font-size: 14px;
+  margin-bottom: 6px;
 }
 
-.fng-history {
-  border-left: 1px solid #EBEEF5;
-  padding-left: 20px;
+.macro-hero-value {
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 700;
+  color: #303133;
 }
 
-.history-item {
-  display: flex;
-  justify-content: space-between;
-  width: 200px;
-  margin-bottom: 8px;
+.macro-hero-subtitle {
+  margin-top: 8px;
   font-size: 13px;
+  color: #606266;
 }
 
-.history-item .date { color: #909399; }
-.history-item .val { font-weight: bold; width: 30px; text-align: right; }
-.history-item .desc { width: 100px; text-align: right; }
-
-.rainbow-visual-container {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+.rainbow-price {
+  font-size: 28px;
+  color: #ff8f00;
 }
 
-.rainbow-bar {
-  height: 12px;
-  display: flex;
-  position: relative;
-  border-radius: 6px;
-  overflow: visible;
-  margin: 30px 10px 10px 10px;
+.macro-meta-list {
+  width: 160px;
+  display: grid;
+  gap: 10px;
 }
 
-.bar-segment:first-child { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
-.bar-segment:last-child { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
-
-.price-indicator {
-  position: absolute;
-  top: -25px;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  z-index: 10;
-  transition: left 0.5s ease;
+.macro-meta-item {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f7f8fa;
+  border: 1px solid #edf0f5;
 }
 
-.indicator-arrow {
-  width: 0;
-  height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-top: 8px solid #303133;
-  margin-top: 2px;
+.meta-label {
+  display: block;
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 4px;
 }
 
-.indicator-label {
-  background: #303133;
-  color: white;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  white-space: nowrap;
+.meta-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #303133;
 }
 
-.rainbow-bands-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.meta-value.is-up {
+  color: #67c23a;
 }
 
-.rainbow-band {
-  display: flex;
-  justify-content: space-between;
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-size: 13px;
+.meta-value.is-down {
+  color: #f56c6c;
 }
 
-.band-name { font-weight: 500; }
-.band-price { font-family: monospace; }
+.macro-chart {
+  width: 100%;
+  height: 220px;
+}
 
 .symbol-name {
   font-weight: bold;
@@ -1869,6 +2153,19 @@ function removeFromWatchlist(symbol) {
 
   .pattern-filter-group {
     grid-template-columns: 1fr;
+  }
+
+  .macro-summary-row {
+    flex-direction: column;
+  }
+
+  .macro-meta-list {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .macro-chart {
+    height: 200px;
   }
 
   .anomaly-detail-header {
