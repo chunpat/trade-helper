@@ -17,11 +17,11 @@
     <div ref="chartRef" class="chart-box"></div>
     
     <!-- 形态快捷导航栏 -->
-    <div v-if="detectedPatterns.length > 0" class="pattern-nav">
+    <div v-if="filteredDetectedPatterns.length > 0" class="pattern-nav">
       <div class="nav-title">已识别形态 (点击跳转):</div>
       <div class="nav-chips">
         <el-tag 
-          v-for="(pat, idx) in detectedPatterns" 
+          v-for="(pat, idx) in filteredDetectedPatterns" 
           :key="idx"
           :type="pat.direction === 'Bullish' ? 'success' : 'danger'"
           class="nav-chip"
@@ -33,15 +33,24 @@
       </div>
     </div>
     <div v-else-if="showPatterns" class="pattern-nav empty">
-      当前视野未检测到形态
+      {{ detectedPatterns.length > 0 ? '当前筛选下未显示形态' : '当前视野未检测到形态' }}
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { createChart, ColorType } from 'lightweight-charts'
 import { marketInsight } from '@/api'
+
+const DEFAULT_PATTERN_TYPES = [
+  'hammer',
+  'inverted_hammer',
+  'shooting_star',
+  'bullish_engulfing',
+  'bearish_engulfing',
+  'doji'
+]
 
 const props = defineProps({
   symbol: {
@@ -50,20 +59,45 @@ const props = defineProps({
   },
   tolerance: {
     type: Number,
-    default: 0.2
+    default: 0.35
+  },
+  selectedPatternTypes: {
+    type: Array,
+    default: () => [
+      'hammer',
+      'inverted_hammer',
+      'shooting_star',
+      'bullish_engulfing',
+      'bearish_engulfing',
+      'doji'
+    ]
   }
 })
 
 const chartRef = ref(null)
 const interval = ref('1h')
 const showPatterns = ref(true) 
-const detectedPatterns = ref([]) 
+const detectedPatterns = ref([])
 let chart = null
 let candleSeries = null
 let volumeSeries = null
 let rsiSeries = null
 let patternSeriesList = []
 let currentKlines = [] 
+
+const activePatternTypes = computed(() => {
+  if (!Array.isArray(props.selectedPatternTypes)) {
+    return DEFAULT_PATTERN_TYPES
+  }
+  return props.selectedPatternTypes
+})
+
+const filteredDetectedPatterns = computed(() => {
+  if (!activePatternTypes.value.length) {
+    return []
+  }
+  return detectedPatterns.value.filter((pattern) => activePatternTypes.value.includes(getPatternType(pattern.name)))
+})
 
 defineExpose({
   focusOnPattern
@@ -90,6 +124,17 @@ watch(() => props.tolerance, () => {
     fetchData()
 })
 
+watch(
+  () => props.selectedPatternTypes,
+  () => {
+    if (!showPatterns.value) {
+      return
+    }
+    renderChart(currentKlines, filteredDetectedPatterns.value)
+  },
+  { deep: true }
+)
+
 function handleResize() {
   if (chart && chartRef.value) {
     chart.applyOptions({ width: chartRef.value.clientWidth })
@@ -98,6 +143,16 @@ function handleResize() {
 
 function formatDate(ts) {
     return new Date(ts).toLocaleDateString()
+}
+
+function getPatternType(name = '') {
+  if (name.startsWith('Hammer')) return 'hammer'
+  if (name.startsWith('Inv Hammer')) return 'inverted_hammer'
+  if (name.startsWith('Shooting Star')) return 'shooting_star'
+  if (name.startsWith('Bullish Engulfing')) return 'bullish_engulfing'
+  if (name.startsWith('Bearish Engulfing')) return 'bearish_engulfing'
+  if (name.startsWith('Doji')) return 'doji'
+  return 'other'
 }
 
 // Simple RSI Calculation
@@ -286,7 +341,7 @@ async function fetchData() {
     
     detectedPatterns.value.sort((a,b) => b.points[b.points.length-1].time - a.points[a.points.length-1].time)
     
-    renderChart(klines, patterns)
+    renderChart(klines, filteredDetectedPatterns.value)
     
   } catch (error) {
     console.error('Failed to fetch data:', error)

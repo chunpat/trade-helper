@@ -57,10 +57,60 @@
 
     <!-- K 线图 -->
     <el-card class="kline-card" shadow="hover">
+      <template #header>
+        <div class="card-header">
+          <div class="header-left">
+            <span>📊 行情与 K 线形态</span>
+          </div>
+          <div class="header-controls">
+            <div class="pattern-strictness-control">
+              <span class="control-label">识别严格度</span>
+              <el-select
+                v-model="patternTolerance"
+                size="small"
+                class="strictness-select"
+                @change="handlePatternToleranceChange"
+              >
+                <el-option
+                  v-for="option in patternToleranceOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </div>
+
+            <el-popover placement="bottom-end" :width="320" trigger="click">
+              <template #reference>
+                <el-button size="small" plain>
+                  形态筛选 ({{ selectedPatternTypes.length }}/{{ patternFilterOptions.length }})
+                </el-button>
+              </template>
+              <div class="pattern-filter-panel">
+                <div class="filter-panel-title">勾选要显示的形态类型</div>
+                <el-checkbox-group v-model="selectedPatternTypes" class="pattern-filter-group">
+                  <el-checkbox
+                    v-for="option in patternFilterOptions"
+                    :key="option.value"
+                    :label="option.value"
+                  >
+                    {{ option.label }}
+                  </el-checkbox>
+                </el-checkbox-group>
+                <div class="pattern-filter-actions">
+                  <el-button text size="small" @click="selectAllPatternTypes">全选</el-button>
+                  <el-button text size="small" @click="clearPatternTypes">清空</el-button>
+                </div>
+              </div>
+            </el-popover>
+          </div>
+        </div>
+      </template>
       <KlineChart 
         ref="chartRef"
         :symbol="currentChartSymbol" 
         :tolerance="patternTolerance"
+        :selected-pattern-types="selectedPatternTypes"
       />
     </el-card>
 
@@ -72,6 +122,9 @@
             <span>🕯️ K线形态捕捉器 (Candlestick Patterns)</span>
           </div>
           <div class="header-controls">
+            <el-tag size="small" type="info" effect="plain">
+              当前筛选 {{ selectedPatternTypes.length }}/{{ patternFilterOptions.length }} 类形态
+            </el-tag>
             <el-button 
               type="primary" 
               size="small" 
@@ -89,13 +142,13 @@
         <span>正在扫描市场Top20活跃币种以及潜在机会...</span>
       </div>
 
-      <div v-if="!scanning && scanResults.length === 0" class="empty-scan">
-        暂无发现近期形态，请稍后刷新。
+      <div v-if="!scanning && filteredScanResults.length === 0" class="empty-scan">
+        {{ scanResults.length > 0 ? '当前筛选下暂无形态，请调整筛选或严格度。' : '暂无发现近期形态，请稍后刷新。' }}
       </div>
 
       <el-row v-else :gutter="16">
         <el-col 
-          v-for="(res, idx) in scanResults" 
+          v-for="(res, idx) in filteredScanResults" 
           :key="idx"
           :xs="24" :sm="12" :md="6"
         >
@@ -784,7 +837,29 @@ const scanning = ref(false)
 const scanResults = ref([])
 const chartRef = ref(null) // Reference to KlineChart component
 
-const patternTolerance = ref(0.2) // Default 20%
+const patternTolerance = ref(0.35)
+const patternToleranceOptions = [
+  { value: 0.25, label: '宽松' },
+  { value: 0.35, label: '标准' },
+  { value: 0.45, label: '严格' },
+  { value: 0.55, label: '极严格' }
+]
+const patternFilterOptions = [
+  { value: 'hammer', label: '锤子线' },
+  { value: 'inverted_hammer', label: '倒锤子' },
+  { value: 'shooting_star', label: '流星线' },
+  { value: 'bullish_engulfing', label: '看涨吞没' },
+  { value: 'bearish_engulfing', label: '看跌吞没' },
+  { value: 'doji', label: '十字星' }
+]
+const selectedPatternTypes = ref(patternFilterOptions.map(option => option.value))
+
+const filteredScanResults = computed(() => {
+  if (!selectedPatternTypes.value.length) {
+    return []
+  }
+  return scanResults.value.filter(item => selectedPatternTypes.value.includes(getPatternType(item?.pattern?.name)))
+})
 
 // 计算当前 BTC 在彩虹图中的位置
 const btcCurrentPrice = computed(() => {
@@ -869,17 +944,42 @@ const handlePatternClick = (res) => {
   }, 1000) // Delay to allow fetch. Refine later with events if needed.
 }
 
+function getPatternType(name = '') {
+  if (name.startsWith('Hammer')) return 'hammer'
+  if (name.startsWith('Inv Hammer')) return 'inverted_hammer'
+  if (name.startsWith('Shooting Star')) return 'shooting_star'
+  if (name.startsWith('Bullish Engulfing')) return 'bullish_engulfing'
+  if (name.startsWith('Bearish Engulfing')) return 'bearish_engulfing'
+  if (name.startsWith('Doji')) return 'doji'
+  return 'other'
+}
+
+function selectAllPatternTypes() {
+  selectedPatternTypes.value = patternFilterOptions.map(option => option.value)
+}
+
+function clearPatternTypes() {
+  selectedPatternTypes.value = []
+}
+
 async function scanPatterns() {
   scanning.value = true
   scanResults.value = []
   try {
-    const res = await marketInsight.scanPatterns('1h')
+    const res = await marketInsight.scanPatterns({
+      interval: '1h',
+      tolerance: patternTolerance.value
+    })
     scanResults.value = res || []
   } catch (err) {
     console.error(err)
   } finally {
     scanning.value = false
   }
+}
+
+function handlePatternToleranceChange() {
+  scanPatterns()
 }
 
 async function loadData(silent = false) {
@@ -1215,12 +1315,45 @@ function removeFromWatchlist(symbol) {
 .header-controls {
   display: flex;
   align-items: center;
+  gap: 10px;
 }
 
 .control-label {
   font-size: 14px;
   color: #606266;
   margin-right: 10px;
+}
+
+.pattern-strictness-control {
+  display: flex;
+  align-items: center;
+}
+
+.strictness-select {
+  width: 120px;
+}
+
+.pattern-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.filter-panel-title {
+  font-size: 13px;
+  color: #606266;
+}
+
+.pattern-filter-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.pattern-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .scanning-placeholder {
@@ -1720,6 +1853,24 @@ function removeFromWatchlist(symbol) {
 }
 
 @media (max-width: 768px) {
+  .header-controls {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .pattern-strictness-control {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .strictness-select {
+    width: 110px;
+  }
+
+  .pattern-filter-group {
+    grid-template-columns: 1fr;
+  }
+
   .anomaly-detail-header {
     flex-direction: column;
   }

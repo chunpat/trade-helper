@@ -102,7 +102,7 @@ async def get_patterns(
     symbol: str = Query(..., description="交易对"),
     interval: str = Query("1h", description="时间周期"),
     limit: int = Query(500, description="数据条数"),
-    tolerance: float = Query(0.2, description="容错率")
+    tolerance: float = Query(0.35, ge=0.05, le=0.8, description="识别严格度，越大越严格")
 ):
     """识别 K 线形态（单K线形态如锤子线、吞没等）"""
     return await market_insight_service.get_patterns(symbol, interval, limit, tolerance)
@@ -110,10 +110,11 @@ async def get_patterns(
 @router.get("/patterns/scan")
 async def scan_patterns(
     interval: str = Query("1h", description="时间周期"),
-    symbols: Optional[List[str]] = Query(None, description="指定扫描币种列表")
+    symbols: Optional[List[str]] = Query(None, description="指定扫描币种列表"),
+    tolerance: float = Query(0.35, ge=0.05, le=0.8, description="识别严格度，越大越严格")
 ):
     """扫描市场寻找最新 K 线形态"""
-    return await market_insight_service.scan_patterns(symbols, interval)
+    return await market_insight_service.scan_patterns(symbols, interval, tolerance)
 
 
 @router.get("/news", response_model=List[MarketNews])

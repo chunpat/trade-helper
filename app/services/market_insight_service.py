@@ -368,7 +368,7 @@ class MarketInsightService:
             logger.error(f"Error fetching klines: {e}")
             return []
 
-    async def get_patterns(self, symbol: str, interval: str = "1h", limit: int = 500, tolerance: float = 0.2) -> List[Dict[str, Any]]:
+    async def get_patterns(self, symbol: str, interval: str = "1h", limit: int = 500, tolerance: float = 0.35) -> List[Dict[str, Any]]:
         """识别 K 线形态（单K线形态如锤子线、吞没等）"""
         try:
             klines = await self.get_klines(symbol, interval, limit=limit)
@@ -397,7 +397,7 @@ class MarketInsightService:
             logger.error(f"Error analyzing patterns: {e}")
             return []
 
-    async def scan_patterns(self, symbols: List[str] = None, interval: str = "1h") -> List[Dict[str, Any]]:
+    async def scan_patterns(self, symbols: List[str] = None, interval: str = "1h", tolerance: float = 0.35) -> List[Dict[str, Any]]:
         """扫描多个币种的最新 K 线形态"""
         if not symbols:
             # Default to top volume if no list provided
@@ -412,7 +412,7 @@ class MarketInsightService:
             chunk = symbols[i:i+chunk_size]
             tasks = []
             for sym in chunk:
-                tasks.append(self.get_patterns(sym, interval, limit=150)) # 只看最近的
+                tasks.append(self.get_patterns(sym, interval, limit=150, tolerance=tolerance)) # 只看最近的
             
             chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
             
