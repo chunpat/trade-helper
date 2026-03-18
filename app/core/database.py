@@ -93,3 +93,54 @@ def init_db():
         # best-effort only; do not fail startup if alter fails
         import logging
         logging.exception("init_db: failed to add position_side column (ignored)")
+
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            res = conn.execute(text("SHOW COLUMNS FROM transaction_history LIKE 'position_side'"))
+            exists = res.first() is not None
+            if not exists:
+                import logging
+                logging.info("init_db: transaction_history.position_side missing, attempting to add it")
+                try:
+                    conn.execute(text("ALTER TABLE transaction_history ADD COLUMN IF NOT EXISTS position_side VARCHAR(10) DEFAULT NULL"))
+                except Exception as e:
+                    logging.info("init_db: ALTER transaction_history IF NOT EXISTS failed — trying plain ALTER; error=%s", e)
+                    conn.execute(text("ALTER TABLE transaction_history ADD COLUMN position_side VARCHAR(10) DEFAULT NULL"))
+    except Exception:
+        import logging
+        logging.exception("init_db: failed to add transaction_history.position_side column (ignored)")
+
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            res = conn.execute(text("SHOW COLUMNS FROM accounts LIKE 'api_passphrase'"))
+            exists = res.first() is not None
+            if not exists:
+                import logging
+                logging.info("init_db: accounts.api_passphrase missing, attempting to add it")
+                try:
+                    conn.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS api_passphrase VARCHAR(255) DEFAULT NULL"))
+                except Exception as e:
+                    logging.info("init_db: ALTER accounts IF NOT EXISTS failed — trying plain ALTER; error=%s", e)
+                    conn.execute(text("ALTER TABLE accounts ADD COLUMN api_passphrase VARCHAR(255) DEFAULT NULL"))
+    except Exception:
+        import logging
+        logging.exception("init_db: failed to add accounts.api_passphrase column (ignored)")
+
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            res = conn.execute(text("SHOW COLUMNS FROM accounts LIKE 'history_90d_backfilled_at'"))
+            exists = res.first() is not None
+            if not exists:
+                import logging
+                logging.info("init_db: accounts.history_90d_backfilled_at missing, attempting to add it")
+                try:
+                    conn.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS history_90d_backfilled_at DATETIME DEFAULT NULL"))
+                except Exception as e:
+                    logging.info("init_db: ALTER accounts history_90d_backfilled_at IF NOT EXISTS failed — trying plain ALTER; error=%s", e)
+                    conn.execute(text("ALTER TABLE accounts ADD COLUMN history_90d_backfilled_at DATETIME DEFAULT NULL"))
+    except Exception:
+        import logging
+        logging.exception("init_db: failed to add accounts.history_90d_backfilled_at column (ignored)")

@@ -17,6 +17,8 @@ import logging
 
 import httpx
 
+from app.services.exchange.okx_adapter import OkxAdapter
+
 
 class BinanceAdapter:
     BASE = "https://fapi.binance.com"
@@ -273,7 +275,14 @@ class BinanceAdapter:
             request_path="/fapi/v2/positionRisk",
         )
 
-    async def fetch_income_history(self, limit: int = 100) -> Optional[List[Dict]]:
+    async def fetch_income_history(
+        self,
+        limit: int = 100,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        symbol: Optional[str] = None,
+        income_type: Optional[str] = None,
+    ) -> Optional[List[Dict]]:
         """Fetch income history (funding fees, realized pnl, etc) via /fapi/v1/income.
         
         Returns list of income dicts, or None on error.
@@ -290,7 +299,21 @@ class BinanceAdapter:
 
         ts = int(server_ts)
         recv_window = 15000
-        qs = f"timestamp={ts}&recvWindow={recv_window}&limit={limit}"
+        query_parts = [
+            f"timestamp={ts}",
+            f"recvWindow={recv_window}",
+            f"limit={limit}",
+        ]
+        if start_time is not None:
+            query_parts.append(f"startTime={int(start_time)}")
+        if end_time is not None:
+            query_parts.append(f"endTime={int(end_time)}")
+        if symbol:
+            query_parts.append(f"symbol={symbol.upper()}")
+        if income_type:
+            query_parts.append(f"incomeType={income_type}")
+
+        qs = "&".join(query_parts)
         sig = self._sign(qs)
         url = f"{self.BASE}/fapi/v1/income?{qs}&signature={sig}"
 
@@ -307,7 +330,13 @@ class BinanceAdapter:
 
         return None
 
-    async def fetch_user_trades(self, symbol: Optional[str] = None, limit: int = 100) -> Optional[List[Dict]]:
+    async def fetch_user_trades(
+        self,
+        symbol: Optional[str] = None,
+        limit: int = 100,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ) -> Optional[List[Dict]]:
         """Fetch user's trade history via /fapi/v1/userTrades.
         
         Returns list of trade dicts, or None on error.
@@ -324,9 +353,19 @@ class BinanceAdapter:
 
         ts = int(server_ts)
         recv_window = 15000
-        qs = f"timestamp={ts}&recvWindow={recv_window}&limit={limit}"
+        query_parts = [
+            f"timestamp={ts}",
+            f"recvWindow={recv_window}",
+            f"limit={limit}",
+        ]
         if symbol:
-            qs += f"&symbol={symbol.upper()}"
+            query_parts.append(f"symbol={symbol.upper()}")
+        if start_time is not None:
+            query_parts.append(f"startTime={int(start_time)}")
+        if end_time is not None:
+            query_parts.append(f"endTime={int(end_time)}")
+
+        qs = "&".join(query_parts)
         sig = self._sign(qs)
         url = f"{self.BASE}/fapi/v1/userTrades?{qs}&signature={sig}"
 
@@ -344,16 +383,29 @@ class BinanceAdapter:
         return None
 
 
-def create_adapter_for_account(account) -> Optional[BinanceAdapter]:
+def create_adapter_for_account(account):
     if not account.api_key or not account.api_secret:
         return None
-    # ensure account.exchange is binance (allow uppercase/lowercase)
-    if getattr(account, 'exchange', '').lower() not in ('binance', 'binance-futures', 'fapi', 'futures'):
-        return None
-    
+
     # Check for proxy in settings
     proxy = None
+    use_demo = False
     if hasattr(account, 'settings') and account.settings:
         proxy = account.settings.get('proxy')
-    
-    return BinanceAdapter(account.api_key, account.api_secret, proxy=proxy)
+        use_demo = bool(account.settings.get('okx_demo') or account.settings.get('use_demo'))
+
+    exchange = getattr(account, 'exchange', '').lower()
+    if exchange in ('binance', 'binance-futures', 'fapi', 'futures'):
+        return BinanceAdapter(account.api_key, account.api_secret, proxy=proxy)
+    if exchange in ('okx', 'okex'):
+        if not getattr(account, 'api_passphrase', None):
+            return None
+        return OkxAdapter(
+            account.api_key,
+            account.api_secret,
+            account.api_passphrase,
+            proxy=proxy,
+            use_demo=use_demo,
+        )
+
+    return None

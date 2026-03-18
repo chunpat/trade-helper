@@ -319,6 +319,7 @@ class PositionSyncService:
                         aggregated_trades[oid] = {
                             'symbol': trade.get('symbol'),
                             'side': trade.get('side'),
+                            'position_side': trade.get('positionSide'),
                             'price_sum': float(trade.get('price', 0)) * float(trade.get('qty', 0)),
                             'qty': float(trade.get('qty', 0)),
                             'quote_qty': float(trade.get('quoteQty', 0)),
@@ -348,6 +349,7 @@ class PositionSyncService:
                             symbol=data['symbol'],
                             type="TRADE",
                             side=data['side'],
+                            position_side=data.get('position_side'),
                             price=avg_price,
                             qty=data['qty'],
                             quote_qty=data['quote_qty'],
@@ -365,6 +367,7 @@ class PositionSyncService:
                         exists.price = avg_price
                         exists.qty = data['qty']
                         exists.quote_qty = data['quote_qty']
+                        exists.position_side = data.get('position_side')
                         exists.commission = data['commission']
                         exists.realized_pnl = data['realized_pnl']
                         exists.time = datetime.utcfromtimestamp(data['time'] / 1000)

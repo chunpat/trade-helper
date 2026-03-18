@@ -77,7 +77,7 @@
         <el-form-item label="交易所" prop="exchange">
           <el-select v-model="form.exchange" placeholder="请选择交易所" style="width: 100%">
             <el-option label="Binance" value="binance"></el-option>
-            <!-- Add more exchanges if needed -->
+            <el-option label="OKX" value="okx"></el-option>
           </el-select>
         </el-form-item>
         <el-form-item label="API Key" prop="api_key">
@@ -85,6 +85,14 @@
         </el-form-item>
         <el-form-item label="API Secret" prop="api_secret">
           <el-input v-model="form.api_secret" type="password" placeholder="请输入API Secret" show-password></el-input>
+        </el-form-item>
+        <el-form-item v-if="requiresPassphrase" label="Passphrase" prop="api_passphrase">
+          <el-input
+            v-model="form.api_passphrase"
+            type="password"
+            placeholder="请输入 OKX API Passphrase"
+            show-password
+          ></el-input>
         </el-form-item>
         <el-form-item label="初始资金" prop="initial_balance">
           <el-input-number v-model="form.initial_balance" :min="0" :precision="2" :step="1000" style="width: 100%"></el-input-number>
@@ -111,6 +119,14 @@ import { riskControl } from '@/api'
 export default {
   name: 'Accounts',
   setup() {
+    const passphraseValidator = (_rule, value, callback) => {
+      if (form.exchange === 'okx' && !String(value || '').trim()) {
+        callback(new Error('OKX 账户必须填写 Passphrase'))
+        return
+      }
+      callback()
+    }
+
     const accounts = ref([])
     const loading = ref(false)
     const dialogVisible = ref(false)
@@ -125,6 +141,7 @@ export default {
       exchange: 'binance',
       api_key: '',
       api_secret: '',
+      api_passphrase: '',
       initial_balance: 0.0,
       is_active: true
     })
@@ -133,10 +150,12 @@ export default {
       name: [{ required: true, message: '请输入账户名称', trigger: 'blur' }],
       exchange: [{ required: true, message: '请选择交易所', trigger: 'change' }],
       api_key: [{ required: true, message: '请输入API Key', trigger: 'blur' }],
-      api_secret: [{ required: true, message: '请输入API Secret', trigger: 'blur' }]
+      api_secret: [{ required: true, message: '请输入API Secret', trigger: 'blur' }],
+      api_passphrase: [{ validator: passphraseValidator, trigger: 'blur' }]
     }
 
     const dialogTitle = computed(() => isEdit.value ? '编辑账户' : '添加账户')
+    const requiresPassphrase = computed(() => form.exchange === 'okx')
 
     const fetchAccounts = async () => {
       loading.value = true
@@ -158,6 +177,7 @@ export default {
       form.exchange = 'binance'
       form.api_key = ''
       form.api_secret = ''
+      form.api_passphrase = ''
       form.initial_balance = 0.0
       form.is_active = true
       dialogVisible.value = true
@@ -169,7 +189,8 @@ export default {
       form.name = row.name
       form.exchange = row.exchange
       form.api_key = row.api_key
-      form.api_secret = row.api_secret 
+      form.api_secret = row.api_secret
+      form.api_passphrase = row.api_passphrase || ''
       form.initial_balance = row.initial_balance || 0.0
       form.is_active = row.is_active
       dialogVisible.value = true
@@ -269,6 +290,7 @@ export default {
                 exchange: form.exchange,
                 api_key: form.api_key,
                 api_secret: form.api_secret,
+                api_passphrase: form.api_passphrase || null,
                 initial_balance: form.initial_balance,
                 is_active: form.is_active
               })
@@ -279,6 +301,7 @@ export default {
                 exchange: form.exchange,
                 api_key: form.api_key,
                 api_secret: form.api_secret,
+                api_passphrase: form.api_passphrase || null,
                 initial_balance: form.initial_balance,
                 settings: {}
               })
@@ -288,7 +311,7 @@ export default {
             fetchAccounts()
           } catch (error) {
             console.error('Failed to submit form:', error)
-            ElMessage.error(isEdit.value ? '更新失败' : '创建失败')
+            ElMessage.error(error.response?.data?.detail || (isEdit.value ? '更新失败' : '创建失败'))
           } finally {
             submitting.value = false
           }
@@ -325,6 +348,7 @@ export default {
       formRef,
       testingAccountId,
       dialogTitle,
+      requiresPassphrase,
       showAddDialog,
       handleEdit,
       handleDelete,

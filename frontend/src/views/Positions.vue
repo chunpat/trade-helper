@@ -72,9 +72,10 @@
                 <el-option label="划转 (TRANSFER)" value="TRANSFER" />
               </el-select>
               <el-button type="primary" @click="fetchHistory">查询</el-button>
-              <el-button type="success" @click="syncHistory" :disabled="!historyFilters.account_id" :loading="syncingHistory">
-                同步最新历史
+              <el-button type="success" @click="syncHistory" :disabled="!canSync90DayHistory" :loading="syncingHistory">
+                {{ syncHistoryButtonText }}
               </el-button>
+              <el-tag v-if="historyBackfillLocked" type="info">当前账户 90 天历史已补</el-tag>
             </div>
           </div>
 
@@ -145,6 +146,7 @@
 
 <script>
 import { riskControl } from '@/api'
+import { ElMessageBox } from 'element-plus'
 
 export default {
   name: 'Positions',
@@ -170,7 +172,19 @@ export default {
   },
   computed: {
     positions () { return this.$store.state.positions },
-    accounts () { return this.$store.state.accounts }
+    accounts () { return this.$store.state.accounts },
+    selectedHistoryAccount () {
+      return this.accounts.find(acct => acct.id === this.historyFilters.account_id) || null
+    },
+    historyBackfillLocked () {
+      return Boolean(this.selectedHistoryAccount && this.selectedHistoryAccount.history_90d_backfilled_at)
+    },
+    canSync90DayHistory () {
+      return Boolean(this.historyFilters.account_id) && !this.historyBackfillLocked
+    },
+    syncHistoryButtonText () {
+      return this.historyBackfillLocked ? '90天历史已补' : '补90天历史'
+    }
   },
   async mounted () {
     try {
@@ -277,14 +291,32 @@ export default {
         this.$message.warning('请先选择一个账户')
         return
       }
+      if (this.historyBackfillLocked) {
+        this.$message.warning('当前账户已经完成过一次 90 天历史回补')
+        return
+      }
+      try {
+        await ElMessageBox.confirm(
+          '90 天历史回补按账号只允许执行一次，确认现在开始补数？',
+          '确认 90 天补数',
+          {
+            type: 'warning',
+            confirmButtonText: '开始补数',
+            cancelButtonText: '取消'
+          }
+        )
+      } catch {
+        return
+      }
       this.syncingHistory = true
       try {
-        await riskControl.syncAccountHistory(this.historyFilters.account_id)
-        this.$message.success('同步成功')
-        this.fetchHistory()
+        const result = await riskControl.syncAccountHistory(this.historyFilters.account_id, 90)
+        this.$message.success(result.message || '90天历史回补完成')
+        await this.$store.dispatch('fetchAccounts')
+        await this.fetchHistory()
       } catch (error) {
         console.error('Sync history failed:', error)
-        this.$message.error('同步失败: ' + (error.response?.data?.detail || error.message))
+        this.$message.error('回补失败: ' + (error.response?.data?.detail || error.message))
       } finally {
         this.syncingHistory = false
       }

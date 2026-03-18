@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import logging
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.core.database import get_db
@@ -7,15 +9,184 @@ from app.core.deps import get_current_user
 from app.schemas import risk_control as schemas
 from app.services.risk_control_service import RiskControlService
 from app.services.position_sync import get_position_sync_from_env
+from app.services.trade_review_service import TradeReviewService
 from app.core.database import SessionLocal
 
 router = APIRouter(prefix="/risk-control", tags=["风险控制"])
+
+REVIEW_RELEVANT_TRANSACTION_TYPES = {
+    "TRADE",
+    "REALIZED_PNL",
+    "FUNDING_FEE",
+    "COMMISSION",
+    "TRANSFER",
+    "INTERNAL_TRANSFER",
+}
+
+REVIEW_CASHFLOW_TRANSACTION_TYPES = {
+    "REALIZED_PNL",
+    "FUNDING_FEE",
+    "COMMISSION",
+    "TRANSFER",
+    "INTERNAL_TRANSFER",
+}
+
+OKX_EXCHANGE_ALIASES = {"okx", "okex"}
+ONE_TIME_HISTORY_BACKFILL_DAYS = 90
+
+
+def _apply_record_scope(query, transaction_model, record_scope: str):
+    if record_scope == "review":
+        return query.filter(transaction_model.type.in_(REVIEW_RELEVANT_TRANSACTION_TYPES))
+    if record_scope == "trades":
+        return query.filter(transaction_model.type == "TRADE")
+    if record_scope == "cashflow":
+        return query.filter(transaction_model.type.in_(REVIEW_CASHFLOW_TRANSACTION_TYPES))
+    return query
+
+
+def _build_transaction_history_query(
+    db: Session,
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    transaction_type: Optional[str] = None,
+    record_scope: str = "all",
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+):
+    from app.models.risk_control import TransactionHistory
+
+    query = db.query(TransactionHistory)
+
+    if account_id is not None:
+        query = query.filter(TransactionHistory.account_id == account_id)
+    if symbol:
+        query = query.filter(func.upper(TransactionHistory.symbol) == symbol.strip().upper())
+    query = _apply_record_scope(query, TransactionHistory, record_scope)
+
+    if transaction_type:
+        query = query.filter(TransactionHistory.type == transaction_type)
+    if start_time:
+        query = query.filter(TransactionHistory.time >= start_time)
+    if end_time:
+        query = query.filter(TransactionHistory.time <= end_time)
+
+    return query, TransactionHistory
+
+
+def _sum_realized_pnl(query, transaction_model, types: List[str]) -> float:
+    return float(
+        query.filter(transaction_model.type.in_(types))
+        .with_entities(func.sum(transaction_model.realized_pnl))
+        .scalar()
+        or 0.0
+    )
+
+
+def _coerce_time_range(start_time: Optional[datetime], end_time: Optional[datetime]) -> None:
+    if start_time and end_time and start_time > end_time:
+        raise HTTPException(status_code=400, detail="start_time must be earlier than end_time")
+
+
+def _normalize_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _normalize_time_range(
+    start_time: Optional[datetime],
+    end_time: Optional[datetime]
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    normalized_start = _normalize_datetime(start_time)
+    normalized_end = _normalize_datetime(end_time)
+    _coerce_time_range(normalized_start, normalized_end)
+    return normalized_start, normalized_end
+
+
+def _get_timeline_bucket_mode(start_time: Optional[datetime], end_time: Optional[datetime], history: list) -> str:
+    effective_start = start_time or (history[0].time if history else None)
+    effective_end = end_time or (history[-1].time if history else None)
+
+    if not effective_start or not effective_end:
+        return "day"
+
+    return "hour" if (effective_end - effective_start) <= timedelta(days=2) else "day"
+
+
+def _truncate_bucket(value: datetime, bucket_mode: str) -> datetime:
+    if bucket_mode == "hour":
+        return value.replace(minute=0, second=0, microsecond=0)
+    return value.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _format_bucket_label(value: datetime, bucket_mode: str) -> str:
+    if bucket_mode == "hour":
+        return value.strftime("%m-%d %H:00")
+    return value.strftime("%m-%d")
+
+
+def _timeline_contribution(item, transaction_type: Optional[str]) -> float:
+    realized_pnl = float(item.realized_pnl or 0.0)
+    commission = float(item.commission or 0.0)
+
+    if transaction_type == "TRADE":
+        return round(realized_pnl - commission, 2)
+    if transaction_type == "COMMISSION":
+        return round(realized_pnl, 2)
+    if transaction_type in {"REALIZED_PNL", "FUNDING_FEE"}:
+        return round(realized_pnl, 2)
+    if transaction_type in {"TRANSFER", "INTERNAL_TRANSFER"}:
+        return 0.0
+    if transaction_type:
+        return round(realized_pnl, 2)
+
+    if item.type == "REALIZED_PNL":
+        return round(realized_pnl, 2)
+    if item.type == "FUNDING_FEE":
+        return round(realized_pnl, 2)
+    if item.type == "COMMISSION":
+        return round(realized_pnl, 2)
+
+    return 0.0
+
+
+def _normalize_exchange_name(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+
+    normalized = value.strip().lower()
+    if normalized in OKX_EXCHANGE_ALIASES:
+        return "okx"
+    return normalized
+
+
+def _normalize_account_secret_fields(payload: dict) -> dict:
+    normalized = dict(payload)
+    if "exchange" in normalized:
+        normalized["exchange"] = _normalize_exchange_name(normalized.get("exchange"))
+
+    if "api_passphrase" in normalized and isinstance(normalized.get("api_passphrase"), str):
+        normalized["api_passphrase"] = normalized["api_passphrase"].strip() or None
+
+    return normalized
+
+
+def _validate_account_exchange_credentials(exchange: Optional[str], api_passphrase: Optional[str]) -> None:
+    if exchange == "okx" and not api_passphrase:
+        raise HTTPException(status_code=400, detail="OKX account requires api_passphrase")
 
 @router.post("/accounts/", response_model=schemas.AccountInDB)
 async def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """创建交易账户"""
     from app.models.risk_control import Account
-    db_account = Account(**account.dict())
+
+    payload = _normalize_account_secret_fields(account.dict())
+    _validate_account_exchange_credentials(payload.get("exchange"), payload.get("api_passphrase"))
+
+    db_account = Account(**payload)
     db.add(db_account)
     db.commit()
     db.refresh(db_account)
@@ -194,7 +365,11 @@ async def update_account(
     if not db_account:
         raise HTTPException(status_code=404, detail="Account not found")
     
-    update_data = account_update.dict(exclude_unset=True)
+    update_data = _normalize_account_secret_fields(account_update.dict(exclude_unset=True))
+    effective_exchange = update_data.get("exchange", db_account.exchange)
+    effective_api_passphrase = update_data.get("api_passphrase", db_account.api_passphrase)
+    _validate_account_exchange_credentials(effective_exchange, effective_api_passphrase)
+
     for field, value in update_data.items():
         setattr(db_account, field, value)
     
@@ -440,158 +615,328 @@ async def resolve_alert(
     db.refresh(alert)
     return alert
 
+
+@router.get("/history/transactions/summary", response_model=schemas.TransactionReviewSummary)
+async def get_transaction_review_summary(
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    transaction_type: Optional[str] = Query(None, alias="type"),
+    record_scope: str = Query("review"),
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取交易复盘概览统计。"""
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    base_query, TransactionHistory = _build_transaction_history_query(
+        db=db,
+        account_id=account_id,
+        symbol=symbol,
+        transaction_type=transaction_type,
+        record_scope=record_scope,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    total_count = base_query.count()
+    trade_query = base_query if transaction_type == "TRADE" else base_query.filter(TransactionHistory.type == "TRADE")
+    trade_count = trade_query.count()
+    win_count = trade_query.filter(TransactionHistory.realized_pnl > 0).count()
+    loss_count = trade_query.filter(TransactionHistory.realized_pnl < 0).count()
+
+    trade_realized_pnl = float(
+        trade_query.with_entities(func.sum(TransactionHistory.realized_pnl)).scalar() or 0.0
+    )
+    trade_commission_cost = float(
+        trade_query.with_entities(func.sum(TransactionHistory.commission)).scalar() or 0.0
+    )
+
+    if transaction_type == "TRADE":
+        gross_realized_pnl = trade_realized_pnl
+        commission_cost = trade_commission_cost
+        funding_pnl = 0.0
+        transfer_amount = 0.0
+    elif transaction_type == "REALIZED_PNL":
+        gross_realized_pnl = _sum_realized_pnl(base_query, TransactionHistory, ["REALIZED_PNL"])
+        commission_cost = 0.0
+        funding_pnl = 0.0
+        transfer_amount = 0.0
+    elif transaction_type == "COMMISSION":
+        gross_realized_pnl = 0.0
+        commission_cost = abs(_sum_realized_pnl(base_query, TransactionHistory, ["COMMISSION"]))
+        funding_pnl = 0.0
+        transfer_amount = 0.0
+    elif transaction_type == "FUNDING_FEE":
+        gross_realized_pnl = 0.0
+        commission_cost = 0.0
+        funding_pnl = _sum_realized_pnl(base_query, TransactionHistory, ["FUNDING_FEE"])
+        transfer_amount = 0.0
+    elif transaction_type in {"TRANSFER", "INTERNAL_TRANSFER"}:
+        gross_realized_pnl = 0.0
+        commission_cost = 0.0
+        funding_pnl = 0.0
+        transfer_amount = _sum_realized_pnl(base_query, TransactionHistory, [transaction_type])
+    elif transaction_type:
+        gross_realized_pnl = float(
+            base_query.with_entities(func.sum(TransactionHistory.realized_pnl)).scalar() or 0.0
+        )
+        commission_cost = 0.0
+        funding_pnl = 0.0
+        transfer_amount = 0.0
+    else:
+        gross_realized_pnl = _sum_realized_pnl(base_query, TransactionHistory, ["REALIZED_PNL"])
+        commission_cost = abs(_sum_realized_pnl(base_query, TransactionHistory, ["COMMISSION"]))
+        funding_pnl = _sum_realized_pnl(base_query, TransactionHistory, ["FUNDING_FEE"])
+        transfer_amount = _sum_realized_pnl(base_query, TransactionHistory, ["TRANSFER", "INTERNAL_TRANSFER"])
+
+    win_rate = round((win_count / trade_count) * 100, 2) if trade_count else 0.0
+    average_trade_pnl = round((trade_realized_pnl / trade_count), 2) if trade_count else 0.0
+
+    positive_trade_pnl = float(
+        trade_query.filter(TransactionHistory.realized_pnl > 0)
+        .with_entities(func.sum(TransactionHistory.realized_pnl))
+        .scalar()
+        or 0.0
+    )
+    negative_trade_pnl = float(
+        trade_query.filter(TransactionHistory.realized_pnl < 0)
+        .with_entities(func.sum(TransactionHistory.realized_pnl))
+        .scalar()
+        or 0.0
+    )
+
+    profit_factor = None
+    if negative_trade_pnl < 0:
+        profit_factor = round(positive_trade_pnl / abs(negative_trade_pnl), 2)
+
+    net_trading_pnl = round(gross_realized_pnl + funding_pnl - commission_cost, 2)
+
+    return schemas.TransactionReviewSummary(
+        total_count=total_count,
+        trade_count=trade_count,
+        win_count=win_count,
+        loss_count=loss_count,
+        win_rate=win_rate,
+        gross_realized_pnl=round(gross_realized_pnl, 2),
+        commission_cost=round(commission_cost, 2),
+        funding_pnl=round(funding_pnl, 2),
+        transfer_amount=round(transfer_amount, 2),
+        net_trading_pnl=net_trading_pnl,
+        average_trade_pnl=average_trade_pnl,
+        profit_factor=profit_factor,
+    )
+
+
+@router.get("/history/transactions/timeline", response_model=schemas.TransactionHistoryTimeline)
+async def get_transaction_review_timeline(
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    transaction_type: Optional[str] = Query(None, alias="type"),
+    record_scope: str = Query("review"),
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取交易复盘盈亏时间序列。"""
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    base_query, TransactionHistory = _build_transaction_history_query(
+        db=db,
+        account_id=account_id,
+        symbol=symbol,
+        transaction_type=transaction_type,
+        record_scope=record_scope,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    history = base_query.order_by(TransactionHistory.time.asc()).all()
+
+    if not history:
+        return schemas.TransactionHistoryTimeline(
+            xAxis=[],
+            series=[
+                schemas.TransactionTimelineSeries(name="区间净值", type="bar", data=[]),
+                schemas.TransactionTimelineSeries(name="累计净值", type="line", data=[]),
+                schemas.TransactionTimelineSeries(name="成交笔数", type="line", data=[]),
+            ],
+        )
+
+    bucket_mode = _get_timeline_bucket_mode(start_time, end_time, history)
+    bucket_start = _truncate_bucket(start_time or history[0].time, bucket_mode)
+    bucket_end = _truncate_bucket(end_time or history[-1].time, bucket_mode)
+    step = timedelta(hours=1) if bucket_mode == "hour" else timedelta(days=1)
+
+    bucket_values = {}
+    bucket_trade_counts = {}
+    for item in history:
+        bucket_key = _truncate_bucket(item.time, bucket_mode)
+        bucket_values[bucket_key] = round(
+            bucket_values.get(bucket_key, 0.0) + _timeline_contribution(item, transaction_type),
+            2,
+        )
+        if item.type == "TRADE":
+            bucket_trade_counts[bucket_key] = bucket_trade_counts.get(bucket_key, 0) + 1
+
+    buckets = []
+    current = bucket_start
+    while current <= bucket_end:
+        buckets.append(current)
+        current += step
+
+    x_axis = [_format_bucket_label(bucket, bucket_mode) for bucket in buckets]
+    period_values = [round(bucket_values.get(bucket, 0.0), 2) for bucket in buckets]
+    trade_counts = [float(bucket_trade_counts.get(bucket, 0)) for bucket in buckets]
+
+    cumulative_values = []
+    running_total = 0.0
+    for value in period_values:
+        running_total = round(running_total + value, 2)
+        cumulative_values.append(running_total)
+
+    return schemas.TransactionHistoryTimeline(
+        xAxis=x_axis,
+        series=[
+            schemas.TransactionTimelineSeries(name="区间净值", type="bar", data=period_values),
+            schemas.TransactionTimelineSeries(name="累计净值", type="line", data=cumulative_values),
+            schemas.TransactionTimelineSeries(name="成交笔数", type="line", data=trade_counts),
+        ],
+    )
+
+
+@router.get("/history/completed-trades", response_model=schemas.CompletedTradeReviewList)
+async def get_completed_trade_history(
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取按完整开平仓聚合后的已完成交易。"""
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    service = TradeReviewService(db)
+    result = service.list_completed_trades(
+        account_id=account_id,
+        symbol=symbol,
+        start_time=start_time,
+        end_time=end_time,
+        skip=skip,
+        limit=limit,
+    )
+    return schemas.CompletedTradeReviewList(**result)
+
+
+@router.get("/history/completed-trades/summary", response_model=schemas.CompletedTradeReviewSummary)
+async def get_completed_trade_summary(
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取完整交易口径的复盘概览。"""
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    service = TradeReviewService(db)
+    result = service.summarize_completed_trades(
+        account_id=account_id,
+        symbol=symbol,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    return schemas.CompletedTradeReviewSummary(**result)
+
+
+@router.get("/history/completed-trades/timeline", response_model=schemas.TransactionHistoryTimeline)
+async def get_completed_trade_timeline(
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取完整交易口径的复盘时间序列。"""
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    service = TradeReviewService(db)
+    result = service.completed_trade_timeline(
+        account_id=account_id,
+        symbol=symbol,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    return schemas.TransactionHistoryTimeline(**result)
+
 @router.get("/history/transactions", response_model=List[schemas.TransactionHistoryInDB])
 async def get_transaction_history(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
-    type: Optional[str] = None,
+    transaction_type: Optional[str] = Query(None, alias="type"),
+    record_scope: str = Query("review"),
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
     """获取交易历史（包括资金费等）"""
-    from app.models.risk_control import TransactionHistory
-    query = db.query(TransactionHistory)
-    
-    if account_id:
-        query = query.filter(TransactionHistory.account_id == account_id)
-    if symbol:
-        query = query.filter(TransactionHistory.symbol == symbol)
-    if type:
-        query = query.filter(TransactionHistory.type == type)
-        
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    query, TransactionHistory = _build_transaction_history_query(
+        db=db,
+        account_id=account_id,
+        symbol=symbol,
+        transaction_type=transaction_type,
+        record_scope=record_scope,
+        start_time=start_time,
+        end_time=end_time,
+    )
+
     history = query.order_by(TransactionHistory.time.desc()).offset(skip).limit(limit).all()
     return history
 
 @router.post("/accounts/{account_id}/sync-history")
 async def sync_account_history(
     account_id: int,
+    days: int = Query(7, ge=1, le=90),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    """同步账户历史数据（交易和资金费）"""
-    from app.models.risk_control import Account, TransactionHistory
-    from app.services.exchange.binance_adapter import create_adapter_for_account
+    """按时间窗口回补账户历史数据，并补齐账户快照。"""
+    from app.models.risk_control import Account
+    from app.services.history_backfill_service import backfill_account_history
     
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-        
-    adapter = create_adapter_for_account(account)
-    if not adapter:
-        raise HTTPException(status_code=400, detail="Failed to create adapter")
-        
-    # Clean up old trade-level records (T_ prefix) to avoid duplicates with new ORDER_ records
+    if days >= ONE_TIME_HISTORY_BACKFILL_DAYS and account.history_90d_backfilled_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="当前交易账户已经完成过一次 90 天历史回补，不能重复执行",
+        )
     try:
-        db.query(TransactionHistory).filter(
-            TransactionHistory.account_id == account_id,
-            TransactionHistory.transaction_id.like('T_%')
-        ).delete(synchronize_session=False)
-        db.commit()
+        result = await backfill_account_history(
+            db,
+            account,
+            days=days,
+            include_snapshots=True,
+        )
+        if days >= ONE_TIME_HISTORY_BACKFILL_DAYS and account.history_90d_backfilled_at is None:
+            account.history_90d_backfilled_at = datetime.utcnow()
+            db.add(account)
+            db.commit()
+            db.refresh(account)
+
+        result["history_90d_backfilled_at"] = (
+            account.history_90d_backfilled_at.isoformat() if account.history_90d_backfilled_at else None
+        )
+        result["history_90d_backfill_locked"] = account.history_90d_backfilled_at is not None
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:
-        logging.warning("Failed to clean up old trade records: %s", e)
-        db.rollback()
-
-    # Fetch Income History (includes FUNDING_FEE, REALIZED_PNL, COMMISSION, TRANSFER)
-    # Note: This is a simplified sync. In production, we should track last synced time.
-    try:
-        income_history = await adapter.fetch_income_history(limit=100)
-        user_trades = await adapter.fetch_user_trades(limit=100)
-        
-        count = 0
-        # Process Income
-        if income_history:
-            for item in income_history:
-                tran_id = item.get('tranId')
-                if not tran_id:
-                    continue
-                exists = db.query(TransactionHistory).filter(
-                    TransactionHistory.transaction_id == str(tran_id)
-                ).first()
-                if not exists:
-                    db_item = TransactionHistory(
-                        account_id=account_id,
-                        symbol=item.get('symbol'),
-                        type=item.get('incomeType'),
-                        side=None,
-                        price=None,
-                        qty=None,
-                        quote_qty=None,
-                        commission=None,
-                        commission_asset=item.get('asset'),
-                        realized_pnl=float(item.get('income')),
-                        time=datetime.utcfromtimestamp(item.get('time') / 1000),
-                        transaction_id=str(tran_id)
-                    )
-                    db.add(db_item)
-                    count += 1
-
-        # Process Trades (Aggregated by orderId)
-        if user_trades:
-            aggregated_trades = {}
-            for trade in user_trades:
-                oid = str(trade.get('orderId'))
-                if not oid: continue
-                
-                if oid not in aggregated_trades:
-                    aggregated_trades[oid] = {
-                        'symbol': trade.get('symbol'),
-                        'side': trade.get('side'),
-                        'price_sum': float(trade.get('price', 0)) * float(trade.get('qty', 0)),
-                        'qty': float(trade.get('qty', 0)),
-                        'quote_qty': float(trade.get('quoteQty', 0)),
-                        'commission': float(trade.get('commission', 0)),
-                        'commission_asset': trade.get('commissionAsset'),
-                        'realized_pnl': float(trade.get('realizedPnl', 0)),
-                        'time': trade.get('time')
-                    }
-                else:
-                    item = aggregated_trades[oid]
-                    item['price_sum'] += float(trade.get('price', 0)) * float(trade.get('qty', 0))
-                    item['qty'] += float(trade.get('qty', 0))
-                    item['quote_qty'] += float(trade.get('quoteQty', 0))
-                    item['commission'] += float(trade.get('commission', 0))
-                    item['realized_pnl'] += float(trade.get('realizedPnl', 0))
-                    item['time'] = max(item['time'], trade.get('time'))
-
-            for oid, data in aggregated_trades.items():
-                global_id = f"ORDER_{oid}"
-                exists = db.query(TransactionHistory).filter(
-                    TransactionHistory.transaction_id == global_id
-                ).first()
-                
-                avg_price = data['price_sum'] / data['qty'] if data['qty'] > 0 else 0
-                
-                if not exists:
-                    db_item = TransactionHistory(
-                        account_id=account_id,
-                        symbol=data['symbol'],
-                        type="TRADE",
-                        side=data['side'],
-                        price=avg_price,
-                        qty=data['qty'],
-                        quote_qty=data['quote_qty'],
-                        commission=data['commission'],
-                        commission_asset=data['commission_asset'],
-                        realized_pnl=data['realized_pnl'],
-                        time=datetime.utcfromtimestamp(data['time'] / 1000),
-                        order_id=oid,
-                        transaction_id=global_id
-                    )
-                    db.add(db_item)
-                    count += 1
-                else:
-                    # Update existing aggregated record
-                    exists.price = avg_price
-                    exists.qty = data['qty']
-                    exists.quote_qty = data['quote_qty']
-                    exists.commission = data['commission']
-                    exists.realized_pnl = data['realized_pnl']
-                    exists.time = datetime.fromtimestamp(data['time'] / 1000)
-                    db.add(exists)
-
-        db.commit()
-        return {"message": f"Synced {count} history items"}
-    except Exception as e:
+        logging.exception("sync history failed for account %s", account_id)
         raise HTTPException(status_code=500, detail=str(e))

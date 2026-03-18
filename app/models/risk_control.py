@@ -16,6 +16,8 @@ class Account(Base, BaseMixin):
     exchange = Column(String(50), nullable=False)
     api_key = Column(String(255), nullable=False)
     api_secret = Column(String(255), nullable=False)
+    api_passphrase = Column(String(255), nullable=True)
+    history_90d_backfilled_at = Column(DateTime, nullable=True)
     name = Column(String(100))
     is_active = Column(Boolean, default=True)
     settings = Column(JSON)
@@ -118,6 +120,7 @@ class TransactionHistory(Base, BaseMixin):
     symbol = Column(String(20))
     type = Column(String(50), nullable=False)  # TRADE, FUNDING_FEE, COMMISSION, REALIZED_PNL
     side = Column(String(10)) # BUY, SELL
+    position_side = Column(String(10)) # LONG, SHORT, NET
     price = Column(Float)
     qty = Column(Float)
     quote_qty = Column(Float)

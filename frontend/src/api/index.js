@@ -103,8 +103,23 @@ export const riskControl = {
   getTransactionHistory(params) {
     return api.get('/risk-control/history/transactions', { params })
   },
-  syncAccountHistory(accountId) {
-    return api.post(`/risk-control/accounts/${accountId}/sync-history`)
+  getTransactionReviewSummary(params) {
+    return api.get('/risk-control/history/transactions/summary', { params })
+  },
+  getTransactionReviewTimeline(params) {
+    return api.get('/risk-control/history/transactions/timeline', { params })
+  },
+  getCompletedTrades(params) {
+    return api.get('/risk-control/history/completed-trades', { params })
+  },
+  getCompletedTradeSummary(params) {
+    return api.get('/risk-control/history/completed-trades/summary', { params })
+  },
+  getCompletedTradeTimeline(params) {
+    return api.get('/risk-control/history/completed-trades/timeline', { params })
+  },
+  syncAccountHistory(accountId, days = 90) {
+    return api.post(`/risk-control/accounts/${accountId}/sync-history`, null, { params: { days } })
   },
 
   // Auth endpoints

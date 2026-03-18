@@ -24,6 +24,10 @@
           <el-icon><Histogram /></el-icon>
           <span>持仓监控</span>
         </el-menu-item>
+        <el-menu-item index="/trade-review">
+          <el-icon><Document /></el-icon>
+          <span>交易复盘</span>
+        </el-menu-item>
         <el-menu-item index="/risk-alerts">
           <el-icon><Warning /></el-icon>
           <span>风险预警</span>
@@ -68,7 +72,7 @@
 </template>
 
 <script>
-import { DataLine, Wallet, TrendCharts, Histogram, Warning, Setting, CaretBottom } from '@element-plus/icons-vue'
+import { DataLine, Wallet, TrendCharts, Histogram, Document, Warning, Setting, CaretBottom } from '@element-plus/icons-vue'
 
 export default {
   name: 'App',
@@ -83,6 +87,7 @@ export default {
     Wallet,
     TrendCharts,
     Histogram,
+    Document,
     Warning,
     Setting,
     CaretBottom
