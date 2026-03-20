@@ -14,13 +14,14 @@
         <el-button
           type="success"
           plain
-          :disabled="!filters.account_id || hasCompleted90DayBackfill"
+          :disabled="!filters.account_id || hasCompleted90DayBackfill || syncingHistory"
           :loading="syncingHistory"
           @click="syncHistory"
         >
           {{ syncHistoryButtonText }}
         </el-button>
-        <el-tag v-if="hasCompleted90DayBackfill" type="info" effect="dark">当前账户 90 天历史已补</el-tag>
+        <el-tag v-if="syncingHistory" type="warning" effect="dark">90天补数进行中</el-tag>
+        <el-tag v-else-if="hasCompleted90DayBackfill" type="info" effect="dark">当前账户 90 天历史已补</el-tag>
         <el-button type="primary" :loading="isRefreshing" @click="refreshAll({ resetPage: true })">
           刷新复盘
         </el-button>
@@ -640,6 +641,7 @@ export default {
   name: 'TradeReview',
   setup() {
     const store = useStore()
+    const HISTORY_SYNC_POLL_INTERVAL_MS = 2000
     const timelineChartRef = ref(null)
     const holdingCurveChartRef = ref(null)
     const completedTradeDrawerVisible = ref(false)
@@ -706,7 +708,7 @@ export default {
     ))
     const hasCompleted90DayBackfill = computed(() => Boolean(selectedHistoryAccount.value?.history_90d_backfilled_at))
     const syncHistoryButtonText = computed(() => (
-      hasCompleted90DayBackfill.value ? '90天历史已补' : '补90天历史'
+      syncingHistory.value ? '90天补数进行中' : (hasCompleted90DayBackfill.value ? '90天历史已补' : '补90天历史')
     ))
     const isRefreshing = computed(() => Object.values(loading).some(Boolean))
     const rawHistoryScopeLabel = computed(() => {
@@ -741,6 +743,24 @@ export default {
     let timelineChart = null
     let holdingCurveChart = null
     let resizeHandler = null
+    let historySyncPollTimer = null
+
+    const clearHistorySyncPollTimer = () => {
+      if (historySyncPollTimer !== null && typeof window !== 'undefined') {
+        window.clearTimeout(historySyncPollTimer)
+      }
+      historySyncPollTimer = null
+    }
+
+    const scheduleHistorySyncStatusPoll = (accountId, notifyOnFinish = false) => {
+      clearHistorySyncPollTimer()
+      if (typeof window === 'undefined') {
+        return
+      }
+      historySyncPollTimer = window.setTimeout(() => {
+        fetchHistorySyncStatus(accountId, { notifyOnFinish })
+      }, HISTORY_SYNC_POLL_INTERVAL_MS)
+    }
 
     const normalizeSymbol = () => {
       filters.symbol = (filters.symbol || '').trim().toUpperCase()
@@ -1295,6 +1315,51 @@ export default {
       await Promise.all([fetchRawSummary(), fetchRawHistory()])
     }
 
+    const fetchHistorySyncStatus = async (accountId, { notifyOnFinish = false } = {}) => {
+      if (!accountId) {
+        syncingHistory.value = false
+        clearHistorySyncPollTimer()
+        return null
+      }
+
+      try {
+        const status = await riskControl.getAccountHistorySyncStatus(accountId)
+        if (filters.account_id !== accountId) {
+          return status
+        }
+
+        if (status.status === 'queued' || status.status === 'running') {
+          syncingHistory.value = true
+          scheduleHistorySyncStatusPoll(accountId, notifyOnFinish)
+          return status
+        }
+
+        syncingHistory.value = false
+        clearHistorySyncPollTimer()
+
+        if (status.status === 'success') {
+          await store.dispatch('fetchAccounts')
+          if (notifyOnFinish) {
+            ElMessage.success(status.message || '90天历史回补完成')
+            await refreshAll({ resetPage: true })
+          }
+        } else if (status.status === 'failed' && notifyOnFinish) {
+          ElMessage.error(status.error || status.message || '回补账户历史失败')
+        }
+
+        return status
+      } catch (error) {
+        if (filters.account_id === accountId) {
+          syncingHistory.value = false
+        }
+        clearHistorySyncPollTimer()
+        if (notifyOnFinish) {
+          ElMessage.error(error.response?.data?.detail || '获取回补状态失败')
+        }
+        return null
+      }
+    }
+
     const openCompletedTradeDrawer = (row) => {
       selectedCompletedTrade.value = row
       completedTradeDrawerVisible.value = true
@@ -1330,6 +1395,17 @@ export default {
       }
     )
 
+    watch(
+      () => filters.account_id,
+      async (accountId) => {
+        clearHistorySyncPollTimer()
+        syncingHistory.value = false
+        if (accountId) {
+          await fetchHistorySyncStatus(accountId)
+        }
+      }
+    )
+
     const syncHistory = async () => {
       if (!filters.account_id) {
         ElMessage.warning('请先选择一个账户')
@@ -1354,15 +1430,24 @@ export default {
       }
       syncingHistory.value = true
       try {
-        const result = await riskControl.syncAccountHistory(filters.account_id, 90)
-        ElMessage.success(result.message || '90天历史回补完成')
+        const result = await riskControl.startAccountHistorySync(filters.account_id, 90)
+        if (result.status === 'queued' || result.status === 'running') {
+          ElMessage.success(result.message || '90天历史回补已启动，正在后台执行')
+          scheduleHistorySyncStatusPoll(filters.account_id, true)
+          return
+        }
+
+        syncingHistory.value = false
         await store.dispatch('fetchAccounts')
+        ElMessage.success(result.message || '90天历史回补完成')
         await refreshAll({ resetPage: true })
       } catch (error) {
         console.error('Failed to sync account history:', error)
         ElMessage.error(error.response?.data?.detail || '回补账户历史失败')
       } finally {
-        syncingHistory.value = false
+        if (!historySyncPollTimer) {
+          syncingHistory.value = false
+        }
       }
     }
 
@@ -1379,6 +1464,7 @@ export default {
     })
 
     onBeforeUnmount(() => {
+      clearHistorySyncPollTimer()
       if (resizeHandler) {
         window.removeEventListener('resize', resizeHandler)
         resizeHandler = null

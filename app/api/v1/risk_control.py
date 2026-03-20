@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from datetime import datetime, timedelta, timezone
 import logging
@@ -33,6 +35,187 @@ REVIEW_CASHFLOW_TRANSACTION_TYPES = {
 
 OKX_EXCHANGE_ALIASES = {"okx", "okex"}
 ONE_TIME_HISTORY_BACKFILL_DAYS = 90
+SYNC_HISTORY_STATUS_POLL_RUNNING = {"queued", "running"}
+SYNC_HISTORY_JOBS: dict[int, dict] = {}
+SYNC_HISTORY_TASKS: dict[int, asyncio.Task] = {}
+
+
+def _datetime_to_iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
+
+
+def _build_sync_history_status(
+    *,
+    account_id: int,
+    days: int,
+    status: str,
+    account_name: Optional[str] = None,
+    message: Optional[str] = None,
+    error: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    finished_at: Optional[datetime] = None,
+    result: Optional[dict] = None,
+    history_90d_backfilled_at: Optional[datetime] = None,
+) -> dict:
+    return {
+        "account_id": account_id,
+        "account_name": account_name,
+        "days": days,
+        "status": status,
+        "message": message,
+        "error": error,
+        "started_at": _datetime_to_iso(started_at),
+        "finished_at": _datetime_to_iso(finished_at),
+        "result": result,
+        "history_90d_backfilled_at": _datetime_to_iso(history_90d_backfilled_at),
+        "history_90d_backfill_locked": history_90d_backfilled_at is not None,
+    }
+
+
+async def _run_sync_history_job(account_id: int, days: int) -> None:
+    from app.models.risk_control import Account
+    from app.services.history_backfill_service import backfill_account_history
+
+    started_at = datetime.utcnow()
+    db = SessionLocal()
+    try:
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            SYNC_HISTORY_JOBS[account_id] = _build_sync_history_status(
+                account_id=account_id,
+                account_name=None,
+                days=days,
+                status="failed",
+                error="Account not found",
+                started_at=started_at,
+                finished_at=datetime.utcnow(),
+            )
+            return
+
+        SYNC_HISTORY_JOBS[account_id] = _build_sync_history_status(
+            account_id=account.id,
+            account_name=account.name,
+            days=days,
+            status="running",
+            message="90天历史回补正在后台执行",
+            started_at=started_at,
+            history_90d_backfilled_at=account.history_90d_backfilled_at,
+        )
+
+        if days >= ONE_TIME_HISTORY_BACKFILL_DAYS and account.history_90d_backfilled_at is not None:
+            SYNC_HISTORY_JOBS[account_id] = _build_sync_history_status(
+                account_id=account.id,
+                account_name=account.name,
+                days=days,
+                status="completed",
+                message="当前交易账户已经完成过一次 90 天历史回补",
+                started_at=started_at,
+                finished_at=datetime.utcnow(),
+                history_90d_backfilled_at=account.history_90d_backfilled_at,
+            )
+            return
+
+        result = await backfill_account_history(
+            db,
+            account,
+            days=days,
+            include_snapshots=True,
+        )
+        if days >= ONE_TIME_HISTORY_BACKFILL_DAYS and account.history_90d_backfilled_at is None:
+            account.history_90d_backfilled_at = datetime.utcnow()
+            db.add(account)
+            db.commit()
+            db.refresh(account)
+
+        result["history_90d_backfilled_at"] = _datetime_to_iso(account.history_90d_backfilled_at)
+        result["history_90d_backfill_locked"] = account.history_90d_backfilled_at is not None
+
+        SYNC_HISTORY_JOBS[account_id] = _build_sync_history_status(
+            account_id=account.id,
+            account_name=account.name,
+            days=days,
+            status="success",
+            message=result.get("message") or "90天历史回补完成",
+            started_at=started_at,
+            finished_at=datetime.utcnow(),
+            result=result,
+            history_90d_backfilled_at=account.history_90d_backfilled_at,
+        )
+    except Exception as exc:
+        logging.exception("background sync history failed for account %s", account_id)
+        account = None
+        try:
+            account = db.query(Account).filter(Account.id == account_id).first()
+        except Exception:
+            logging.exception("failed to load account %s while capturing sync error", account_id)
+        SYNC_HISTORY_JOBS[account_id] = _build_sync_history_status(
+            account_id=account_id,
+            account_name=getattr(account, "name", None),
+            days=days,
+            status="failed",
+            error=str(exc),
+            started_at=started_at,
+            finished_at=datetime.utcnow(),
+            history_90d_backfilled_at=getattr(account, "history_90d_backfilled_at", None),
+        )
+    finally:
+        db.close()
+        current_task = SYNC_HISTORY_TASKS.get(account_id)
+        if current_task is asyncio.current_task():
+            SYNC_HISTORY_TASKS.pop(account_id, None)
+
+
+def _schedule_sync_history_job(account_id: int, account_name: Optional[str], days: int, history_90d_backfilled_at: Optional[datetime]) -> dict:
+    existing_task = SYNC_HISTORY_TASKS.get(account_id)
+    if existing_task and not existing_task.done():
+        current_status = dict(SYNC_HISTORY_JOBS.get(account_id) or {})
+        if current_status:
+            current_status["history_90d_backfilled_at"] = _datetime_to_iso(history_90d_backfilled_at)
+            current_status["history_90d_backfill_locked"] = history_90d_backfilled_at is not None
+            return current_status
+
+    scheduled_status = _build_sync_history_status(
+        account_id=account_id,
+        account_name=account_name,
+        days=days,
+        status="queued",
+        message="90天历史回补已启动，正在后台执行",
+        started_at=datetime.utcnow(),
+        history_90d_backfilled_at=history_90d_backfilled_at,
+    )
+    SYNC_HISTORY_JOBS[account_id] = scheduled_status
+    task = asyncio.create_task(_run_sync_history_job(account_id, days))
+    SYNC_HISTORY_TASKS[account_id] = task
+    return scheduled_status
+
+
+def _get_sync_history_status_payload(account) -> dict:
+    current_status = SYNC_HISTORY_JOBS.get(account.id)
+    if current_status:
+        payload = dict(current_status)
+        payload["history_90d_backfilled_at"] = _datetime_to_iso(account.history_90d_backfilled_at)
+        payload["history_90d_backfill_locked"] = account.history_90d_backfilled_at is not None
+        return payload
+
+    if account.history_90d_backfilled_at is not None:
+        return _build_sync_history_status(
+            account_id=account.id,
+            account_name=account.name,
+            days=ONE_TIME_HISTORY_BACKFILL_DAYS,
+            status="completed",
+            message="当前交易账户已经完成过一次 90 天历史回补",
+            finished_at=account.history_90d_backfilled_at,
+            history_90d_backfilled_at=account.history_90d_backfilled_at,
+        )
+
+    return _build_sync_history_status(
+        account_id=account.id,
+        account_name=account.name,
+        days=ONE_TIME_HISTORY_BACKFILL_DAYS,
+        status="idle",
+        message="当前账户暂无进行中的历史回补任务",
+        history_90d_backfilled_at=account.history_90d_backfilled_at,
+    )
 
 
 def _apply_record_scope(query, transaction_model, record_scope: str):
@@ -940,3 +1123,43 @@ async def sync_account_history(
     except Exception as e:
         logging.exception("sync history failed for account %s", account_id)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/accounts/{account_id}/sync-history/start", status_code=202)
+async def start_sync_account_history(
+    account_id: int,
+    days: int = Query(90, ge=1, le=90),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Start account history backfill in the background so the UI does not wait on a long request."""
+    from app.models.risk_control import Account
+
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if days >= ONE_TIME_HISTORY_BACKFILL_DAYS and account.history_90d_backfilled_at is not None:
+        raise HTTPException(status_code=409, detail="当前交易账户已经完成过一次 90 天历史回补，不能重复执行")
+
+    return _schedule_sync_history_job(
+        account.id,
+        account.name,
+        days,
+        account.history_90d_backfilled_at,
+    )
+
+
+@router.get("/accounts/{account_id}/sync-history/status")
+async def get_sync_account_history_status(
+    account_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """Return the latest background sync-history status for a single account."""
+    from app.models.risk_control import Account
+
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return _get_sync_history_status_payload(account)

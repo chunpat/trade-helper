@@ -59,7 +59,7 @@
         <el-tab-pane label="历史订单/资金费" name="history">
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px">
             <div style="display:flex; align-items:center; gap:8px; flex-wrap: wrap;">
-              <el-select v-model="historyFilters.account_id" placeholder="选择账户" clearable @change="fetchHistory" style="width:200px">
+              <el-select v-model="historyFilters.account_id" placeholder="选择账户" clearable @change="handleHistoryAccountChange" style="width:200px">
                 <el-option v-for="acct in accounts" :key="acct.id" :label="acct.name" :value="acct.id"></el-option>
               </el-select>
               <el-input v-model="historyFilters.symbol" placeholder="Symbol (e.g. BTCUSDT)" style="width: 180px" clearable @clear="fetchHistory" @keyup.enter="fetchHistory" />
@@ -72,10 +72,11 @@
                 <el-option label="划转 (TRANSFER)" value="TRANSFER" />
               </el-select>
               <el-button type="primary" @click="fetchHistory">查询</el-button>
-              <el-button type="success" @click="syncHistory" :disabled="!canSync90DayHistory" :loading="syncingHistory">
+              <el-button type="success" @click="syncHistory" :disabled="!canSync90DayHistory || syncingHistory" :loading="syncingHistory">
                 {{ syncHistoryButtonText }}
               </el-button>
-              <el-tag v-if="historyBackfillLocked" type="info">当前账户 90 天历史已补</el-tag>
+              <el-tag v-if="syncingHistory" type="warning">90天补数进行中</el-tag>
+              <el-tag v-else-if="historyBackfillLocked" type="info">当前账户 90 天历史已补</el-tag>
             </div>
           </div>
 
@@ -152,6 +153,7 @@ export default {
   name: 'Positions',
   data () {
     return {
+      HISTORY_SYNC_POLL_INTERVAL_MS: 2000,
       activeTab: 'active',
       selectedAccount: null,
       loadingPositions: false,
@@ -165,6 +167,7 @@ export default {
         symbol: '',
         type: ''
       },
+      historySyncPollTimer: null,
       historyPage: 1,
       historyPageSize: 20,
       historyTotal: 0
@@ -183,7 +186,7 @@ export default {
       return Boolean(this.historyFilters.account_id) && !this.historyBackfillLocked
     },
     syncHistoryButtonText () {
-      return this.historyBackfillLocked ? '90天历史已补' : '补90天历史'
+      return this.syncingHistory ? '90天补数进行中' : (this.historyBackfillLocked ? '90天历史已补' : '补90天历史')
     }
   },
   async mounted () {
@@ -196,7 +199,77 @@ export default {
       console.error('failed fetch positions', e)
     }
   },
+  beforeUnmount () {
+    this.clearHistorySyncPoller()
+  },
   methods: {
+    clearHistorySyncPoller () {
+      if (this.historySyncPollTimer && typeof window !== 'undefined') {
+        window.clearTimeout(this.historySyncPollTimer)
+      }
+      this.historySyncPollTimer = null
+    },
+    scheduleHistorySyncStatusPoll (accountId, notifyOnFinish = false) {
+      this.clearHistorySyncPoller()
+      if (typeof window === 'undefined') {
+        return
+      }
+      this.historySyncPollTimer = window.setTimeout(() => {
+        this.fetchHistorySyncStatus(accountId, { notifyOnFinish })
+      }, this.HISTORY_SYNC_POLL_INTERVAL_MS)
+    },
+    async fetchHistorySyncStatus (accountId, { notifyOnFinish = false } = {}) {
+      if (!accountId) {
+        this.syncingHistory = false
+        this.clearHistorySyncPoller()
+        return null
+      }
+
+      try {
+        const status = await riskControl.getAccountHistorySyncStatus(accountId)
+        if (this.historyFilters.account_id !== accountId) {
+          return status
+        }
+
+        if (status.status === 'queued' || status.status === 'running') {
+          this.syncingHistory = true
+          this.scheduleHistorySyncStatusPoll(accountId, notifyOnFinish)
+          return status
+        }
+
+        this.syncingHistory = false
+        this.clearHistorySyncPoller()
+
+        if (status.status === 'success') {
+          await this.$store.dispatch('fetchAccounts')
+          if (notifyOnFinish) {
+            this.$message.success(status.message || '90天历史回补完成')
+            await this.fetchHistory()
+          }
+        } else if (status.status === 'failed' && notifyOnFinish) {
+          this.$message.error('回补失败: ' + (status.error || status.message || '回补账户历史失败'))
+        }
+
+        return status
+      } catch (error) {
+        if (this.historyFilters.account_id === accountId) {
+          this.syncingHistory = false
+        }
+        this.clearHistorySyncPoller()
+        if (notifyOnFinish) {
+          this.$message.error('获取回补状态失败: ' + (error.response?.data?.detail || error.message))
+        }
+        return null
+      }
+    },
+    async handleHistoryAccountChange () {
+      this.clearHistorySyncPoller()
+      this.syncingHistory = false
+      await this.fetchHistory()
+      if (this.historyFilters.account_id) {
+        await this.fetchHistorySyncStatus(this.historyFilters.account_id)
+      }
+    },
     accountName(id) {
       const acct = this.$store.getters.getAccountById(id)
       return acct ? acct.name : `#${id}`
@@ -310,15 +383,24 @@ export default {
       }
       this.syncingHistory = true
       try {
-        const result = await riskControl.syncAccountHistory(this.historyFilters.account_id, 90)
-        this.$message.success(result.message || '90天历史回补完成')
+        const result = await riskControl.startAccountHistorySync(this.historyFilters.account_id, 90)
+        if (result.status === 'queued' || result.status === 'running') {
+          this.$message.success(result.message || '90天历史回补已启动，正在后台执行')
+          this.scheduleHistorySyncStatusPoll(this.historyFilters.account_id, true)
+          return
+        }
+
+        this.syncingHistory = false
         await this.$store.dispatch('fetchAccounts')
+        this.$message.success(result.message || '90天历史回补完成')
         await this.fetchHistory()
       } catch (error) {
         console.error('Sync history failed:', error)
         this.$message.error('回补失败: ' + (error.response?.data?.detail || error.message))
       } finally {
-        this.syncingHistory = false
+        if (!this.historySyncPollTimer) {
+          this.syncingHistory = false
+        }
       }
     },
     handleHistorySizeChange(val) {
