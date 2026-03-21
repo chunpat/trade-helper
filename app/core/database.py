@@ -59,7 +59,8 @@ def init_db():
         Position,
         RiskAlert,
         OrderLog,
-        TickerHistory
+        TickerHistory,
+        DailyTradeReview,
     )
     from app.models.market_anomaly import (
         MarketMetricSnapshot,
@@ -144,3 +145,20 @@ def init_db():
     except Exception:
         import logging
         logging.exception("init_db: failed to add accounts.history_90d_backfilled_at column (ignored)")
+
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            res = conn.execute(text("SHOW COLUMNS FROM daily_trade_reviews LIKE 'linked_orders'"))
+            exists = res.first() is not None
+            if not exists:
+                import logging
+                logging.info("init_db: daily_trade_reviews.linked_orders missing, attempting to add it")
+                try:
+                    conn.execute(text("ALTER TABLE daily_trade_reviews ADD COLUMN IF NOT EXISTS linked_orders JSON DEFAULT NULL"))
+                except Exception as e:
+                    logging.info("init_db: ALTER daily_trade_reviews linked_orders IF NOT EXISTS failed — trying plain ALTER; error=%s", e)
+                    conn.execute(text("ALTER TABLE daily_trade_reviews ADD COLUMN linked_orders JSON DEFAULT NULL"))
+    except Exception:
+        import logging
+        logging.exception("init_db: failed to add daily_trade_reviews.linked_orders column (ignored)")

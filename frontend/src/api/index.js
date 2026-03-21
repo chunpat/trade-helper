@@ -118,6 +118,15 @@ export const riskControl = {
   getCompletedTradeTimeline(params) {
     return api.get('/risk-control/history/completed-trades/timeline', { params })
   },
+  getDailyTradeReview(params) {
+    return api.get('/risk-control/history/daily-reviews', { params })
+  },
+  saveDailyTradeReview(data) {
+    return api.put('/risk-control/history/daily-reviews', data)
+  },
+  listRecentDailyTradeReviews(params) {
+    return api.get('/risk-control/history/daily-reviews/recent', { params })
+  },
   startAccountHistorySync(accountId, days = 90) {
     return api.post(`/risk-control/accounts/${accountId}/sync-history/start`, null, { params: { days } })
   },

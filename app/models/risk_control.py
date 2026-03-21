@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Boolean, JSON, ForeignKey, Enum, Integer, DateTime
+from sqlalchemy import Column, String, Float, Boolean, JSON, ForeignKey, Enum, Integer, DateTime, Date, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -140,5 +140,22 @@ class AccountSnapshot(Base, BaseMixin):
     total_equity = Column(Float, nullable=False)
     total_balance = Column(Float, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    account = relationship("Account")
+
+
+class DailyTradeReview(Base, BaseMixin):
+    __tablename__ = "daily_trade_reviews"
+    __table_args__ = (
+        UniqueConstraint("account_id", "review_date", name="uq_daily_trade_review_account_date"),
+    )
+
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    review_date = Column(Date, nullable=False, index=True)
+    trade_tags = Column(JSON)
+    linked_orders = Column(JSON)
+    execution_score = Column(Integer)
+    error_analysis = Column(Text)
+    daily_summary = Column(Text)
 
     account = relationship("Account")

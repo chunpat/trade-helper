@@ -1,11 +1,11 @@
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import logging
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.schemas import risk_control as schemas
@@ -38,6 +38,7 @@ ONE_TIME_HISTORY_BACKFILL_DAYS = 90
 SYNC_HISTORY_STATUS_POLL_RUNNING = {"queued", "running"}
 SYNC_HISTORY_JOBS: dict[int, dict] = {}
 SYNC_HISTORY_TASKS: dict[int, asyncio.Task] = {}
+DEFAULT_DAILY_REVIEW_LIMIT = 8
 
 
 def _datetime_to_iso(value: Optional[datetime]) -> Optional[str]:
@@ -287,6 +288,111 @@ def _normalize_time_range(
     normalized_end = _normalize_datetime(end_time)
     _coerce_time_range(normalized_start, normalized_end)
     return normalized_start, normalized_end
+
+
+def _normalize_review_tags(values: Optional[List[str]]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for value in values or []:
+        if value is None:
+            continue
+        tag = str(value).strip()
+        if not tag:
+            continue
+        lowered = tag.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized.append(tag[:32])
+    return normalized[:12]
+
+
+def _normalize_review_linked_orders(
+    values: Optional[List[schemas.DailyTradeReviewLinkedOrder]],
+) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    seen = set()
+
+    for value in values or []:
+        if value is None:
+            continue
+
+        if hasattr(value, "model_dump"):
+            raw = value.model_dump()
+        elif hasattr(value, "dict"):
+            raw = value.dict()
+        else:
+            raw = dict(value)
+
+        trade_id = str(raw.get("trade_id") or "").strip()
+        if not trade_id:
+            continue
+
+        trade_key = trade_id.lower()
+        if trade_key in seen:
+            continue
+
+        symbol = str(raw.get("symbol") or "").strip().upper()
+        direction = str(raw.get("direction") or "").strip().upper()
+        if not symbol or not direction:
+            continue
+
+        open_time = raw.get("open_time")
+        close_time = raw.get("close_time")
+        open_time_value = open_time.isoformat() if isinstance(open_time, datetime) else str(open_time or "").strip()
+        close_time_value = close_time.isoformat() if isinstance(close_time, datetime) else str(close_time or "").strip()
+        if not open_time_value or not close_time_value:
+            continue
+
+        position_side = str(raw.get("position_side") or "").strip().upper() or None
+        order_ids: List[str] = []
+        order_seen = set()
+        for item in raw.get("order_ids") or []:
+            order_id = str(item or "").strip()
+            if not order_id:
+                continue
+            order_key = order_id.lower()
+            if order_key in order_seen:
+                continue
+            order_seen.add(order_key)
+            order_ids.append(order_id[:100])
+
+        normalized.append({
+            "trade_id": trade_id[:128],
+            "symbol": symbol[:50],
+            "direction": direction[:20],
+            "position_side": position_side[:20] if position_side else None,
+            "open_time": open_time_value,
+            "close_time": close_time_value,
+            "net_pnl": round(float(raw.get("net_pnl") or 0.0), 8),
+            "order_ids": order_ids[:20],
+        })
+        seen.add(trade_key)
+
+    return normalized[:50]
+
+
+def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _serialize_daily_trade_review(note, *, exists: bool = True):
+    return schemas.DailyTradeReviewInDB(
+        id=getattr(note, "id", None),
+        account_id=note.account_id,
+        review_date=note.review_date,
+        trade_tags=list(note.trade_tags or []),
+        linked_orders=list(note.linked_orders or []),
+        execution_score=note.execution_score,
+        error_analysis=note.error_analysis,
+        daily_summary=note.daily_summary,
+        exists=exists,
+        created_at=getattr(note, "created_at", None),
+        updated_at=getattr(note, "updated_at", None),
+    )
 
 
 def _get_timeline_bucket_mode(start_time: Optional[datetime], end_time: Optional[datetime], history: list) -> str:
@@ -1052,6 +1158,105 @@ async def get_completed_trade_timeline(
         end_time=end_time,
     )
     return schemas.TransactionHistoryTimeline(**result)
+
+
+@router.get("/history/daily-reviews", response_model=schemas.DailyTradeReviewInDB)
+async def get_daily_trade_review(
+    account_id: int,
+    review_date: date = Query(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取某个账户某一天的日级复盘记录。"""
+    from app.models.risk_control import Account, DailyTradeReview
+
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    note = (
+        db.query(DailyTradeReview)
+        .filter(DailyTradeReview.account_id == account_id)
+        .filter(DailyTradeReview.review_date == review_date)
+        .first()
+    )
+    if not note:
+        return schemas.DailyTradeReviewInDB(
+            id=None,
+            account_id=account_id,
+            review_date=review_date,
+            trade_tags=[],
+            linked_orders=[],
+            execution_score=None,
+            error_analysis=None,
+            daily_summary=None,
+            exists=False,
+            created_at=None,
+            updated_at=None,
+        )
+
+    return _serialize_daily_trade_review(note)
+
+
+@router.put("/history/daily-reviews", response_model=schemas.DailyTradeReviewInDB)
+async def upsert_daily_trade_review(
+    payload: schemas.DailyTradeReviewUpsert,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """按账户 + 日期保存日级复盘记录。"""
+    from app.models.risk_control import Account, DailyTradeReview
+
+    account = db.query(Account).filter(Account.id == payload.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    note = (
+        db.query(DailyTradeReview)
+        .filter(DailyTradeReview.account_id == payload.account_id)
+        .filter(DailyTradeReview.review_date == payload.review_date)
+        .first()
+    )
+    if not note:
+        note = DailyTradeReview(
+            account_id=payload.account_id,
+            review_date=payload.review_date,
+        )
+        db.add(note)
+
+    note.trade_tags = _normalize_review_tags(payload.trade_tags)
+    note.linked_orders = _normalize_review_linked_orders(payload.linked_orders)
+    note.execution_score = payload.execution_score
+    note.error_analysis = _normalize_optional_text(payload.error_analysis)
+    note.daily_summary = _normalize_optional_text(payload.daily_summary)
+
+    db.commit()
+    db.refresh(note)
+    return _serialize_daily_trade_review(note)
+
+
+@router.get("/history/daily-reviews/recent", response_model=List[schemas.DailyTradeReviewInDB])
+async def list_recent_daily_trade_reviews(
+    account_id: int,
+    limit: int = Query(DEFAULT_DAILY_REVIEW_LIMIT, ge=1, le=30),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """列出某个账户最近保存的日级复盘记录。"""
+    from app.models.risk_control import Account, DailyTradeReview
+
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    notes = (
+        db.query(DailyTradeReview)
+        .filter(DailyTradeReview.account_id == account_id)
+        .order_by(DailyTradeReview.review_date.desc(), DailyTradeReview.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_serialize_daily_trade_review(note) for note in notes]
 
 @router.get("/history/transactions", response_model=List[schemas.TransactionHistoryInDB])
 async def get_transaction_history(

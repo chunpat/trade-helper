@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, validator
 from typing import Optional, Dict, List
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 class RiskLevel(str, Enum):
@@ -332,3 +332,38 @@ class CompletedTradeReviewSummary(BaseModel):
     average_net_pnl: float = Field(..., description="平均每笔完整交易净盈亏")
     average_holding_minutes: float = Field(..., description="平均持仓时长（分钟）")
     profit_factor: Optional[float] = Field(None, description="完整交易盈亏因子")
+
+
+class DailyTradeReviewLinkedOrder(BaseModel):
+    trade_id: str = Field(..., description="完整交易ID")
+    symbol: str = Field(..., description="币种")
+    direction: str = Field(..., description="方向")
+    position_side: Optional[str] = Field(None, description="持仓侧")
+    open_time: datetime = Field(..., description="开仓时间")
+    close_time: datetime = Field(..., description="平仓时间")
+    net_pnl: float = Field(..., description="净盈亏")
+    order_ids: List[str] = Field(default_factory=list, description="关联订单ID列表")
+
+
+class DailyTradeReviewBase(BaseModel):
+    review_date: date = Field(..., description="复盘日期")
+    trade_tags: List[str] = Field(default_factory=list, description="交易标签")
+    linked_orders: List[DailyTradeReviewLinkedOrder] = Field(default_factory=list, description="关联订单/完整交易")
+    execution_score: Optional[int] = Field(None, ge=1, le=5, description="执行评分，1-5")
+    error_analysis: Optional[str] = Field(None, description="错误归因")
+    daily_summary: Optional[str] = Field(None, description="日级复盘总结")
+
+
+class DailyTradeReviewUpsert(DailyTradeReviewBase):
+    account_id: int
+
+
+class DailyTradeReviewInDB(DailyTradeReviewBase):
+    id: Optional[int] = None
+    account_id: int
+    exists: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True

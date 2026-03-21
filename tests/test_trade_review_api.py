@@ -19,7 +19,7 @@ def review_client():
         connect_args={'check_same_thread': False},
         poolclass=StaticPool,
     )
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
     Base.metadata.create_all(bind=engine)
 
     def override_get_db():
@@ -286,6 +286,135 @@ def test_transaction_history_supports_cashflow_scope(review_client):
     assert len(payload) == 6
     assert all(item['type'] != 'TRADE' for item in payload)
     assert all(item['type'] != 'EVENT_CONTRACTS_ORDER' for item in payload)
+
+
+def test_daily_trade_review_returns_empty_state_when_missing(review_client):
+    client, session_factory = review_client
+    account_id = seed_trade_review_history(session_factory)
+
+    response = client.get(
+        '/api/v1/risk-control/history/daily-reviews',
+        params={
+            'account_id': account_id,
+            'review_date': '2026-01-02',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['account_id'] == account_id
+    assert payload['review_date'] == '2026-01-02'
+    assert payload['trade_tags'] == []
+    assert payload['execution_score'] is None
+    assert payload['error_analysis'] is None
+    assert payload['daily_summary'] is None
+    assert payload['exists'] is False
+
+
+def test_daily_trade_review_upsert_normalizes_tags_and_text(review_client):
+    client, session_factory = review_client
+    account_id = seed_trade_review_history(session_factory)
+
+    save_response = client.put(
+        '/api/v1/risk-control/history/daily-reviews',
+        json={
+            'account_id': account_id,
+            'review_date': '2026-01-02',
+            'trade_tags': [' 按计划执行 ', '', '冲动交易', '按计划执行', '冲动交易 '],
+            'linked_orders': [
+                {
+                    'trade_id': 'review-trade-1',
+                    'symbol': 'btcusdt',
+                    'direction': 'long',
+                    'position_side': 'LONG',
+                    'open_time': '2026-01-02T08:00:00',
+                    'close_time': '2026-01-02T09:00:00',
+                    'net_pnl': 88.12,
+                    'order_ids': ['ORDER_1', 'ORDER_2', 'ORDER_2'],
+                },
+                {
+                    'trade_id': 'review-trade-1',
+                    'symbol': 'BTCUSDT',
+                    'direction': 'LONG',
+                    'position_side': 'LONG',
+                    'open_time': '2026-01-02T08:00:00',
+                    'close_time': '2026-01-02T09:00:00',
+                    'net_pnl': 88.12,
+                    'order_ids': ['ORDER_1'],
+                },
+            ],
+            'execution_score': 4,
+            'error_analysis': ' 追单导致入场过早  ',
+            'daily_summary': ' 方向判断没错，但出手还是太快。 '
+        },
+    )
+
+    assert save_response.status_code == 200
+    payload = save_response.json()
+    assert payload['exists'] is True
+    assert payload['trade_tags'] == ['按计划执行', '冲动交易']
+    assert len(payload['linked_orders']) == 1
+    assert payload['linked_orders'][0]['trade_id'] == 'review-trade-1'
+    assert payload['linked_orders'][0]['symbol'] == 'BTCUSDT'
+    assert payload['linked_orders'][0]['direction'] == 'LONG'
+    assert payload['linked_orders'][0]['order_ids'] == ['ORDER_1', 'ORDER_2']
+    assert payload['execution_score'] == 4
+    assert payload['error_analysis'] == '追单导致入场过早'
+    assert payload['daily_summary'] == '方向判断没错，但出手还是太快。'
+    assert payload['created_at'] is not None
+    assert payload['updated_at'] is not None
+
+    fetch_response = client.get(
+        '/api/v1/risk-control/history/daily-reviews',
+        params={
+            'account_id': account_id,
+            'review_date': '2026-01-02',
+        },
+    )
+
+    assert fetch_response.status_code == 200
+    fetched = fetch_response.json()
+    assert fetched['id'] == payload['id']
+    assert fetched['trade_tags'] == ['按计划执行', '冲动交易']
+    assert fetched['linked_orders'][0]['order_ids'] == ['ORDER_1', 'ORDER_2']
+    assert fetched['exists'] is True
+
+
+def test_recent_daily_trade_reviews_return_latest_dates_first(review_client):
+    client, session_factory = review_client
+    account_id = seed_trade_review_history(session_factory)
+
+    for review_date, score in [
+        ('2026-01-01', 3),
+        ('2026-01-03', 5),
+        ('2026-01-02', 4),
+    ]:
+        response = client.put(
+            '/api/v1/risk-control/history/daily-reviews',
+            json={
+                'account_id': account_id,
+                'review_date': review_date,
+                'trade_tags': ['按计划执行'],
+                'execution_score': score,
+                'error_analysis': None,
+                'daily_summary': f'{review_date} summary',
+            },
+        )
+        assert response.status_code == 200
+
+    recent_response = client.get(
+        '/api/v1/risk-control/history/daily-reviews/recent',
+        params={
+            'account_id': account_id,
+            'limit': 2,
+        },
+    )
+
+    assert recent_response.status_code == 200
+    payload = recent_response.json()
+    assert [item['review_date'] for item in payload] == ['2026-01-03', '2026-01-02']
+    assert [item['execution_score'] for item in payload] == [5, 4]
+    assert all('linked_orders' in item for item in payload)
 
 
 def seed_completed_round_trip_history(session_factory):

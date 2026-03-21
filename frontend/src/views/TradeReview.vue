@@ -137,23 +137,197 @@
       </el-col>
 
       <el-col :xs="24" :lg="8">
-        <el-card shadow="hover" class="notes-card">
+        <el-card ref="reviewNoteCardRef" shadow="hover" class="notes-card">
           <template #header>
             <div class="section-header compact">
               <div>
                 <span>复盘结论 / 标签</span>
-                <p>二期会把标签、评分和日级复盘持久化到这里</p>
+                <p>按账户 + 日期保存交易标签、执行评分、错误归因和日级复盘总结</p>
               </div>
+              <el-tag v-if="filters.account_id" type="info" effect="plain">
+                {{ selectedHistoryAccount ? selectedHistoryAccount.name : `#${filters.account_id}` }}
+              </el-tag>
             </div>
           </template>
 
-          <div class="notes-placeholder">
-            <el-empty description="先把完整交易看清，再补主观复盘记录。" />
-            <div class="phase-two-tags">
-              <el-tag>交易标签</el-tag>
-              <el-tag>执行评分</el-tag>
-              <el-tag>错误归因</el-tag>
-              <el-tag>日级总结</el-tag>
+          <div v-if="!filters.account_id" class="notes-placeholder">
+            <el-empty description="先选择一个账户，再开始记录这一天的复盘结论。" />
+          </div>
+
+          <div v-else class="review-note-panel" v-loading="reviewNoteLoading">
+            <div class="review-note-toolbar">
+              <div class="review-note-toolbar-field">
+                <span class="filter-label">复盘日期</span>
+                <el-date-picker
+                  v-model="reviewNoteDate"
+                  type="date"
+                  value-format="YYYY-MM-DD"
+                  placeholder="选择复盘日期"
+                />
+              </div>
+
+              <div class="review-note-toolbar-meta">
+                <el-tag :type="dailyReviewMeta.exists ? 'success' : 'info'" effect="plain">
+                  {{ dailyReviewMeta.exists ? '已保存' : '未保存' }}
+                </el-tag>
+                <span v-if="dailyReviewMeta.updated_at" class="review-note-updated-at">
+                  更新于 {{ formatDateTime(dailyReviewMeta.updated_at) }}
+                </span>
+              </div>
+            </div>
+
+            <el-form label-position="top" class="review-note-form">
+              <el-form-item label="交易标签">
+                <el-select
+                  v-model="dailyReviewForm.trade_tags"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  collapse-tags
+                  collapse-tags-tooltip
+                  placeholder="输入后回车创建标签"
+                >
+                  <el-option
+                    v-for="tag in reviewTagSuggestions"
+                    :key="tag"
+                    :label="tag"
+                    :value="tag"
+                  />
+                </el-select>
+              </el-form-item>
+
+              <el-form-item label="执行评分">
+                <div class="review-score-row">
+                  <el-rate v-model="dailyReviewForm.execution_score" :max="5" show-score score-template="{value} 分" />
+                  <span class="review-score-hint">5 分代表执行最稳、最符合计划。</span>
+                </div>
+              </el-form-item>
+
+              <el-form-item label="错误归因">
+                <el-input
+                  v-model="dailyReviewForm.error_analysis"
+                  type="textarea"
+                  :rows="3"
+                  maxlength="400"
+                  show-word-limit
+                  placeholder="记录今天最关键的执行偏差、情绪问题或风控失误"
+                />
+              </el-form-item>
+
+              <el-form-item label="日级总结">
+                <el-input
+                  v-model="dailyReviewForm.daily_summary"
+                  type="textarea"
+                  :rows="4"
+                  maxlength="800"
+                  show-word-limit
+                  placeholder="总结今天的环境、计划兑现情况，以及明天要保留或修正的动作"
+                />
+              </el-form-item>
+
+              <el-form-item label="关联订单">
+                <div class="linked-order-panel">
+                  <div class="linked-order-toolbar">
+                    <el-button plain :disabled="!linkableCompletedTrades.length" @click="openTradeLinkDialog">
+                      从当前完整交易列表选择
+                    </el-button>
+                    <span class="review-score-hint">可以从下方完整交易直接创建复盘，也可以在这里一次关联多个订单。</span>
+                  </div>
+
+                  <el-empty
+                    v-if="!dailyReviewForm.linked_orders.length"
+                    description="还没有关联订单，可从完整交易列表直接创建，或在这里批量选择。"
+                    :image-size="72"
+                  />
+
+                  <div v-else class="linked-order-list">
+                    <div
+                      v-for="item in dailyReviewForm.linked_orders"
+                      :key="item.trade_id"
+                      class="linked-order-item"
+                    >
+                      <div class="linked-order-head">
+                        <strong>{{ item.symbol }}</strong>
+                        <div class="linked-order-meta-tags">
+                          <el-tag :type="item.direction === 'LONG' ? 'success' : 'danger'" effect="plain">
+                            {{ item.direction === 'LONG' ? '做多' : '做空' }}
+                          </el-tag>
+                          <el-tag v-if="item.position_side" type="info" effect="plain">{{ item.position_side }}</el-tag>
+                          <el-tag type="info" effect="plain">{{ item.order_ids.length }} 个订单</el-tag>
+                        </div>
+                      </div>
+
+                      <div class="linked-order-meta">
+                        <span>{{ formatDateTime(item.open_time) }} 至 {{ formatDateTime(item.close_time) }}</span>
+                        <span :class="pnlClass(item.net_pnl)">{{ formatSignedCurrency(item.net_pnl) }}</span>
+                      </div>
+
+                      <div v-if="item.order_ids.length" class="linked-order-tags">
+                        <el-tag
+                          v-for="orderId in item.order_ids.slice(0, 4)"
+                          :key="`${item.trade_id}-${orderId}`"
+                          size="small"
+                          effect="plain"
+                        >
+                          {{ orderId }}
+                        </el-tag>
+                        <span v-if="item.order_ids.length > 4" class="linked-order-more">
+                          +{{ item.order_ids.length - 4 }}
+                        </span>
+                      </div>
+
+                      <div class="linked-order-actions">
+                        <el-button link type="danger" @click="removeLinkedOrder(item.trade_id)">移除</el-button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </el-form-item>
+
+              <div class="review-note-actions">
+                <el-button type="primary" :loading="savingReviewNote" @click="saveDailyReviewNote">保存复盘</el-button>
+                <el-button :disabled="reviewNoteLoading || savingReviewNote" @click="fetchDailyReviewNote">重新加载</el-button>
+              </div>
+            </el-form>
+
+            <div class="review-note-history">
+              <div class="review-note-history-header">
+                <span>最近日级复盘</span>
+                <el-tag type="info" effect="plain">{{ recentDailyReviews.length }} 条</el-tag>
+              </div>
+
+              <el-empty v-if="!recentDailyReviews.length" description="当前账户还没有保存过日级复盘。" :image-size="72" />
+
+              <div v-else class="review-note-list">
+                <button
+                  v-for="item in recentDailyReviews"
+                  :key="item.review_date"
+                  type="button"
+                  class="review-note-list-item"
+                  @click="loadRecentDailyReview(item)"
+                >
+                  <div class="review-note-list-head">
+                    <strong>{{ item.review_date }}</strong>
+                    <el-tag v-if="item.execution_score" type="success" effect="plain">{{ item.execution_score }}/5 分</el-tag>
+                  </div>
+
+                  <div v-if="item.trade_tags && item.trade_tags.length" class="review-note-list-tags">
+                    <el-tag
+                      v-for="tag in item.trade_tags.slice(0, 3)"
+                      :key="`${item.review_date}-${tag}`"
+                      size="small"
+                      effect="plain"
+                    >
+                      {{ tag }}
+                    </el-tag>
+                  </div>
+
+                  <p>
+                    {{ item.daily_summary || item.error_analysis || `已关联 ${item.linked_orders?.length || 0} 笔订单，点击可回填到右侧表单。` }}
+                  </p>
+                </button>
+              </div>
             </div>
           </div>
         </el-card>
@@ -238,6 +412,18 @@
         <el-table-column prop="holding_minutes" label="持仓时长" width="140">
           <template #default="{ row }">
             {{ formatDuration(row.holding_minutes) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="复盘" width="160" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              :loading="quickLinkingTradeId === row.id"
+              @click.stop="createOrLinkReviewFromTrade(row)"
+            >
+              创建/关联复盘
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -378,6 +564,14 @@
             <el-tag v-if="selectedCompletedTrade.position_side" type="info" effect="plain">
               {{ selectedCompletedTrade.position_side }}
             </el-tag>
+            <el-button
+              type="primary"
+              plain
+              :loading="quickLinkingTradeId === selectedCompletedTrade.id"
+              @click="createOrLinkReviewFromTrade(selectedCompletedTrade)"
+            >
+              创建/关联复盘
+            </el-button>
           </div>
         </div>
 
@@ -562,6 +756,51 @@
         </el-card>
       </template>
     </el-drawer>
+
+    <el-dialog v-model="tradeLinkDialogVisible" title="关联订单" width="72%">
+      <p class="link-dialog-copy">当前只展示“完整交易分析”里当前筛选结果的这一页，可以多选后一次关联到当前复盘。</p>
+
+      <el-table
+        ref="tradeLinkTableRef"
+        :data="linkableCompletedTrades"
+        row-key="id"
+        border
+        stripe
+        @selection-change="handleTradeLinkSelectionChange"
+      >
+        <el-table-column type="selection" width="55" reserve-selection />
+        <el-table-column prop="close_time" label="平仓时间" min-width="180">
+          <template #default="{ row }">
+            {{ formatDateTime(row.close_time) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="symbol" label="币种" min-width="120" />
+        <el-table-column prop="direction" label="方向" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.direction === 'LONG' ? 'success' : 'danger'" effect="plain">
+              {{ row.direction === 'LONG' ? '做多' : '做空' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="订单数" width="120">
+          <template #default="{ row }">
+            {{ collectTradeOrderIds(row).length }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="net_pnl" label="净盈亏" width="140">
+          <template #default="{ row }">
+            <span :class="pnlClass(row.net_pnl)">{{ formatSignedCurrency(row.net_pnl) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="tradeLinkDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="confirmTradeLinks">关联所选订单</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -637,6 +876,49 @@ const createEmptyRawSummary = () => ({
   profit_factor: null
 })
 
+const DEFAULT_RECENT_DAILY_REVIEW_LIMIT = 6
+
+const reviewTagSuggestions = [
+  '按计划执行',
+  '冲动交易',
+  '止损坚决',
+  '过早止盈',
+  '逆势加仓',
+  '仓位过重',
+  '节奏稳定',
+  '等待不足',
+  '风控合格',
+  '情绪化',
+  '新闻驱动',
+  '复盘充分'
+]
+
+const createDateOnlyString = (value = new Date()) => {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const createEmptyDailyReviewForm = () => ({
+  trade_tags: [],
+  linked_orders: [],
+  execution_score: null,
+  error_analysis: '',
+  daily_summary: ''
+})
+
+const createEmptyDailyReviewMeta = () => ({
+  id: null,
+  exists: false,
+  created_at: null,
+  updated_at: null
+})
+
 export default {
   name: 'TradeReview',
   setup() {
@@ -644,10 +926,13 @@ export default {
     const HISTORY_SYNC_POLL_INTERVAL_MS = 2000
     const timelineChartRef = ref(null)
     const holdingCurveChartRef = ref(null)
+    const reviewNoteCardRef = ref(null)
+    const tradeLinkTableRef = ref(null)
     const completedTradeDrawerVisible = ref(false)
     const selectedCompletedTrade = ref(null)
     const holdingCurveMode = ref(loadHoldingCurveMode())
     const dateRange = ref(createDefaultDateRange())
+    const reviewNoteDate = ref(createDateOnlyString())
     const completedTrades = ref([])
     const completedTradePage = ref(1)
     const completedTradePageSize = ref(20)
@@ -657,6 +942,12 @@ export default {
     const rawHistoryPageSize = ref(20)
     const recordScope = ref('trades')
     const syncingHistory = ref(false)
+    const reviewNoteLoading = ref(false)
+    const savingReviewNote = ref(false)
+    const tradeLinkDialogVisible = ref(false)
+    const tradeLinkSelection = ref([])
+    const quickLinkingTradeId = ref(null)
+    const recentDailyReviews = ref([])
     const loading = reactive({
       completedSummary: false,
       completedTimeline: false,
@@ -666,6 +957,8 @@ export default {
     })
     const completedSummary = reactive(createEmptyCompletedSummary())
     const rawSummary = reactive(createEmptyRawSummary())
+    const dailyReviewForm = reactive(createEmptyDailyReviewForm())
+    const dailyReviewMeta = reactive(createEmptyDailyReviewMeta())
     const timelineData = reactive({
       xAxis: [],
       series: []
@@ -706,6 +999,7 @@ export default {
     const selectedHistoryAccount = computed(() => (
       accounts.value.find(account => account.id === filters.account_id) || null
     ))
+    const linkableCompletedTrades = computed(() => completedTrades.value.filter(item => item.account_id === filters.account_id))
     const hasCompleted90DayBackfill = computed(() => Boolean(selectedHistoryAccount.value?.history_90d_backfilled_at))
     const syncHistoryButtonText = computed(() => (
       syncingHistory.value ? '90天补数进行中' : (hasCompleted90DayBackfill.value ? '90天历史已补' : '补90天历史')
@@ -750,6 +1044,129 @@ export default {
         window.clearTimeout(historySyncPollTimer)
       }
       historySyncPollTimer = null
+    }
+
+    const getDefaultReviewDate = () => {
+      if (dateRange.value && dateRange.value.length === 2 && dateRange.value[1]) {
+        return createDateOnlyString(dateRange.value[1])
+      }
+      return createDateOnlyString()
+    }
+
+    const resetDailyReviewState = () => {
+      Object.assign(dailyReviewForm, createEmptyDailyReviewForm())
+      Object.assign(dailyReviewMeta, createEmptyDailyReviewMeta())
+    }
+
+    const collectTradeOrderIds = (trade) => {
+      const orderIds = []
+      const seen = new Set()
+      for (const leg of [...(trade?.entry_orders || []), ...(trade?.exit_orders || [])]) {
+        const orderId = (leg?.order_id || '').trim()
+        if (!orderId || seen.has(orderId)) {
+          continue
+        }
+        seen.add(orderId)
+        orderIds.push(orderId)
+      }
+      return orderIds
+    }
+
+    const normalizeLinkedOrders = (items = []) => {
+      const normalized = []
+      const seen = new Set()
+      for (const item of items || []) {
+        const tradeId = String(item?.trade_id || '').trim()
+        if (!tradeId || seen.has(tradeId)) {
+          continue
+        }
+
+        const orderIds = []
+        const orderSeen = new Set()
+        for (const orderId of item?.order_ids || []) {
+          const normalizedOrderId = String(orderId || '').trim()
+          if (!normalizedOrderId || orderSeen.has(normalizedOrderId)) {
+            continue
+          }
+          orderSeen.add(normalizedOrderId)
+          orderIds.push(normalizedOrderId)
+        }
+
+        normalized.push({
+          trade_id: tradeId,
+          symbol: String(item?.symbol || '').trim().toUpperCase(),
+          direction: String(item?.direction || '').trim().toUpperCase(),
+          position_side: item?.position_side || null,
+          open_time: item?.open_time,
+          close_time: item?.close_time,
+          net_pnl: Number(item?.net_pnl || 0),
+          order_ids: orderIds
+        })
+        seen.add(tradeId)
+      }
+      return normalized.slice(0, 50)
+    }
+
+    const createLinkedOrderFromTrade = (trade) => ({
+      trade_id: trade.id,
+      symbol: trade.symbol,
+      direction: trade.direction,
+      position_side: trade.position_side || null,
+      open_time: trade.open_time,
+      close_time: trade.close_time,
+      net_pnl: Number(trade.net_pnl || 0),
+      order_ids: collectTradeOrderIds(trade)
+    })
+
+    const mergeLinkedOrders = (existing = [], additions = []) => normalizeLinkedOrders([
+      ...(existing || []),
+      ...(additions || [])
+    ])
+
+    const focusReviewNotePanel = async () => {
+      await nextTick()
+      const target = reviewNoteCardRef.value?.$el || reviewNoteCardRef.value
+      if (target?.scrollIntoView) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+    }
+
+    const buildDailyReviewPayload = ({
+      accountId = filters.account_id,
+      reviewDate = reviewNoteDate.value,
+      source = dailyReviewForm,
+      overrides = {}
+    } = {}) => ({
+      account_id: accountId,
+      review_date: reviewDate,
+      trade_tags: Array.isArray(overrides.trade_tags ?? source.trade_tags) ? [...(overrides.trade_tags ?? source.trade_tags)] : [],
+      linked_orders: normalizeLinkedOrders(overrides.linked_orders ?? source.linked_orders ?? []),
+      execution_score: overrides.execution_score ?? source.execution_score ?? null,
+      error_analysis: overrides.error_analysis ?? source.error_analysis ?? '',
+      daily_summary: overrides.daily_summary ?? source.daily_summary ?? ''
+    })
+
+    const fetchDailyReviewRecord = async (accountId, reviewDate) => {
+      return riskControl.getDailyTradeReview({
+        account_id: accountId,
+        review_date: reviewDate
+      })
+    }
+
+    const applyDailyReviewRecord = (record) => {
+      Object.assign(dailyReviewForm, createEmptyDailyReviewForm(), {
+        trade_tags: Array.isArray(record?.trade_tags) ? [...record.trade_tags] : [],
+        linked_orders: normalizeLinkedOrders(record?.linked_orders || []),
+        execution_score: record?.execution_score ?? null,
+        error_analysis: record?.error_analysis || '',
+        daily_summary: record?.daily_summary || ''
+      })
+      Object.assign(dailyReviewMeta, createEmptyDailyReviewMeta(), {
+        id: record?.id ?? null,
+        exists: Boolean(record?.exists),
+        created_at: record?.created_at || null,
+        updated_at: record?.updated_at || null
+      })
     }
 
     const scheduleHistorySyncStatusPoll = (accountId, notifyOnFinish = false) => {
@@ -1265,6 +1682,177 @@ export default {
       }
     }
 
+    const fetchDailyReviewNote = async () => {
+      if (!filters.account_id || !reviewNoteDate.value) {
+        resetDailyReviewState()
+        return
+      }
+
+      reviewNoteLoading.value = true
+      try {
+        const data = await fetchDailyReviewRecord(filters.account_id, reviewNoteDate.value)
+        applyDailyReviewRecord(data)
+      } catch (error) {
+        console.error('Failed to fetch daily trade review:', error)
+        resetDailyReviewState()
+        ElMessage.error('获取日级复盘失败')
+      } finally {
+        reviewNoteLoading.value = false
+      }
+    }
+
+    const fetchRecentDailyReviews = async (accountId = filters.account_id) => {
+      if (!accountId) {
+        recentDailyReviews.value = []
+        return
+      }
+
+      try {
+        const data = await riskControl.listRecentDailyTradeReviews({
+          account_id: accountId,
+          limit: DEFAULT_RECENT_DAILY_REVIEW_LIMIT
+        })
+        recentDailyReviews.value = Array.isArray(data) ? data : []
+      } catch (error) {
+        console.error('Failed to fetch recent daily trade reviews:', error)
+        recentDailyReviews.value = []
+        ElMessage.error('获取最近复盘失败')
+      }
+    }
+
+    const saveDailyReviewNote = async () => {
+      if (!filters.account_id) {
+        ElMessage.warning('请先选择一个账户')
+        return
+      }
+      if (!reviewNoteDate.value) {
+        ElMessage.warning('请先选择复盘日期')
+        return
+      }
+
+      savingReviewNote.value = true
+      try {
+        const data = await riskControl.saveDailyTradeReview(buildDailyReviewPayload())
+        applyDailyReviewRecord(data)
+        await fetchRecentDailyReviews(filters.account_id)
+        ElMessage.success('复盘记录已保存')
+      } catch (error) {
+        console.error('Failed to save daily trade review:', error)
+        ElMessage.error(error.response?.data?.detail || '保存日级复盘失败')
+      } finally {
+        savingReviewNote.value = false
+      }
+    }
+
+    const loadRecentDailyReview = async (item) => {
+      if (!item?.review_date) {
+        return
+      }
+      if (reviewNoteDate.value === item.review_date) {
+        await fetchDailyReviewNote()
+        return
+      }
+      reviewNoteDate.value = item.review_date
+    }
+
+    const removeLinkedOrder = (tradeId) => {
+      dailyReviewForm.linked_orders = dailyReviewForm.linked_orders.filter(item => item.trade_id !== tradeId)
+    }
+
+    const handleTradeLinkSelectionChange = (selection) => {
+      tradeLinkSelection.value = selection.map(createLinkedOrderFromTrade)
+    }
+
+    const syncTradeLinkTableSelection = async () => {
+      await nextTick()
+      const table = tradeLinkTableRef.value
+      if (!table) {
+        return
+      }
+      table.clearSelection()
+      const selectedTradeIds = new Set(dailyReviewForm.linked_orders.map(item => item.trade_id))
+      for (const row of linkableCompletedTrades.value) {
+        if (selectedTradeIds.has(row.id)) {
+          table.toggleRowSelection(row, true)
+        }
+      }
+    }
+
+    const openTradeLinkDialog = async () => {
+      if (!filters.account_id) {
+        ElMessage.warning('请先选择一个账户')
+        return
+      }
+      if (!linkableCompletedTrades.value.length) {
+        ElMessage.warning('当前筛选结果这一页没有可关联的完整交易')
+        return
+      }
+      tradeLinkDialogVisible.value = true
+      tradeLinkSelection.value = []
+      await syncTradeLinkTableSelection()
+    }
+
+    const confirmTradeLinks = () => {
+      const currentPageTradeIds = new Set(linkableCompletedTrades.value.map(item => item.id))
+      const preserved = dailyReviewForm.linked_orders.filter(item => !currentPageTradeIds.has(item.trade_id))
+      dailyReviewForm.linked_orders = mergeLinkedOrders(preserved, tradeLinkSelection.value)
+      tradeLinkDialogVisible.value = false
+      ElMessage.success(`已加入 ${tradeLinkSelection.value.length} 笔订单，记得保存复盘`)
+    }
+
+    const createOrLinkReviewFromTrade = async (trade) => {
+      if (!trade?.id) {
+        return
+      }
+
+      const targetAccountId = trade.account_id
+      const targetReviewDate = createDateOnlyString(trade.close_time)
+      const linkedTrade = createLinkedOrderFromTrade(trade)
+      quickLinkingTradeId.value = trade.id
+
+      try {
+        const currentRecord = await fetchDailyReviewRecord(targetAccountId, targetReviewDate)
+        const alreadyLinked = (currentRecord?.linked_orders || []).some(item => item.trade_id === trade.id)
+        let savedRecord = currentRecord
+
+        if (!alreadyLinked) {
+          savedRecord = await riskControl.saveDailyTradeReview(buildDailyReviewPayload({
+            accountId: targetAccountId,
+            reviewDate: targetReviewDate,
+            source: currentRecord,
+            overrides: {
+              linked_orders: mergeLinkedOrders(currentRecord?.linked_orders || [], [linkedTrade])
+            }
+          }))
+          ElMessage.success('已创建/更新复盘并关联该订单')
+        } else {
+          ElMessage.success('该订单已经关联到对应复盘')
+        }
+
+        const accountChanged = filters.account_id !== targetAccountId
+        const reviewDateChanged = reviewNoteDate.value !== targetReviewDate
+        filters.account_id = targetAccountId
+        reviewNoteDate.value = targetReviewDate
+
+        if (accountChanged) {
+          await refreshAll({ resetPage: true })
+        } else if (!reviewDateChanged) {
+          applyDailyReviewRecord(savedRecord)
+        }
+
+        if (!accountChanged && !reviewDateChanged) {
+          await fetchRecentDailyReviews(targetAccountId)
+        }
+
+        await focusReviewNotePanel()
+      } catch (error) {
+        console.error('Failed to create or link review from trade:', error)
+        ElMessage.error(error.response?.data?.detail || '创建/关联复盘失败')
+      } finally {
+        quickLinkingTradeId.value = null
+      }
+    }
+
     const refreshAll = async ({ resetPage = false } = {}) => {
       if (resetPage) {
         completedTradePage.value = 1
@@ -1396,12 +1984,44 @@ export default {
     )
 
     watch(
+      () => dateRange.value,
+      (range) => {
+        if (!range || range.length !== 2 || !range[1]) {
+          return
+        }
+        reviewNoteDate.value = createDateOnlyString(range[1])
+      },
+      { deep: true }
+    )
+
+    watch(
       () => filters.account_id,
       async (accountId) => {
         clearHistorySyncPollTimer()
         syncingHistory.value = false
         if (accountId) {
-          await fetchHistorySyncStatus(accountId)
+          const nextReviewDate = getDefaultReviewDate()
+          const shouldFetchAfterSetup = reviewNoteDate.value === nextReviewDate
+          reviewNoteDate.value = nextReviewDate
+          await Promise.all([
+            fetchHistorySyncStatus(accountId),
+            fetchRecentDailyReviews(accountId)
+          ])
+          if (shouldFetchAfterSetup) {
+            await fetchDailyReviewNote()
+          }
+        } else {
+          recentDailyReviews.value = []
+          resetDailyReviewState()
+        }
+      }
+    )
+
+    watch(
+      () => reviewNoteDate.value,
+      async () => {
+        if (filters.account_id) {
+          await fetchDailyReviewNote()
         }
       }
     )
@@ -1487,6 +2107,8 @@ export default {
       completedTradePageSize,
       completedTradeTotal,
       completedTrades,
+      dailyReviewForm,
+      dailyReviewMeta,
       dateRange,
       dateShortcuts,
       filters,
@@ -1496,8 +2118,13 @@ export default {
       formatNumber,
       formatSignedCurrency,
       formatPercent,
+      collectTradeOrderIds,
+      confirmTradeLinks,
+      createOrLinkReviewFromTrade,
+      fetchDailyReviewNote,
       handleCompletedTradePageChange,
       handleCompletedTradeSizeChange,
+      handleTradeLinkSelectionChange,
       handleRawFilterChange,
       handleRawHistoryPageChange,
       handleRawHistorySizeChange,
@@ -1517,15 +2144,29 @@ export default {
       rawHistoryScopeLabel,
       rawHistoryTotal,
       rawScopeDescription,
+      recentDailyReviews,
       recordScope,
       recordScopeOptions,
+      removeLinkedOrder,
+      reviewNoteDate,
+      reviewNoteCardRef,
+      reviewNoteLoading,
+      reviewTagSuggestions,
       refreshAll,
       resetFilters,
+      saveDailyReviewNote,
+      savingReviewNote,
       selectedCompletedTrade,
       selectedHistoryAccount,
+      linkableCompletedTrades,
+      loadRecentDailyReview,
+      openTradeLinkDialog,
+      quickLinkingTradeId,
       syncingHistory,
       syncHistoryButtonText,
       syncHistory,
+      tradeLinkDialogVisible,
+      tradeLinkTableRef,
       timelineChartRef,
       typeTagType,
       accountName
@@ -1732,14 +2373,173 @@ export default {
   gap: 16px;
 }
 
-.curve-alert {
-  margin-bottom: 16px;
+.review-note-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
-.phase-two-tags {
+.review-note-toolbar {
   display: flex;
-  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.review-note-toolbar-field,
+.review-note-toolbar-meta {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+}
+
+.review-note-toolbar-meta {
+  align-items: flex-end;
+}
+
+.review-note-updated-at,
+.review-score-hint {
+  font-size: 12px;
+  color: #667085;
+}
+
+.review-note-form {
+  :deep(.el-form-item) {
+    margin-bottom: 16px;
+  }
+}
+
+.review-score-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.review-note-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.linked-order-panel,
+.linked-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.linked-order-toolbar,
+.linked-order-head,
+.linked-order-meta,
+.linked-order-tags,
+.linked-order-actions,
+.linked-order-meta-tags,
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.linked-order-toolbar,
+.linked-order-head,
+.linked-order-meta {
+  justify-content: space-between;
+}
+
+.linked-order-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid #eaecf0;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.linked-order-meta {
+  font-size: 13px;
+  color: #667085;
+}
+
+.linked-order-tags {
+  align-items: flex-start;
+}
+
+.linked-order-more,
+.link-dialog-copy {
+  font-size: 13px;
+  color: #667085;
+}
+
+.linked-order-actions {
+  justify-content: flex-end;
+}
+
+.review-note-history {
+  padding-top: 4px;
+  border-top: 1px solid #eaecf0;
+}
+
+.review-note-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+
+  span {
+    font-size: 14px;
+    font-weight: 600;
+    color: #101828;
+  }
+}
+
+.review-note-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.review-note-list-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid #eaecf0;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+
+  &:hover {
+    border-color: rgba(21, 94, 239, 0.32);
+    transform: translateY(-1px);
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+  }
+
+  p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #475467;
+  }
+}
+
+.review-note-list-head,
+.review-note-list-tags {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.curve-alert {
+  margin-bottom: 16px;
 }
 
 .pagination-wrap {
@@ -1810,6 +2610,15 @@ export default {
 
   .hero-actions {
     justify-content: flex-start;
+  }
+
+  .review-note-toolbar,
+  .review-note-toolbar-meta,
+  .linked-order-toolbar,
+  .linked-order-head,
+  .linked-order-meta {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 
