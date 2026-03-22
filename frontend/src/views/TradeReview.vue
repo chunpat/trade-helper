@@ -120,219 +120,229 @@
       </el-card>
     </section>
 
-    <el-row :gutter="20" class="content-grid">
-      <el-col :xs="24" :lg="16">
-        <el-card shadow="hover" class="timeline-card" v-loading="loading.completedTimeline">
-          <template #header>
-            <div class="section-header">
-              <div>
-                <span>完整交易净盈亏曲线</span>
-                <p>以平仓时刻为落点，展示每笔完整交易的净盈亏和累计结果</p>
-              </div>
-              <el-tag type="success" effect="dark">Round Trip</el-tag>
-            </div>
-          </template>
-          <div ref="timelineChartRef" class="timeline-chart"></div>
-        </el-card>
-      </el-col>
+    <el-card shadow="hover" class="timeline-card" v-loading="loading.completedTimeline">
+      <template #header>
+        <div class="section-header">
+          <div>
+            <span>完整交易分析</span>
+            <p>以平仓时刻为落点，展示每笔完整交易的净盈亏和累计结果</p>
+          </div>
+          <div class="timeline-header-right">
+            <el-radio-group v-model="timelineChartMode" size="small">
+              <el-radio-button label="equity">资金曲线</el-radio-button>
+              <el-radio-button label="pnl">单笔盈亏</el-radio-button>
+              <el-radio-button label="count">平仓笔数</el-radio-button>
+            </el-radio-group>
+          </div>
+        </div>
+      </template>
+      <div ref="timelineChartRef" class="timeline-chart"></div>
+    </el-card>
 
-      <el-col :xs="24" :lg="8">
-        <el-card ref="reviewNoteCardRef" shadow="hover" class="notes-card">
-          <template #header>
-            <div class="section-header compact">
-              <div>
-                <span>复盘结论 / 标签</span>
-                <p>按账户 + 日期保存交易标签、执行评分、错误归因和日级复盘总结</p>
-              </div>
-              <el-tag v-if="filters.account_id" type="info" effect="plain">
-                {{ selectedHistoryAccount ? selectedHistoryAccount.name : `#${filters.account_id}` }}
+    <el-card shadow="hover" class="notes-card" v-loading="reviewNoteLoading">
+      <template #header>
+        <div class="section-header">
+          <div>
+            <span>复盘结论 / 标签</span>
+            <p>按账户 + 日期保存交易标签、执行评分、错误归因和日级复盘总结</p>
+          </div>
+          <div class="notes-header-right">
+            <el-tag v-if="filters.account_id" type="info" effect="plain">
+              {{ selectedHistoryAccount ? selectedHistoryAccount.name : `#${filters.account_id}` }}
+            </el-tag>
+            <el-tag v-else type="warning" effect="plain">未选择账户</el-tag>
+            <el-button type="primary" size="small" @click="openReviewNoteDialog">
+              {{ filters.account_id ? '编辑复盘' : '选择账户' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <div class="review-note-history">
+        <div class="review-note-history-header">
+          <span>最近日级复盘</span>
+          <el-tag type="info" effect="plain">{{ recentDailyReviews.length }} 条</el-tag>
+        </div>
+
+        <el-empty v-if="!recentDailyReviews.length" description="还没有保存过日级复盘。" :image-size="72" />
+
+        <div v-else class="review-note-list">
+          <button
+            v-for="item in recentDailyReviews"
+            :key="item.review_date"
+            type="button"
+            class="review-note-list-item"
+            @click="loadRecentDailyReview(item); openReviewNoteDialog()"
+          >
+            <div class="review-note-list-head">
+              <strong>{{ item.review_date }}</strong>
+              <el-tag v-if="item.execution_score" type="success" effect="plain">{{ item.execution_score }}/5 分</el-tag>
+            </div>
+
+            <div v-if="item.trade_tags && item.trade_tags.length" class="review-note-list-tags">
+              <el-tag
+                v-for="tag in item.trade_tags.slice(0, 3)"
+                :key="`${item.review_date}-${tag}`"
+                size="small"
+                effect="plain"
+              >
+                {{ tag }}
               </el-tag>
             </div>
-          </template>
 
-          <div v-if="!filters.account_id" class="notes-placeholder">
-            <el-empty description="先选择一个账户，再开始记录这一天的复盘结论。" />
+            <p>
+              {{ item.daily_summary || item.error_analysis || `已关联 ${item.linked_orders?.length || 0} 笔订单，点击可编辑。` }}
+            </p>
+          </button>
+        </div>
+      </div>
+    </el-card>
+
+    <el-dialog v-model="reviewNoteDialogVisible" title="复盘结论 / 标签" width="640px" destroy-on-close>
+      <div class="review-note-panel" v-loading="reviewNoteLoading">
+        <div class="review-note-toolbar">
+          <div class="review-note-toolbar-field">
+            <span class="filter-label">复盘日期</span>
+            <el-date-picker
+              v-model="reviewNoteDate"
+              type="date"
+              value-format="YYYY-MM-DD"
+              placeholder="选择复盘日期"
+              :disabled="!filters.account_id"
+            />
           </div>
 
-          <div v-else class="review-note-panel" v-loading="reviewNoteLoading">
-            <div class="review-note-toolbar">
-              <div class="review-note-toolbar-field">
-                <span class="filter-label">复盘日期</span>
-                <el-date-picker
-                  v-model="reviewNoteDate"
-                  type="date"
-                  value-format="YYYY-MM-DD"
-                  placeholder="选择复盘日期"
-                />
-              </div>
+          <div class="review-note-toolbar-meta">
+            <el-tag :type="dailyReviewMeta.exists ? 'success' : 'info'" effect="plain">
+              {{ dailyReviewMeta.exists ? '已保存' : '未保存' }}
+            </el-tag>
+            <span v-if="dailyReviewMeta.updated_at" class="review-note-updated-at">
+              更新于 {{ formatDateTime(dailyReviewMeta.updated_at) }}
+            </span>
+          </div>
+        </div>
 
-              <div class="review-note-toolbar-meta">
-                <el-tag :type="dailyReviewMeta.exists ? 'success' : 'info'" effect="plain">
-                  {{ dailyReviewMeta.exists ? '已保存' : '未保存' }}
-                </el-tag>
-                <span v-if="dailyReviewMeta.updated_at" class="review-note-updated-at">
-                  更新于 {{ formatDateTime(dailyReviewMeta.updated_at) }}
-                </span>
-              </div>
+        <el-form label-position="top" class="review-note-form" :disabled="!filters.account_id">
+          <el-form-item label="交易标签">
+            <el-select
+              v-model="dailyReviewForm.trade_tags"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="输入后回车创建标签"
+              :disabled="!filters.account_id"
+            >
+              <el-option
+                v-for="tag in reviewTagSuggestions"
+                :key="tag"
+                :label="tag"
+                :value="tag"
+              />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="执行评分">
+            <div class="review-score-row">
+              <el-rate v-model="dailyReviewForm.execution_score" :max="5" show-score score-template="{value} 分" :disabled="!filters.account_id" />
+              <span class="review-score-hint">5 分代表执行最稳、最符合计划。</span>
             </div>
+          </el-form-item>
 
-            <el-form label-position="top" class="review-note-form">
-              <el-form-item label="交易标签">
-                <el-select
-                  v-model="dailyReviewForm.trade_tags"
-                  multiple
-                  filterable
-                  allow-create
-                  default-first-option
-                  collapse-tags
-                  collapse-tags-tooltip
-                  placeholder="输入后回车创建标签"
+          <el-form-item label="错误归因">
+            <el-input
+              v-model="dailyReviewForm.error_analysis"
+              type="textarea"
+              :rows="3"
+              maxlength="400"
+              show-word-limit
+              placeholder="记录今天最关键的执行偏差、情绪问题或风控失误"
+              :disabled="!filters.account_id"
+            />
+          </el-form-item>
+
+          <el-form-item label="日级总结">
+            <el-input
+              v-model="dailyReviewForm.daily_summary"
+              type="textarea"
+              :rows="4"
+              maxlength="800"
+              show-word-limit
+              placeholder="总结今天的环境、计划兑现情况，以及明天要保留或修正的动作"
+              :disabled="!filters.account_id"
+            />
+          </el-form-item>
+
+          <el-form-item label="关联订单">
+            <div class="linked-order-panel">
+              <div class="linked-order-toolbar">
+                <el-button plain :disabled="!filters.account_id || !linkableCompletedTrades.length" @click="openTradeLinkDialog">
+                  从当前完整交易列表选择
+                </el-button>
+                <span class="review-score-hint">可以从下方完整交易直接创建复盘，也可以在这里一次关联多个订单。</span>
+              </div>
+
+              <el-empty
+                v-if="!dailyReviewForm.linked_orders.length"
+                description="还没有关联订单，可从完整交易列表直接创建，或在这里批量选择。"
+                :image-size="72"
+              />
+
+              <div v-else class="linked-order-list">
+                <div
+                  v-for="item in dailyReviewForm.linked_orders"
+                  :key="item.trade_id"
+                  class="linked-order-item"
                 >
-                  <el-option
-                    v-for="tag in reviewTagSuggestions"
-                    :key="tag"
-                    :label="tag"
-                    :value="tag"
-                  />
-                </el-select>
-              </el-form-item>
-
-              <el-form-item label="执行评分">
-                <div class="review-score-row">
-                  <el-rate v-model="dailyReviewForm.execution_score" :max="5" show-score score-template="{value} 分" />
-                  <span class="review-score-hint">5 分代表执行最稳、最符合计划。</span>
-                </div>
-              </el-form-item>
-
-              <el-form-item label="错误归因">
-                <el-input
-                  v-model="dailyReviewForm.error_analysis"
-                  type="textarea"
-                  :rows="3"
-                  maxlength="400"
-                  show-word-limit
-                  placeholder="记录今天最关键的执行偏差、情绪问题或风控失误"
-                />
-              </el-form-item>
-
-              <el-form-item label="日级总结">
-                <el-input
-                  v-model="dailyReviewForm.daily_summary"
-                  type="textarea"
-                  :rows="4"
-                  maxlength="800"
-                  show-word-limit
-                  placeholder="总结今天的环境、计划兑现情况，以及明天要保留或修正的动作"
-                />
-              </el-form-item>
-
-              <el-form-item label="关联订单">
-                <div class="linked-order-panel">
-                  <div class="linked-order-toolbar">
-                    <el-button plain :disabled="!linkableCompletedTrades.length" @click="openTradeLinkDialog">
-                      从当前完整交易列表选择
-                    </el-button>
-                    <span class="review-score-hint">可以从下方完整交易直接创建复盘，也可以在这里一次关联多个订单。</span>
-                  </div>
-
-                  <el-empty
-                    v-if="!dailyReviewForm.linked_orders.length"
-                    description="还没有关联订单，可从完整交易列表直接创建，或在这里批量选择。"
-                    :image-size="72"
-                  />
-
-                  <div v-else class="linked-order-list">
-                    <div
-                      v-for="item in dailyReviewForm.linked_orders"
-                      :key="item.trade_id"
-                      class="linked-order-item"
-                    >
-                      <div class="linked-order-head">
-                        <strong>{{ item.symbol }}</strong>
-                        <div class="linked-order-meta-tags">
-                          <el-tag :type="item.direction === 'LONG' ? 'success' : 'danger'" effect="plain">
-                            {{ item.direction === 'LONG' ? '做多' : '做空' }}
-                          </el-tag>
-                          <el-tag v-if="item.position_side" type="info" effect="plain">{{ item.position_side }}</el-tag>
-                          <el-tag type="info" effect="plain">{{ item.order_ids.length }} 个订单</el-tag>
-                        </div>
-                      </div>
-
-                      <div class="linked-order-meta">
-                        <span>{{ formatDateTime(item.open_time) }} 至 {{ formatDateTime(item.close_time) }}</span>
-                        <span :class="pnlClass(item.net_pnl)">{{ formatSignedCurrency(item.net_pnl) }}</span>
-                      </div>
-
-                      <div v-if="item.order_ids.length" class="linked-order-tags">
-                        <el-tag
-                          v-for="orderId in item.order_ids.slice(0, 4)"
-                          :key="`${item.trade_id}-${orderId}`"
-                          size="small"
-                          effect="plain"
-                        >
-                          {{ orderId }}
-                        </el-tag>
-                        <span v-if="item.order_ids.length > 4" class="linked-order-more">
-                          +{{ item.order_ids.length - 4 }}
-                        </span>
-                      </div>
-
-                      <div class="linked-order-actions">
-                        <el-button link type="danger" @click="removeLinkedOrder(item.trade_id)">移除</el-button>
-                      </div>
+                  <div class="linked-order-head">
+                    <strong>{{ item.symbol }}</strong>
+                    <div class="linked-order-meta-tags">
+                      <el-tag :type="item.direction === 'LONG' ? 'success' : 'danger'" effect="plain">
+                        {{ item.direction === 'LONG' ? '做多' : '做空' }}
+                      </el-tag>
+                      <el-tag v-if="item.position_side" type="info" effect="plain">{{ item.position_side }}</el-tag>
+                      <el-tag type="info" effect="plain">{{ item.order_ids.length }} 个订单</el-tag>
                     </div>
                   </div>
-                </div>
-              </el-form-item>
 
-              <div class="review-note-actions">
-                <el-button type="primary" :loading="savingReviewNote" @click="saveDailyReviewNote">保存复盘</el-button>
-                <el-button :disabled="reviewNoteLoading || savingReviewNote" @click="fetchDailyReviewNote">重新加载</el-button>
-              </div>
-            </el-form>
-
-            <div class="review-note-history">
-              <div class="review-note-history-header">
-                <span>最近日级复盘</span>
-                <el-tag type="info" effect="plain">{{ recentDailyReviews.length }} 条</el-tag>
-              </div>
-
-              <el-empty v-if="!recentDailyReviews.length" description="当前账户还没有保存过日级复盘。" :image-size="72" />
-
-              <div v-else class="review-note-list">
-                <button
-                  v-for="item in recentDailyReviews"
-                  :key="item.review_date"
-                  type="button"
-                  class="review-note-list-item"
-                  @click="loadRecentDailyReview(item)"
-                >
-                  <div class="review-note-list-head">
-                    <strong>{{ item.review_date }}</strong>
-                    <el-tag v-if="item.execution_score" type="success" effect="plain">{{ item.execution_score }}/5 分</el-tag>
+                  <div class="linked-order-meta">
+                    <span>{{ formatDateTime(item.open_time) }} 至 {{ formatDateTime(item.close_time) }}</span>
+                    <span :class="pnlClass(item.net_pnl)">{{ formatSignedCurrency(item.net_pnl) }}</span>
                   </div>
 
-                  <div v-if="item.trade_tags && item.trade_tags.length" class="review-note-list-tags">
+                  <div v-if="item.order_ids.length" class="linked-order-tags">
                     <el-tag
-                      v-for="tag in item.trade_tags.slice(0, 3)"
-                      :key="`${item.review_date}-${tag}`"
+                      v-for="orderId in item.order_ids.slice(0, 4)"
+                      :key="`${item.trade_id}-${orderId}`"
                       size="small"
                       effect="plain"
                     >
-                      {{ tag }}
+                      {{ orderId }}
                     </el-tag>
+                    <span v-if="item.order_ids.length > 4" class="linked-order-more">
+                      +{{ item.order_ids.length - 4 }}
+                    </span>
                   </div>
 
-                  <p>
-                    {{ item.daily_summary || item.error_analysis || `已关联 ${item.linked_orders?.length || 0} 笔订单，点击可回填到右侧表单。` }}
-                  </p>
-                </button>
+                  <div class="linked-order-actions">
+                    <el-button link type="danger" :disabled="!filters.account_id" @click="removeLinkedOrder(item.trade_id)">移除</el-button>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="reviewNoteDialogVisible = false">关闭</el-button>
+          <el-button type="primary" :loading="savingReviewNote" :disabled="!filters.account_id" @click="saveDailyReviewNote">保存复盘</el-button>
+        </div>
+      </template>
+    </el-dialog>
 
     <el-card shadow="hover" class="history-card" v-loading="loading.completedTrades">
       <template #header>
@@ -927,10 +937,12 @@ export default {
     const timelineChartRef = ref(null)
     const holdingCurveChartRef = ref(null)
     const reviewNoteCardRef = ref(null)
+    const reviewNoteDialogVisible = ref(false)
     const tradeLinkTableRef = ref(null)
     const completedTradeDrawerVisible = ref(false)
     const selectedCompletedTrade = ref(null)
     const holdingCurveMode = ref(loadHoldingCurveMode())
+    const timelineChartMode = ref('equity') // 'equity' | 'pnl' | 'count'
     const dateRange = ref(createDefaultDateRange())
     const reviewNoteDate = ref(createDateOnlyString())
     const completedTrades = ref([])
@@ -1361,27 +1373,79 @@ export default {
       const [periodSeries, cumulativeSeries, tradeSeries] = timelineData.series
       const hasData = timelineData.xAxis.length > 0
 
+      const modeConfig = {
+        equity: {
+          title: '累计净盈亏',
+          series: [
+            {
+              ...(cumulativeSeries || { name: '累计净盈亏', type: 'line', data: [] }),
+              smooth: true,
+              symbolSize: 6,
+              areaStyle: {
+                color: 'rgba(21, 94, 239, 0.15)'
+              },
+              lineStyle: {
+                width: 2.5
+              }
+            }
+          ],
+          yAxisName: '累计净盈亏'
+        },
+        pnl: {
+          title: '单笔净盈亏',
+          series: [
+            {
+              ...(periodSeries || { name: '单笔净盈亏', type: 'bar', data: [] }),
+              barMaxWidth: 24,
+              itemStyle: {
+                borderRadius: [6, 6, 0, 0],
+                color: (params) => {
+                  const value = params.value
+                  if (value >= 0) {
+                    return '#0f766e'
+                  }
+                  return '#b42318'
+                }
+              }
+            }
+          ],
+          yAxisName: '单笔净盈亏'
+        },
+        count: {
+          title: '平仓笔数',
+          series: [
+            {
+              ...(tradeSeries || { name: '平仓笔数', type: 'line', data: [] }),
+              smooth: true,
+              symbolSize: 6,
+              lineStyle: {
+                width: 2.5
+              },
+              areaStyle: {
+                color: 'rgba(15, 118, 110, 0.12)'
+              }
+            }
+          ],
+          yAxisName: '平仓笔数'
+        }
+      }
+
+      const config = modeConfig[timelineChartMode.value] || modeConfig.equity
+
       timelineChart.setOption({
-        color: ['#d97706', '#155eef', '#0f766e'],
+        color: ['#155eef', '#0f766e', '#d97706'],
         tooltip: { trigger: 'axis' },
-        legend: { top: 0 },
-        grid: { left: 20, right: 20, bottom: 20, top: 44, containLabel: true },
+        legend: { show: false },
+        grid: { left: 20, right: 20, bottom: 20, top: 20, containLabel: true },
         xAxis: {
           type: 'category',
           data: timelineData.xAxis,
-          boundaryGap: true
+          boundaryGap: timelineChartMode.value === 'pnl'
         },
-        yAxis: [
-          {
-            type: 'value',
-            name: '净盈亏'
-          },
-          {
-            type: 'value',
-            name: '平仓笔数',
-            splitLine: { show: false }
-          }
-        ],
+        yAxis: {
+          type: 'value',
+          name: config.yAxisName
+        },
         graphic: hasData ? [] : [{
           type: 'text',
           left: 'center',
@@ -1392,32 +1456,7 @@ export default {
             fontSize: 14
           }
         }],
-        series: [
-          {
-            ...(periodSeries || { name: '单笔净盈亏', type: 'bar', data: [] }),
-            barMaxWidth: 24,
-            itemStyle: {
-              borderRadius: [6, 6, 0, 0]
-            }
-          },
-          {
-            ...(cumulativeSeries || { name: '累计净盈亏', type: 'line', data: [] }),
-            smooth: true,
-            symbolSize: 6,
-            areaStyle: {
-              color: 'rgba(21, 94, 239, 0.12)'
-            }
-          },
-          {
-            ...(tradeSeries || { name: '平仓笔数', type: 'line', data: [] }),
-            yAxisIndex: 1,
-            smooth: true,
-            symbolSize: 6,
-            lineStyle: {
-              width: 2
-            }
-          }
-        ]
+        series: config.series
       })
     }
 
@@ -1778,6 +1817,14 @@ export default {
       }
     }
 
+    const openReviewNoteDialog = () => {
+      if (!filters.account_id) {
+        ElMessage.warning('请先选择一个账户')
+        return
+      }
+      reviewNoteDialogVisible.value = true
+    }
+
     const openTradeLinkDialog = async () => {
       if (!filters.account_id) {
         ElMessage.warning('请先选择一个账户')
@@ -1984,6 +2031,13 @@ export default {
     )
 
     watch(
+      () => timelineChartMode.value,
+      async () => {
+        await renderTimelineChart()
+      }
+    )
+
+    watch(
       () => dateRange.value,
       (range) => {
         if (!range || range.length !== 2 || !range[1]) {
@@ -2150,6 +2204,7 @@ export default {
       removeLinkedOrder,
       reviewNoteDate,
       reviewNoteCardRef,
+      reviewNoteDialogVisible,
       reviewNoteLoading,
       reviewTagSuggestions,
       refreshAll,
@@ -2160,10 +2215,12 @@ export default {
       selectedHistoryAccount,
       linkableCompletedTrades,
       loadRecentDailyReview,
+      openReviewNoteDialog,
       openTradeLinkDialog,
       quickLinkingTradeId,
       syncingHistory,
       syncHistoryButtonText,
+      timelineChartMode,
       syncHistory,
       tradeLinkDialogVisible,
       tradeLinkTableRef,
@@ -2355,8 +2412,20 @@ export default {
   align-items: flex-start;
 }
 
+.notes-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .raw-header {
   align-items: flex-start;
+}
+
+.timeline-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .timeline-chart {
