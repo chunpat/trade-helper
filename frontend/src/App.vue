@@ -43,6 +43,10 @@
       <el-header height="60px">
         <div class="header-title">数字货币合约交易风控系统</div>
         <div class="header-right">
+          <div class="display-time-panel">
+            <div class="display-time-value">{{ currentTimeText }}</div>
+            <div class="display-time-label">{{ displayTimezoneLabel }}</div>
+          </div>
           <div class="user-actions">
             <template v-if="$store.state.currentUser">
               <el-dropdown>
@@ -73,9 +77,39 @@
 
 <script>
 import { DataLine, Wallet, TrendCharts, Histogram, Document, Warning, Setting, CaretBottom } from '@element-plus/icons-vue'
+import { formatCurrentDateTime, getDisplayTimezoneLabel, getDisplayTimezoneOffsetLabel } from '@/utils/datetime'
 
 export default {
   name: 'App',
+  data() {
+    return {
+      currentTimeTick: Date.now(),
+      currentTimeTimer: null
+    }
+  },
+  computed: {
+    displayTimezone() {
+      return this.$store.getters.displayTimezone
+    },
+    displayTimezoneLabel() {
+      return `${getDisplayTimezoneLabel(this.displayTimezone)} · ${getDisplayTimezoneOffsetLabel(this.displayTimezone)}`
+    },
+    currentTimeText() {
+      this.currentTimeTick
+      return formatCurrentDateTime(this.displayTimezone)
+    }
+  },
+  mounted() {
+    this.currentTimeTimer = window.setInterval(() => {
+      this.currentTimeTick = Date.now()
+    }, 1000)
+  },
+  beforeUnmount() {
+    if (this.currentTimeTimer) {
+      window.clearInterval(this.currentTimeTimer)
+      this.currentTimeTimer = null
+    }
+  },
   methods: {
     doLogout() {
       this.$store.dispatch('logout')
@@ -117,6 +151,26 @@ export default {
     }
     
     .header-right {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+
+      .display-time-panel {
+        text-align: right;
+        line-height: 1.2;
+      }
+
+      .display-time-value {
+        font-size: 14px;
+        color: #111827;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .display-time-label {
+        font-size: 12px;
+        color: #6b7280;
+      }
+
       .user-info {
         cursor: pointer;
         color: #606266;
@@ -125,6 +179,14 @@ export default {
         
         .el-icon {
           margin-left: 5px;
+        }
+      }
+
+      @media (max-width: 960px) {
+        .header-right {
+          .display-time-panel {
+            display: none;
+          }
         }
       }
     }

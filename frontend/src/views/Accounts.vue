@@ -113,12 +113,15 @@
 
 <script>
 import { ref, reactive, onMounted, computed } from 'vue'
+import { useStore } from 'vuex'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { riskControl } from '@/api'
+import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
 
 export default {
   name: 'Accounts',
   setup() {
+    const store = useStore()
     const passphraseValidator = (_rule, value, callback) => {
       if (form.exchange === 'okx' && !String(value || '').trim()) {
         callback(new Error('OKX 账户必须填写 Passphrase'))
@@ -156,6 +159,7 @@ export default {
 
     const dialogTitle = computed(() => isEdit.value ? '编辑账户' : '添加账户')
     const requiresPassphrase = computed(() => form.exchange === 'okx')
+    const displayTimezone = computed(() => store.getters.displayTimezone)
 
     const fetchAccounts = async () => {
       loading.value = true
@@ -331,7 +335,7 @@ export default {
 
     const formatDate = (dateStr) => {
       if (!dateStr) return '-'
-      return new Date(dateStr).toLocaleString()
+      return formatDisplayDateTime(dateStr, displayTimezone.value)
     }
 
     onMounted(() => {

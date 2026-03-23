@@ -148,6 +148,7 @@
 <script>
 import { riskControl } from '@/api'
 import { ElMessageBox } from 'element-plus'
+import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
 
 export default {
   name: 'Positions',
@@ -276,7 +277,7 @@ export default {
     },
     formatDate(dateStr) {
       if (!dateStr) return '-'
-      return new Date(dateStr).toLocaleString()
+      return formatDisplayDateTime(dateStr, this.$store.getters.displayTimezone)
     },
     getRiskLevelType(level) {
       const map = {

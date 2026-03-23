@@ -95,9 +95,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, reactive } from 'vue'
+import { computed, ref, onMounted, reactive } from 'vue'
+import { useStore } from 'vuex'
 import { riskControl } from '@/api'
 import { ElMessage } from 'element-plus'
+import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
+
+const store = useStore()
+const displayTimezone = computed(() => store.getters.displayTimezone)
 
 const alerts = ref([])
 const loading = ref(false)
@@ -179,7 +184,7 @@ const submitResolve = async () => {
 
 const formatDate = (dateStr) => {
   if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString()
+  return formatDisplayDateTime(dateStr, displayTimezone.value)
 }
 
 const getRiskLevelType = (level) => {

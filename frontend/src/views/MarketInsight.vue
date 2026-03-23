@@ -799,11 +799,19 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useStore } from 'vuex'
 import { Refresh } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { marketInsight } from '@/api'
 import { ElMessage } from 'element-plus'
 import KlineChart from '@/components/KlineChart.vue'
+import {
+  formatDateTime as formatDisplayDateTime,
+  formatShortDate as formatDisplayShortDate
+} from '@/utils/datetime'
+
+const store = useStore()
+const displayTimezone = computed(() => store.getters.displayTimezone)
 
 const pageTitle = ref('市场洞察')
 const loading = ref(false)
@@ -1386,10 +1394,8 @@ function formatNumber(num) {
 }
 
 function formatDateTime(rawValue) {
-  if (!rawValue) return '--'
-  const date = new Date(rawValue)
-  if (Number.isNaN(date.getTime())) return rawValue
-  return date.toLocaleString('zh-CN', {
+  return formatDisplayDateTime(rawValue, displayTimezone.value, {
+    year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -1398,15 +1404,7 @@ function formatDateTime(rawValue) {
 }
 
 function formatShortDate(rawValue) {
-  if (!rawValue) return '--'
-  const date = new Date(rawValue)
-  if (Number.isNaN(date.getTime())) {
-    return String(rawValue)
-  }
-  return date.toLocaleDateString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit'
-  })
+  return formatDisplayShortDate(rawValue, displayTimezone.value)
 }
 
 function safeFixed(value, digits = 2) {

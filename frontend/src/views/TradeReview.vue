@@ -932,6 +932,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import { useStore } from 'vuex'
 import { riskControl } from '@/api'
+import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
 
 const historyTypeOptions = [
   { label: '交易 (TRADE)', value: 'TRADE' },
@@ -1125,6 +1126,7 @@ export default {
     ]
 
     const accounts = computed(() => store.state.accounts)
+    const displayTimezone = computed(() => store.getters.displayTimezone)
     const selectedHistoryAccount = computed(() => (
       accounts.value.find(account => account.id === filters.account_id) || null
     ))
@@ -1441,7 +1443,7 @@ export default {
       if (!value) {
         return '-'
       }
-      return new Date(value).toLocaleString()
+      return formatDisplayDateTime(value, displayTimezone.value)
     }
 
     const formatDuration = (minutes) => {

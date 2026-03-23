@@ -1,9 +1,11 @@
 import { createStore } from 'vuex'
 import { riskControl } from '../api'
+import { getStoredDisplayTimezone, setStoredDisplayTimezone } from '../utils/datetime'
 
 export default createStore({
   state: {
     token: localStorage.getItem('token') || null,
+    displayTimezone: getStoredDisplayTimezone(),
     currentUser: null,
     accounts: [],
     positions: [],
@@ -29,6 +31,9 @@ export default createStore({
   mutations: {
     SET_TOKEN(state, token) {
       state.token = token
+    },
+    SET_DISPLAY_TIMEZONE(state, timezone) {
+      state.displayTimezone = timezone || 'system'
     },
     SET_CURRENT_USER(state, user) {
       state.currentUser = user
@@ -79,6 +84,10 @@ export default createStore({
   },
 
   actions: {
+    setDisplayTimezone({ commit }, timezone) {
+      setStoredDisplayTimezone(timezone)
+      commit('SET_DISPLAY_TIMEZONE', timezone)
+    },
     // Auth actions
     async login({ commit }, { username, password }) {
       try {
@@ -269,6 +278,7 @@ export default createStore({
   },
 
   getters: {
+    displayTimezone: (state) => state.displayTimezone,
     getAccountById: (state) => (id) => {
       return state.accounts.find(account => account.id === id)
     },

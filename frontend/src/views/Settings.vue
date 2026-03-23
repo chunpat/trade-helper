@@ -12,6 +12,37 @@
       </el-select>
     </div>
 
+    <el-card class="display-time-card">
+      <template #header>
+        <div class="display-time-card-header">
+          <span>时间显示</span>
+          <span class="display-time-preview">当前显示 {{ currentDisplayTime }}</span>
+        </div>
+      </template>
+
+      <div class="display-time-grid">
+        <div>
+          <div class="display-time-label">显示时区</div>
+          <el-select v-model="displayTimezone" placeholder="选择显示时区" @change="handleDisplayTimezoneChange">
+            <el-option
+              v-for="option in displayTimezoneOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+          <div class="help-text">后端时间按 UTC 解析，再按这里的时区显示。东八区请选择“北京时间 (UTC+8)”。</div>
+        </div>
+
+        <div class="display-time-meta">
+          <div class="display-time-label">当前生效时区</div>
+          <div class="display-time-value">{{ displayTimezoneLabel }}</div>
+          <div class="display-time-subtitle">UTC 偏移：{{ displayTimezoneOffsetLabel }}</div>
+          <div class="display-time-subtitle">浏览器系统时区：{{ browserTimezoneLabel }}</div>
+        </div>
+      </div>
+    </el-card>
+
     <div class="page-content" v-loading="loading">
       <el-empty v-if="!selectedAccountId" description="请先选择一个账户进行配置" />
       
@@ -80,18 +111,42 @@
 </template>
 
 <script>
-import { ref, onMounted, reactive } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useStore } from 'vuex'
 import { riskControl } from '@/api'
 import { ElMessage } from 'element-plus'
+import {
+  DISPLAY_TIMEZONE_OPTIONS,
+  formatCurrentDateTime,
+  getDisplayTimezoneLabel,
+  getDisplayTimezoneOffsetLabel,
+  resolveDisplayTimezone,
+} from '@/utils/datetime'
 
 export default {
   name: 'Settings',
   setup() {
+    const store = useStore()
     const loading = ref(false)
     const submitting = ref(false)
     const accounts = ref([])
     const selectedAccountId = ref(null)
     const formRef = ref(null)
+    const currentTimeTick = ref(Date.now())
+    let currentTimeTimer = null
+
+    const displayTimezoneOptions = DISPLAY_TIMEZONE_OPTIONS
+    const browserTimezoneLabel = resolveDisplayTimezone('system')
+    const displayTimezone = computed({
+      get: () => store.getters.displayTimezone,
+      set: (value) => store.dispatch('setDisplayTimezone', value)
+    })
+    const displayTimezoneLabel = computed(() => getDisplayTimezoneLabel(displayTimezone.value))
+    const displayTimezoneOffsetLabel = computed(() => getDisplayTimezoneOffsetLabel(displayTimezone.value))
+    const currentDisplayTime = computed(() => {
+      currentTimeTick.value
+      return formatCurrentDateTime(displayTimezone.value)
+    })
 
     const form = reactive({
       max_leverage: 20,
@@ -160,11 +215,33 @@ export default {
       fetchConfig()
     }
 
+    const handleDisplayTimezoneChange = (value) => {
+      store.dispatch('setDisplayTimezone', value)
+      currentTimeTick.value = Date.now()
+      ElMessage.success(`时间显示已切换为 ${getDisplayTimezoneLabel(value)} ${getDisplayTimezoneOffsetLabel(value)}`)
+    }
+
     onMounted(() => {
+      currentTimeTimer = window.setInterval(() => {
+        currentTimeTick.value = Date.now()
+      }, 1000)
       fetchAccounts()
     })
 
+    onBeforeUnmount(() => {
+      if (currentTimeTimer) {
+        window.clearInterval(currentTimeTimer)
+        currentTimeTimer = null
+      }
+    })
+
     return {
+      browserTimezoneLabel,
+      currentDisplayTime,
+      displayTimezone,
+      displayTimezoneLabel,
+      displayTimezoneOffsetLabel,
+      displayTimezoneOptions,
       loading,
       submitting,
       accounts,
@@ -173,6 +250,7 @@ export default {
       rules,
       formRef,
       fetchConfig,
+      handleDisplayTimezoneChange,
       submitForm,
       resetForm
     }
@@ -199,6 +277,52 @@ export default {
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
 }
 
+.display-time-card {
+  margin-bottom: 20px;
+}
+
+.display-time-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.display-time-preview {
+  font-size: 13px;
+  color: #606266;
+}
+
+.display-time-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 420px) minmax(220px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.display-time-label {
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 8px;
+}
+
+.display-time-meta {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.display-time-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.display-time-subtitle {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
 .risk-form {
   max-width: 800px;
 }
@@ -208,5 +332,11 @@ export default {
   color: #909399;
   line-height: 1.5;
   margin-top: 5px;
+}
+
+@media (max-width: 900px) {
+  .display-time-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
