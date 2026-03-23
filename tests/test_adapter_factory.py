@@ -93,3 +93,97 @@ def test_okx_request_raw_retries_on_rate_limit(monkeypatch):
 
     assert result['status_code'] == 200
     assert retry_delays == [1.0]
+
+
+def test_okx_fetch_positions_normalizes_contract_quantity(monkeypatch):
+    adapter = OkxAdapter('key', 'secret', 'passphrase')
+
+    async def fake_request_raw(method, path, **kwargs):
+        del method, path, kwargs
+        return {
+            'status_code': 200,
+            'body': '{}',
+            'payload': {
+                'code': '0',
+                'data': [
+                    {
+                        'instId': 'TRUMP-USDT-SWAP',
+                        'posSide': 'long',
+                        'pos': '20198',
+                        'avgPx': '3.281',
+                        'markPx': '3.269',
+                        'upl': '-24.2376',
+                        'lever': '10',
+                        'liqPx': '2.98',
+                    }
+                ],
+            },
+        }
+
+    async def fake_contract_values():
+        return {'TRUMP-USDT-SWAP': 0.1}
+
+    monkeypatch.setattr(adapter, '_request_raw', fake_request_raw)
+    monkeypatch.setattr(adapter, '_get_swap_contract_values', fake_contract_values)
+
+    rows = asyncio.run(adapter.fetch_positions())
+
+    assert rows == [
+        {
+            'symbol': 'TRUMPUSDT',
+            'positionSide': 'LONG',
+            'positionAmt': '2019.8000000000002',
+            'entryPrice': '3.281',
+            'markPrice': '3.269',
+            'unRealizedProfit': '-24.2376',
+            'leverage': '10',
+            'liquidationPrice': '2.98',
+            'contractValue': '0.1',
+        }
+    ]
+
+
+def test_okx_normalize_order_history_rows_uses_contract_value(monkeypatch):
+    adapter = OkxAdapter('key', 'secret', 'passphrase')
+
+    async def fake_contract_values():
+        return {'TRUMP-USDT-SWAP': 0.1}
+
+    monkeypatch.setattr(adapter, '_get_swap_contract_values', fake_contract_values)
+
+    rows = asyncio.run(adapter._normalize_order_history_rows([
+        {
+            'instId': 'TRUMP-USDT-SWAP',
+            'ordId': '12345',
+            'tradeId': '98765',
+            'side': 'buy',
+            'posSide': 'long',
+            'fillSz': '20198',
+            'avgPx': '3.281',
+            'fee': '-1.25',
+            'pnl': '-24.2376',
+            'fillTime': '1710000000000',
+            'feeCcy': 'USDT',
+            'lever': '10',
+        }
+    ]))
+
+    assert rows == [
+        {
+            'id': '98765',
+            'tradeId': '98765',
+            'orderId': '12345',
+            'symbol': 'TRUMPUSDT',
+            'side': 'BUY',
+            'positionSide': 'LONG',
+            'price': '3.281',
+            'qty': '2019.8000000000002',
+            'quoteQty': '6626.9638',
+            'commission': '1.25',
+            'commissionAsset': 'USDT',
+            'realizedPnl': '-24.2376',
+            'leverage': '10',
+            'contractValue': '0.1',
+            'time': 1710000000000,
+        }
+    ]

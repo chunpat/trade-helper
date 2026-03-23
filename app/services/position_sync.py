@@ -326,6 +326,7 @@ class PositionSyncService:
                             'commission': float(trade.get('commission', 0)),
                             'commission_asset': trade.get('commissionAsset'),
                             'realized_pnl': float(trade.get('realizedPnl', 0)),
+                            'leverage': float(trade.get('leverage', 0) or 0),
                             'time': trade.get('time')
                         }
                     else:
@@ -335,6 +336,7 @@ class PositionSyncService:
                         item['quote_qty'] += float(trade.get('quoteQty', 0))
                         item['commission'] += float(trade.get('commission', 0))
                         item['realized_pnl'] += float(trade.get('realizedPnl', 0))
+                        item['leverage'] = item['leverage'] or float(trade.get('leverage', 0) or 0)
                         item['time'] = max(item['time'], trade.get('time'))
 
                 for oid, data in aggregated_trades.items():
@@ -356,6 +358,7 @@ class PositionSyncService:
                             commission=data['commission'],
                             commission_asset=data['commission_asset'],
                             realized_pnl=data['realized_pnl'],
+                            leverage=data['leverage'] or None,
                             time=datetime.utcfromtimestamp(data['time'] / 1000),
                             order_id=oid,
                             transaction_id=global_id
@@ -370,6 +373,7 @@ class PositionSyncService:
                         exists.position_side = data.get('position_side')
                         exists.commission = data['commission']
                         exists.realized_pnl = data['realized_pnl']
+                        exists.leverage = data['leverage'] or None
                         exists.time = datetime.utcfromtimestamp(data['time'] / 1000)
                         db.add(exists)
             

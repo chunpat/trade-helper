@@ -112,6 +112,9 @@ export const riskControl = {
   getCompletedTrades(params) {
     return api.get('/risk-control/history/completed-trades', { params })
   },
+  getOpenTrades(params) {
+    return api.get('/risk-control/history/open-trades', { params })
+  },
   getCompletedTradeSummary(params) {
     return api.get('/risk-control/history/completed-trades/summary', { params })
   },

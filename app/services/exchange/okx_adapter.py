@@ -23,6 +23,7 @@ OKX_BACKOFF_BASE_SECONDS = 1.0
 OKX_BACKOFF_MAX_SECONDS = 8.0
 OKX_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 OKX_RATE_LIMIT_CODES = {'50011'}
+OKX_INSTRUMENT_CACHE_TTL_SECONDS = 3600
 
 
 class OkxAdapter:
@@ -44,6 +45,8 @@ class OkxAdapter:
         self.use_demo = use_demo
         self._min_request_interval_seconds = OKX_MIN_REQUEST_INTERVAL_SECONDS
         self._next_request_at = 0.0
+        self._swap_contract_value_cache: Dict[str, float] = {}
+        self._swap_contract_value_cache_at = 0.0
 
     def _get_client(self, timeout: float = 10.0) -> httpx.AsyncClient:
         if self.proxy:
@@ -208,6 +211,66 @@ class OkxAdapter:
         rows = payload.get('data')
         return rows if isinstance(rows, list) else []
 
+    async def _request_public_raw(
+        self,
+        path: str,
+        *,
+        params: Optional[Dict[str, object]] = None,
+        timeout: float = 20.0,
+    ) -> Dict:
+        encoded_params = urlencode(
+            [(key, value) for key, value in (params or {}).items() if value not in (None, '')]
+        )
+        request_path = f'{path}?{encoded_params}' if encoded_params else path
+        url = f'{self.BASE}{request_path}'
+
+        try:
+            async with self._get_client(timeout=timeout) as client:
+                response = await client.get(url)
+        except Exception as exc:
+            logging.exception('okx: public GET failed for %s: %s', path, exc)
+            return {
+                'status_code': 0,
+                'body': str(exc),
+                'payload': None,
+            }
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        return {
+            'status_code': response.status_code,
+            'body': response.text,
+            'payload': payload,
+        }
+
+    async def _get_swap_contract_values(self) -> Dict[str, float]:
+        now = time.monotonic()
+        if self._swap_contract_value_cache and (now - self._swap_contract_value_cache_at) < OKX_INSTRUMENT_CACHE_TTL_SECONDS:
+            return self._swap_contract_value_cache
+
+        raw_result = await self._request_public_raw('/api/v5/public/instruments', params={'instType': 'SWAP'})
+        rows = self._extract_payload_rows(raw_result)
+        if rows is None:
+            logging.warning('okx: failed to fetch public instruments, fallback to ctVal=1 body=%s', raw_result.get('body'))
+            return self._swap_contract_value_cache
+
+        contract_values: Dict[str, float] = {}
+        for row in rows:
+            inst_id = str(row.get('instId') or '').strip()
+            if not inst_id:
+                continue
+            try:
+                contract_values[inst_id] = float(row.get('ctVal') or 1.0)
+            except (TypeError, ValueError):
+                contract_values[inst_id] = 1.0
+
+        self._swap_contract_value_cache = contract_values
+        self._swap_contract_value_cache_at = now
+        return contract_values
+
     def _mask_api_key(self) -> str:
         if not self.api_key:
             return ''
@@ -354,6 +417,7 @@ class OkxAdapter:
             logging.error('okx: fetch_positions non-success body=%s', raw_result.get('body'))
             return None
 
+        contract_values = await self._get_swap_contract_values()
         normalized_rows: List[Dict] = []
         for row in rows:
             symbol = self._inst_id_to_symbol(row.get('instId'))
@@ -362,12 +426,14 @@ class OkxAdapter:
 
             position_side = self._normalize_position_side(row.get('posSide'))
             raw_pos = float(row.get('pos') or 0.0)
+            contract_value = contract_values.get(str(row.get('instId') or '').strip(), 1.0)
+            normalized_pos = raw_pos * contract_value
             if position_side == 'LONG':
-                position_amt = abs(raw_pos)
+                position_amt = abs(normalized_pos)
             elif position_side == 'SHORT':
-                position_amt = -abs(raw_pos)
+                position_amt = -abs(normalized_pos)
             else:
-                position_amt = raw_pos
+                position_amt = normalized_pos
 
             normalized_rows.append({
                 'symbol': symbol,
@@ -378,6 +444,7 @@ class OkxAdapter:
                 'unRealizedProfit': row.get('upl') or '0',
                 'leverage': row.get('lever') or '1',
                 'liquidationPrice': row.get('liqPx') or '0',
+                'contractValue': str(contract_value),
             })
 
         return normalized_rows
@@ -402,15 +469,19 @@ class OkxAdapter:
             'totalMarginBalance': adj_eq,
         }
 
-    def _normalize_order_history_rows(self, rows: List[Dict], symbol: Optional[str] = None) -> List[Dict]:
+    async def _normalize_order_history_rows(self, rows: List[Dict], symbol: Optional[str] = None) -> List[Dict]:
         normalized_symbol = self._normalize_symbol(symbol)
+        contract_values = await self._get_swap_contract_values()
         normalized_rows: List[Dict] = []
         for row in rows:
-            mapped_symbol = self._inst_id_to_symbol(row.get('instId'))
+            inst_id = str(row.get('instId') or '').strip()
+            mapped_symbol = self._inst_id_to_symbol(inst_id)
             if normalized_symbol and mapped_symbol != normalized_symbol:
                 continue
 
-            qty = float(row.get('accFillSz') or row.get('fillSz') or row.get('sz') or 0.0)
+            contract_qty = float(row.get('accFillSz') or row.get('fillSz') or row.get('sz') or 0.0)
+            contract_value = contract_values.get(inst_id, 1.0)
+            qty = contract_qty * contract_value
             if qty <= 0:
                 continue
 
@@ -435,6 +506,8 @@ class OkxAdapter:
                 'commission': str(fee),
                 'commissionAsset': row.get('feeCcy'),
                 'realizedPnl': str(realized_pnl),
+                'leverage': row.get('lever') or None,
+                'contractValue': str(contract_value),
                 'time': timestamp,
             })
 
@@ -524,7 +597,7 @@ class OkxAdapter:
             return None
 
         if len(rows) < OKX_PAGE_LIMIT or (end_ms - start_ms) <= MIN_SPLIT_WINDOW_MS:
-            return self._normalize_order_history_rows(rows, symbol=symbol)
+            return await self._normalize_order_history_rows(rows, symbol=symbol)
 
         middle = (start_ms + end_ms) // 2
         left_rows = await self._fetch_order_history_range(

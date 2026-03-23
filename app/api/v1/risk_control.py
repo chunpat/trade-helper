@@ -337,12 +337,26 @@ def _normalize_review_linked_orders(
         if not symbol or not direction:
             continue
 
+        trade_status = str(raw.get("trade_status") or "completed").strip().lower()
+        if trade_status not in {"completed", "open"}:
+            trade_status = "completed"
+
         open_time = raw.get("open_time")
         close_time = raw.get("close_time")
+        last_activity_time = raw.get("last_activity_time")
         open_time_value = open_time.isoformat() if isinstance(open_time, datetime) else str(open_time or "").strip()
         close_time_value = close_time.isoformat() if isinstance(close_time, datetime) else str(close_time or "").strip()
-        if not open_time_value or not close_time_value:
+        last_activity_time_value = (
+            last_activity_time.isoformat()
+            if isinstance(last_activity_time, datetime)
+            else str(last_activity_time or "").strip()
+        )
+        if not open_time_value or (not close_time_value and not last_activity_time_value):
             continue
+        if not last_activity_time_value:
+            last_activity_time_value = close_time_value
+        if trade_status == "completed" and not close_time_value:
+            close_time_value = last_activity_time_value
 
         position_side = str(raw.get("position_side") or "").strip().upper() or None
         order_ids: List[str] = []
@@ -361,9 +375,11 @@ def _normalize_review_linked_orders(
             "trade_id": trade_id[:128],
             "symbol": symbol[:50],
             "direction": direction[:20],
+            "trade_status": trade_status,
             "position_side": position_side[:20] if position_side else None,
             "open_time": open_time_value,
-            "close_time": close_time_value,
+            "close_time": close_time_value or None,
+            "last_activity_time": last_activity_time_value or None,
             "net_pnl": round(float(raw.get("net_pnl") or 0.0), 8),
             "order_ids": order_ids[:20],
         })
@@ -1116,6 +1132,31 @@ async def get_completed_trade_history(
         limit=limit,
     )
     return schemas.CompletedTradeReviewList(**result)
+
+
+@router.get("/history/open-trades", response_model=schemas.OpenTradeReviewList)
+async def get_open_trade_history(
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """获取当前仍未平仓的进行中交易。"""
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    service = TradeReviewService(db)
+    result = service.list_open_trades(
+        account_id=account_id,
+        symbol=symbol,
+        start_time=start_time,
+        end_time=end_time,
+        skip=skip,
+        limit=limit,
+    )
+    return schemas.OpenTradeReviewList(**result)
 
 
 @router.get("/history/completed-trades/summary", response_model=schemas.CompletedTradeReviewSummary)

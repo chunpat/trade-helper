@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.v1 import risk_control as risk_control_api
 from app.models.base import Base
-from app.models.risk_control import Account, AccountSnapshot, TickerHistory, TransactionHistory
+from app.models.risk_control import Account, AccountSnapshot, Position, RiskLevelEnum, TickerHistory, TransactionHistory
 
 
 @pytest.fixture()
@@ -67,6 +67,7 @@ def seed_trade_review_history(session_factory):
             symbol='BTCUSDT',
             type='TRADE',
             side='SELL',
+            leverage=10,
             price=43000,
             qty=0.2,
             quote_qty=8600,
@@ -108,6 +109,7 @@ def seed_trade_review_history(session_factory):
             symbol='ETHUSDT',
             type='TRADE',
             side='BUY',
+            leverage=5,
             price=2500,
             qty=1.2,
             quote_qty=3000,
@@ -266,6 +268,8 @@ def test_transaction_history_supports_trade_scope(review_client):
     payload = response.json()
     assert len(payload) == 2
     assert all(item['type'] == 'TRADE' for item in payload)
+    assert payload[0]['leverage'] in {5.0, 10.0}
+    assert payload[1]['leverage'] in {5.0, 10.0}
 
 
 def test_transaction_history_supports_cashflow_scope(review_client):
@@ -326,6 +330,7 @@ def test_daily_trade_review_upsert_normalizes_tags_and_text(review_client):
                     'trade_id': 'review-trade-1',
                     'symbol': 'btcusdt',
                     'direction': 'long',
+                    'trade_status': 'completed',
                     'position_side': 'LONG',
                     'open_time': '2026-01-02T08:00:00',
                     'close_time': '2026-01-02T09:00:00',
@@ -336,6 +341,7 @@ def test_daily_trade_review_upsert_normalizes_tags_and_text(review_client):
                     'trade_id': 'review-trade-1',
                     'symbol': 'BTCUSDT',
                     'direction': 'LONG',
+                    'trade_status': 'completed',
                     'position_side': 'LONG',
                     'open_time': '2026-01-02T08:00:00',
                     'close_time': '2026-01-02T09:00:00',
@@ -357,6 +363,7 @@ def test_daily_trade_review_upsert_normalizes_tags_and_text(review_client):
     assert payload['linked_orders'][0]['trade_id'] == 'review-trade-1'
     assert payload['linked_orders'][0]['symbol'] == 'BTCUSDT'
     assert payload['linked_orders'][0]['direction'] == 'LONG'
+    assert payload['linked_orders'][0]['trade_status'] == 'completed'
     assert payload['linked_orders'][0]['order_ids'] == ['ORDER_1', 'ORDER_2']
     assert payload['execution_score'] == 4
     assert payload['error_analysis'] == '追单导致入场过早'
@@ -378,6 +385,42 @@ def test_daily_trade_review_upsert_normalizes_tags_and_text(review_client):
     assert fetched['trade_tags'] == ['按计划执行', '冲动交易']
     assert fetched['linked_orders'][0]['order_ids'] == ['ORDER_1', 'ORDER_2']
     assert fetched['exists'] is True
+
+
+def test_daily_trade_review_supports_open_trade_links(review_client):
+    client, session_factory = review_client
+    account_id = seed_trade_review_history(session_factory)
+
+    response = client.put(
+        '/api/v1/risk-control/history/daily-reviews',
+        json={
+            'account_id': account_id,
+            'review_date': '2026-01-03',
+            'trade_tags': ['跟踪中'],
+            'linked_orders': [
+                {
+                    'trade_id': 'open-trade-1',
+                    'symbol': 'ETHUSDT',
+                    'direction': 'LONG',
+                    'trade_status': 'open',
+                    'position_side': 'LONG',
+                    'open_time': '2026-01-03T08:00:00',
+                    'last_activity_time': '2026-01-03T11:30:00',
+                    'net_pnl': 15.5,
+                    'order_ids': ['OPEN_1'],
+                }
+            ],
+            'execution_score': 3,
+            'error_analysis': None,
+            'daily_summary': '盘中跟踪未平仓单',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['linked_orders'][0]['trade_status'] == 'open'
+    assert payload['linked_orders'][0]['close_time'] is None
+    assert payload['linked_orders'][0]['last_activity_time'].startswith('2026-01-03T11:30:00')
 
 
 def test_recent_daily_trade_reviews_return_latest_dates_first(review_client):
@@ -681,3 +724,79 @@ def test_completed_trade_detail_includes_holding_curve_metrics(review_client):
     assert item['account_equity_curve'][0]['total_equity'] == 20000.0
     assert item['account_equity_curve'][-1]['time'].startswith('2026-01-01T18:00:00')
     assert item['account_equity_curve'][-1]['total_equity'] == 21900.0
+
+
+def test_open_trades_endpoint_returns_active_positions(review_client):
+    client, session_factory = review_client
+    account_id = seed_completed_round_trip_history(session_factory)
+
+    session = session_factory()
+    session.add_all([
+        TransactionHistory(
+            account_id=account_id,
+            symbol='SOLUSDT',
+            type='TRADE',
+            side='BUY',
+            position_side='LONG',
+            price=120,
+            qty=5,
+            quote_qty=600,
+            commission=1,
+            commission_asset='USDT',
+            realized_pnl=0,
+            time=datetime(2026, 1, 3, 9, 0, 0),
+            order_id='SOL_OPEN_1',
+            transaction_id='ORDER_SOL_OPEN_1',
+        ),
+        TransactionHistory(
+            account_id=account_id,
+            symbol='SOLUSDT',
+            type='FUNDING_FEE',
+            realized_pnl=0.5,
+            commission_asset='USDT',
+            time=datetime(2026, 1, 3, 12, 0, 0),
+            transaction_id='FUND_SOL_1',
+        ),
+        TickerHistory(
+            account_id=account_id,
+            symbol='SOLUSDT',
+            price=126,
+            timestamp=datetime(2026, 1, 3, 13, 0, 0),
+            source='test',
+        ),
+        Position(
+            account_id=account_id,
+            symbol='SOLUSDT',
+            size=5,
+            entry_price=120,
+            current_price=127,
+            unrealized_pnl=35,
+            leverage=10,
+            risk_level=RiskLevelEnum.LOW,
+            is_active=True,
+            position_side='LONG',
+        ),
+    ])
+    session.commit()
+    session.close()
+
+    response = client.get(
+        '/api/v1/risk-control/history/open-trades',
+        params={
+            'account_id': account_id,
+            'end_time': '2026-01-03T13:30:00',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] == 1
+    item = payload['items'][0]
+    assert item['symbol'] == 'SOLUSDT'
+    assert item['direction'] == 'LONG'
+    assert item['open_qty'] == 5.0
+    assert item['leverage'] == 10.0
+    assert item['latest_mark_price'] == 127.0
+    assert item['unrealized_pnl'] == 35.0
+    assert item['net_pnl'] == 34.5
+    assert item['order_ids'] == ['SOL_OPEN_1']

@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.risk_control import AccountSnapshot, TickerHistory, TransactionHistory
+from app.models.risk_control import AccountSnapshot, Position, TickerHistory, TransactionHistory
 
 
 EPSILON = 1e-8
@@ -15,6 +15,42 @@ CURVE_POINT_LIMIT = 240
 class TradeReviewService:
     def __init__(self, db: Session):
         self.db = db
+
+    def list_open_trades(
+        self,
+        account_id: Optional[int] = None,
+        symbol: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> Dict:
+        reference_time = end_time or datetime.utcnow()
+        _, active_campaigns = self._scan_trade_campaigns(
+            account_id=account_id,
+            symbol=symbol,
+            end_time=end_time,
+        )
+
+        open_trades: List[Dict] = []
+        for campaign in active_campaigns:
+            last_activity_time = campaign['close_time']
+            if start_time is not None and last_activity_time < start_time:
+                continue
+            campaign['last_activity_time'] = last_activity_time
+            campaign['close_time'] = max(reference_time, campaign['open_time'])
+            open_trades.append(campaign)
+
+        self._attach_funding(open_trades, account_id=account_id, symbol=symbol)
+        self._attach_open_trade_market_data(open_trades, reference_time=reference_time)
+        open_trades.sort(key=lambda item: item['last_activity_time'], reverse=True)
+
+        total = len(open_trades)
+        items = open_trades[skip:skip + limit]
+        return {
+            'total': total,
+            'items': [self._serialize_open_trade(item) for item in items],
+        }
 
     def list_completed_trades(
         self,
@@ -148,6 +184,31 @@ class TradeReviewService:
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
     ) -> List[Dict]:
+        completed_trades, _ = self._scan_trade_campaigns(
+            account_id=account_id,
+            symbol=symbol,
+            end_time=end_time,
+        )
+
+        filtered_trades = [
+            item for item in completed_trades
+            if (start_time is None or item['close_time'] >= start_time)
+            and (end_time is None or item['close_time'] <= end_time)
+        ]
+
+        self._attach_funding(filtered_trades, account_id=account_id, symbol=symbol)
+        for item in filtered_trades:
+            self._update_net_pnl(item)
+
+        filtered_trades.sort(key=lambda item: item['close_time'], reverse=True)
+        return filtered_trades
+
+    def _scan_trade_campaigns(
+        self,
+        account_id: Optional[int] = None,
+        symbol: Optional[str] = None,
+        end_time: Optional[datetime] = None,
+    ) -> Tuple[List[Dict], List[Dict]]:
         trade_query = self.db.query(TransactionHistory).filter(TransactionHistory.type == 'TRADE')
         if account_id is not None:
             trade_query = trade_query.filter(TransactionHistory.account_id == account_id)
@@ -250,18 +311,10 @@ class TradeReviewService:
                     completed_trades.append(active)
                     del active_campaigns[key]
 
-        filtered_trades = [
-            item for item in completed_trades
-            if (start_time is None or item['close_time'] >= start_time)
-            and (end_time is None or item['close_time'] <= end_time)
-        ]
+        for active in active_campaigns.values():
+            self._finalize_campaign(active)
 
-        self._attach_funding(filtered_trades, account_id=account_id, symbol=symbol)
-        for item in filtered_trades:
-            self._update_net_pnl(item)
-
-        filtered_trades.sort(key=lambda item: item['close_time'], reverse=True)
-        return filtered_trades
+        return completed_trades, list(active_campaigns.values())
 
     def _attach_funding(
         self,
@@ -709,6 +762,146 @@ class TradeReviewService:
             8,
         )
         campaign['funding_event_count'] = len(campaign['funding_items'])
+
+    def _attach_open_trade_market_data(self, open_trades: List[Dict], reference_time: datetime) -> None:
+        if not open_trades:
+            return
+
+        active_positions = self._load_active_positions(open_trades)
+        latest_ticker_rows = self._load_latest_ticker_rows(open_trades, reference_time=reference_time)
+        for campaign in open_trades:
+            position = active_positions.get(self._position_lookup_key(campaign))
+            latest_ticker = latest_ticker_rows.get((campaign['account_id'], campaign['symbol']))
+            latest_mark_price = None
+            if position and position.current_price is not None:
+                latest_mark_price = float(position.current_price)
+            elif latest_ticker and latest_ticker.price is not None:
+                latest_mark_price = float(latest_ticker.price)
+
+            if position and position.entry_price:
+                campaign['entry_avg_price'] = round(float(position.entry_price), 8)
+            if position and position.size is not None and float(position.size) > EPSILON:
+                campaign['open_qty'] = round(float(position.size), 8)
+            if position and position.leverage is not None:
+                campaign['leverage'] = round(float(position.leverage), 4)
+
+            campaign['latest_mark_price'] = round(latest_mark_price, 8) if latest_mark_price is not None else None
+            campaign['holding_minutes'] = round(
+                max((campaign['close_time'] - campaign['open_time']).total_seconds() / 60, 0.0),
+                2,
+            )
+            campaign['entry_order_count'] = len(campaign['entry_orders'])
+            campaign['exit_order_count'] = len(campaign['exit_orders'])
+            campaign['order_ids'] = self._collect_order_ids(campaign)
+            campaign['realized_pnl'] = round(float(campaign['gross_realized_pnl']), 8)
+            campaign['funding_pnl'] = round(float(campaign['funding_pnl']), 8)
+            campaign['commission_cost'] = round(float(campaign['commission_cost']), 8)
+            if position and position.unrealized_pnl is not None:
+                campaign['unrealized_pnl'] = round(float(position.unrealized_pnl), 8)
+            else:
+                campaign['unrealized_pnl'] = round(
+                    self._calculate_unrealized_pnl(
+                        direction=campaign['direction'],
+                        open_qty=float(campaign['open_qty'] or 0.0),
+                        open_cost=float(campaign['entry_avg_price'] or 0.0) * float(campaign['open_qty'] or 0.0),
+                        mark_price=latest_mark_price,
+                    ),
+                    8,
+                )
+            campaign['net_pnl'] = round(
+                campaign['realized_pnl'] - campaign['commission_cost'] + campaign['funding_pnl'] + campaign['unrealized_pnl'],
+                8,
+            )
+
+    def _load_active_positions(self, open_trades: List[Dict]) -> Dict[Tuple[int, str, str], Position]:
+        positions: Dict[Tuple[int, str, str], Position] = {}
+        for campaign in open_trades:
+            lookup_key = self._position_lookup_key(campaign)
+            if lookup_key in positions:
+                continue
+
+            account_id, symbol, position_side = lookup_key
+            query = (
+                self.db.query(Position)
+                .filter(Position.account_id == account_id)
+                .filter(func.upper(Position.symbol) == symbol)
+                .filter(Position.is_active == True)
+            )
+            if position_side == 'NET':
+                query = query.filter((Position.position_side.is_(None)) | (func.upper(Position.position_side) == 'NET'))
+            else:
+                query = query.filter(func.upper(Position.position_side) == position_side)
+
+            position = query.order_by(Position.updated_at.desc(), Position.id.desc()).first()
+            if position:
+                positions[lookup_key] = position
+        return positions
+
+    def _position_lookup_key(self, campaign: Dict) -> Tuple[int, str, str]:
+        return (
+            campaign['account_id'],
+            campaign['symbol'],
+            (campaign.get('position_side') or 'NET').strip().upper(),
+        )
+
+    def _load_latest_ticker_rows(
+        self,
+        open_trades: List[Dict],
+        reference_time: datetime,
+    ) -> Dict[Tuple[int, str], Optional[TickerHistory]]:
+        latest_rows: Dict[Tuple[int, str], Optional[TickerHistory]] = {}
+        for campaign in open_trades:
+            key = (campaign['account_id'], campaign['symbol'])
+            if key in latest_rows:
+                continue
+            latest_rows[key] = (
+                self.db.query(TickerHistory)
+                .filter(TickerHistory.account_id == campaign['account_id'])
+                .filter(func.upper(TickerHistory.symbol) == campaign['symbol'])
+                .filter(TickerHistory.timestamp >= campaign['open_time'])
+                .filter(TickerHistory.timestamp <= reference_time)
+                .order_by(TickerHistory.timestamp.desc(), TickerHistory.id.desc())
+                .first()
+            )
+        return latest_rows
+
+    def _collect_order_ids(self, campaign: Dict) -> List[str]:
+        order_ids: List[str] = []
+        seen = set()
+        for leg in [*campaign['entry_orders'], *campaign['exit_orders']]:
+            order_id = str(leg.get('order_id') or '').strip()
+            if not order_id:
+                continue
+            lowered = order_id.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            order_ids.append(order_id)
+        return order_ids
+
+    def _serialize_open_trade(self, campaign: Dict) -> Dict:
+        return {
+            'id': campaign['id'],
+            'account_id': campaign['account_id'],
+            'symbol': campaign['symbol'],
+            'position_side': campaign['position_side'],
+            'direction': campaign['direction'],
+            'leverage': campaign.get('leverage'),
+            'open_time': campaign['open_time'],
+            'last_activity_time': campaign['last_activity_time'],
+            'holding_minutes': campaign['holding_minutes'],
+            'open_qty': round(float(campaign['open_qty'] or 0.0), 8),
+            'entry_avg_price': round(float(campaign['entry_avg_price'] or 0.0), 8),
+            'realized_pnl': campaign['realized_pnl'],
+            'commission_cost': campaign['commission_cost'],
+            'funding_pnl': campaign['funding_pnl'],
+            'unrealized_pnl': campaign['unrealized_pnl'],
+            'net_pnl': campaign['net_pnl'],
+            'latest_mark_price': campaign['latest_mark_price'],
+            'entry_order_count': campaign['entry_order_count'],
+            'exit_order_count': campaign['exit_order_count'],
+            'order_ids': campaign['order_ids'],
+        }
 
     def _get_bucket_mode(
         self,

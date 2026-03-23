@@ -127,6 +127,7 @@ class TransactionHistory(Base, BaseMixin):
     commission = Column(Float)
     commission_asset = Column(String(10))
     realized_pnl = Column(Float)
+    leverage = Column(Float)
     time = Column(DateTime, nullable=False)
     order_id = Column(String(100), index=True) # Added for aggregating trades
     transaction_id = Column(String(100), unique=True) # tradeId or tranId or orderId

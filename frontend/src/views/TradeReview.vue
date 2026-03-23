@@ -164,7 +164,9 @@
           <el-tag type="info" effect="plain">{{ recentDailyReviews.length }} 条</el-tag>
         </div>
 
-        <el-empty v-if="!recentDailyReviews.length" description="还没有保存过日级复盘。" :image-size="72" />
+        <el-empty v-if="!filters.account_id" description="选择账户后再查看最近日级复盘。" :image-size="72" />
+
+        <el-empty v-else-if="!recentDailyReviews.length" description="还没有保存过日级复盘。" :image-size="72" />
 
         <div v-else class="review-note-list">
           <button
@@ -281,7 +283,7 @@
                 <el-button plain :disabled="!filters.account_id || !linkableCompletedTrades.length" @click="openTradeLinkDialog">
                   从当前完整交易列表选择
                 </el-button>
-                <span class="review-score-hint">可以从下方完整交易直接创建复盘，也可以在这里一次关联多个订单。</span>
+                <span class="review-score-hint">可以从下方完整交易或进行中交易直接创建复盘，也可以在这里一次关联多个已完成订单。</span>
               </div>
 
               <el-empty
@@ -302,13 +304,16 @@
                       <el-tag :type="item.direction === 'LONG' ? 'success' : 'danger'" effect="plain">
                         {{ item.direction === 'LONG' ? '做多' : '做空' }}
                       </el-tag>
+                      <el-tag :type="item.trade_status === 'open' ? 'warning' : 'info'" effect="plain">
+                        {{ item.trade_status === 'open' ? '进行中' : '已完成' }}
+                      </el-tag>
                       <el-tag v-if="item.position_side" type="info" effect="plain">{{ item.position_side }}</el-tag>
                       <el-tag type="info" effect="plain">{{ item.order_ids.length }} 个订单</el-tag>
                     </div>
                   </div>
 
                   <div class="linked-order-meta">
-                    <span>{{ formatDateTime(item.open_time) }} 至 {{ formatDateTime(item.close_time) }}</span>
+                    <span>{{ linkedOrderTimeText(item) }}</span>
                     <span :class="pnlClass(item.net_pnl)">{{ formatSignedCurrency(item.net_pnl) }}</span>
                   </div>
 
@@ -343,6 +348,108 @@
         </div>
       </template>
     </el-dialog>
+
+    <el-card shadow="hover" class="history-card" v-loading="loading.openTrades">
+      <template #header>
+        <div class="section-header">
+          <div>
+            <span>进行中交易</span>
+            <p>当前还没有完整平仓的仓位会展示在这里，可以直接挂到当日日级复盘里做盘中跟踪。</p>
+          </div>
+          <el-tag type="warning" effect="plain">共 {{ openTradeTotal }} 笔</el-tag>
+        </div>
+      </template>
+
+      <el-table :data="openTrades" border stripe>
+        <el-table-column prop="last_activity_time" label="最近活动时间" min-width="180">
+          <template #default="{ row }">
+            {{ formatDateTime(row.last_activity_time) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="account_id" label="账户" min-width="120">
+          <template #default="{ row }">
+            {{ accountName(row.account_id) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="symbol" label="币种" min-width="120" />
+        <el-table-column prop="direction" label="方向" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.direction === 'LONG' ? 'success' : 'danger'">
+              {{ row.direction === 'LONG' ? '做多' : '做空' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="leverage" label="杠杆" width="90">
+          <template #default="{ row }">
+            {{ row.leverage ? `${formatNumber(row.leverage)}x` : '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="open_qty" label="未平仓数量" width="130">
+          <template #default="{ row }">
+            {{ formatNumber(row.open_qty) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="entry_avg_price" label="开仓均价" width="130">
+          <template #default="{ row }">
+            {{ formatNumber(row.entry_avg_price) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="latest_mark_price" label="最新标记价" width="130">
+          <template #default="{ row }">
+            {{ formatNumber(row.latest_mark_price) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="realized_pnl" label="已实现盈亏" width="140">
+          <template #default="{ row }">
+            <span :class="pnlClass(row.realized_pnl)">{{ formatSignedCurrency(row.realized_pnl) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="unrealized_pnl" label="浮动盈亏" width="140">
+          <template #default="{ row }">
+            <span :class="pnlClass(row.unrealized_pnl)">{{ formatSignedCurrency(row.unrealized_pnl) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="net_pnl" label="当前净值" width="140">
+          <template #default="{ row }">
+            <div class="open-trade-pnl-cell">
+              <span :class="pnlClass(row.net_pnl)">{{ formatSignedCurrency(row.net_pnl) }}</span>
+              <p class="open-trade-pnl-breakdown">
+                {{ formatOpenTradeNetBreakdown(row) }}
+              </p>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="holding_minutes" label="持仓时长" width="140">
+          <template #default="{ row }">
+            {{ formatDuration(row.holding_minutes) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="复盘" width="160" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              :loading="quickLinkingTradeId === row.id"
+              @click.stop="createOrLinkReviewFromTrade(row)"
+            >
+              创建/关联复盘
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="openTradePage"
+          v-model:page-size="openTradePageSize"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next"
+          :total="openTradeTotal"
+          @size-change="handleOpenTradeSizeChange"
+          @current-change="handleOpenTradePageChange"
+        />
+      </div>
+    </el-card>
 
     <el-card shadow="hover" class="history-card" v-loading="loading.completedTrades">
       <template #header>
@@ -514,6 +621,11 @@
         <el-table-column prop="position_side" label="持仓侧" width="100">
           <template #default="{ row }">
             {{ row.position_side || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="leverage" label="杠杆" width="90">
+          <template #default="{ row }">
+            {{ row.leverage ? `${formatNumber(row.leverage)}x` : '-' }}
           </template>
         </el-table-column>
         <el-table-column prop="price" label="均价" width="130">
@@ -949,6 +1061,10 @@ export default {
     const completedTradePage = ref(1)
     const completedTradePageSize = ref(20)
     const completedTradeTotal = ref(0)
+    const openTrades = ref([])
+    const openTradePage = ref(1)
+    const openTradePageSize = ref(20)
+    const openTradeTotal = ref(0)
     const rawHistoryData = ref([])
     const rawHistoryPage = ref(1)
     const rawHistoryPageSize = ref(20)
@@ -961,6 +1077,7 @@ export default {
     const quickLinkingTradeId = ref(null)
     const recentDailyReviews = ref([])
     const loading = reactive({
+      openTrades: false,
       completedSummary: false,
       completedTimeline: false,
       completedTrades: false,
@@ -1071,6 +1188,10 @@ export default {
     }
 
     const collectTradeOrderIds = (trade) => {
+      if (Array.isArray(trade?.order_ids) && trade.order_ids.length) {
+        return [...trade.order_ids]
+      }
+
       const orderIds = []
       const seen = new Set()
       for (const leg of [...(trade?.entry_orders || []), ...(trade?.exit_orders || [])]) {
@@ -1108,9 +1229,11 @@ export default {
           trade_id: tradeId,
           symbol: String(item?.symbol || '').trim().toUpperCase(),
           direction: String(item?.direction || '').trim().toUpperCase(),
+          trade_status: String(item?.trade_status || 'completed').trim().toLowerCase() === 'open' ? 'open' : 'completed',
           position_side: item?.position_side || null,
           open_time: item?.open_time,
-          close_time: item?.close_time,
+          close_time: item?.close_time || null,
+          last_activity_time: item?.last_activity_time || item?.close_time || item?.open_time,
           net_pnl: Number(item?.net_pnl || 0),
           order_ids: orderIds
         })
@@ -1119,16 +1242,32 @@ export default {
       return normalized.slice(0, 50)
     }
 
-    const createLinkedOrderFromTrade = (trade) => ({
-      trade_id: trade.id,
-      symbol: trade.symbol,
-      direction: trade.direction,
-      position_side: trade.position_side || null,
-      open_time: trade.open_time,
-      close_time: trade.close_time,
-      net_pnl: Number(trade.net_pnl || 0),
-      order_ids: collectTradeOrderIds(trade)
-    })
+    const createLinkedOrderFromTrade = (trade) => {
+      const tradeStatus = trade?.close_time ? 'completed' : 'open'
+      return {
+        trade_id: trade.id,
+        symbol: trade.symbol,
+        direction: trade.direction,
+        trade_status: tradeStatus,
+        position_side: trade.position_side || null,
+        open_time: trade.open_time,
+        close_time: trade?.close_time || null,
+        last_activity_time: trade?.last_activity_time || trade?.close_time || trade?.open_time,
+        net_pnl: Number(trade.net_pnl || 0),
+        order_ids: collectTradeOrderIds(trade)
+      }
+    }
+
+    const getTradeReviewTargetDate = (trade) => createDateOnlyString(
+      trade?.close_time || trade?.last_activity_time || trade?.open_time
+    )
+
+    const linkedOrderTimeText = (item) => {
+      if (item?.trade_status === 'open') {
+        return `${formatDateTime(item.open_time)} 至今，最近活动 ${formatDateTime(item.last_activity_time)}`
+      }
+      return `${formatDateTime(item.open_time)} 至 ${formatDateTime(item.close_time)}`
+    }
 
     const mergeLinkedOrders = (existing = [], additions = []) => normalizeLinkedOrders([
       ...(existing || []),
@@ -1261,6 +1400,28 @@ export default {
       const amount = Number(value || 0)
       const sign = amount > 0 ? '+' : ''
       return `${sign}${formatCurrency(amount)}`
+    }
+
+    const formatOpenTradeNetBreakdown = (trade) => {
+      const parts = []
+      parts.push(`浮盈 ${formatSignedCurrency(trade?.unrealized_pnl || 0)}`)
+
+      const realizedPnl = Number(trade?.realized_pnl || 0)
+      if (Math.abs(realizedPnl) > 1e-8) {
+        parts.push(`已实现 ${formatSignedCurrency(realizedPnl)}`)
+      }
+
+      const fundingPnl = Number(trade?.funding_pnl || 0)
+      if (Math.abs(fundingPnl) > 1e-8) {
+        parts.push(`资金费 ${formatSignedCurrency(fundingPnl)}`)
+      }
+
+      const commissionCost = Number(trade?.commission_cost || 0)
+      if (Math.abs(commissionCost) > 1e-8) {
+        parts.push(`手续费 -${formatCurrency(commissionCost)}`)
+      }
+
+      return parts.join(' · ')
     }
 
     const formatPercent = (value) => {
@@ -1694,6 +1855,26 @@ export default {
       }
     }
 
+    const fetchOpenTrades = async () => {
+      loading.openTrades = true
+      try {
+        const data = await riskControl.getOpenTrades({
+          ...buildBaseParams(),
+          skip: (openTradePage.value - 1) * openTradePageSize.value,
+          limit: openTradePageSize.value
+        })
+        openTrades.value = data.items || []
+        openTradeTotal.value = data.total || 0
+      } catch (error) {
+        console.error('Failed to fetch open trades:', error)
+        openTrades.value = []
+        openTradeTotal.value = 0
+        ElMessage.error('获取进行中交易失败')
+      } finally {
+        loading.openTrades = false
+      }
+    }
+
     const fetchRawSummary = async () => {
       loading.rawSummary = true
       try {
@@ -1853,7 +2034,7 @@ export default {
       }
 
       const targetAccountId = trade.account_id
-      const targetReviewDate = createDateOnlyString(trade.close_time)
+      const targetReviewDate = getTradeReviewTargetDate(trade)
       const linkedTrade = createLinkedOrderFromTrade(trade)
       quickLinkingTradeId.value = trade.id
 
@@ -1902,10 +2083,12 @@ export default {
 
     const refreshAll = async ({ resetPage = false } = {}) => {
       if (resetPage) {
+        openTradePage.value = 1
         completedTradePage.value = 1
         rawHistoryPage.value = 1
       }
       await Promise.all([
+        fetchOpenTrades(),
         fetchCompletedSummary(),
         fetchCompletedTimeline(),
         fetchCompletedTrades(),
@@ -1920,7 +2103,20 @@ export default {
       rawFilters.type = ''
       recordScope.value = 'trades'
       dateRange.value = createDefaultDateRange()
+      recentDailyReviews.value = []
+      resetDailyReviewState()
       await refreshAll({ resetPage: true })
+    }
+
+    const handleOpenTradeSizeChange = async (value) => {
+      openTradePageSize.value = value
+      openTradePage.value = 1
+      await fetchOpenTrades()
+    }
+
+    const handleOpenTradePageChange = async (value) => {
+      openTradePage.value = value
+      await fetchOpenTrades()
     }
 
     const handleCompletedTradeSizeChange = async (value) => {
@@ -2170,6 +2366,7 @@ export default {
       formatDateTime,
       formatDuration,
       formatNumber,
+      formatOpenTradeNetBreakdown,
       formatSignedCurrency,
       formatPercent,
       collectTradeOrderIds,
@@ -2178,6 +2375,8 @@ export default {
       fetchDailyReviewNote,
       handleCompletedTradePageChange,
       handleCompletedTradeSizeChange,
+      handleOpenTradePageChange,
+      handleOpenTradeSizeChange,
       handleTradeLinkSelectionChange,
       handleRawFilterChange,
       handleRawHistoryPageChange,
@@ -2187,8 +2386,13 @@ export default {
       holdingCurveChartRef,
       holdingCurveMode,
       isRefreshing,
+      linkedOrderTimeText,
       loading,
       normalizeSymbol,
+      openTrades,
+      openTradePage,
+      openTradePageSize,
+      openTradeTotal,
       openCompletedTradeDrawer,
       pnlClass,
       rawFilters,
@@ -2539,6 +2743,19 @@ export default {
 .linked-order-more,
 .link-dialog-copy {
   font-size: 13px;
+  color: #667085;
+}
+
+.open-trade-pnl-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.open-trade-pnl-breakdown {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
   color: #667085;
 }
 

@@ -1,11 +1,17 @@
 import asyncio
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.models.base import Base
+from app.models.risk_control import TransactionHistory
 from app.services.history_backfill_service import (
     BINANCE_MAX_INTERVAL_MS,
     fetch_income_range,
     fetch_trade_range,
+    upsert_trade_rows,
 )
 
 
@@ -71,3 +77,45 @@ def test_fetch_income_range_splits_over_seven_days():
 def test_fetch_trade_range_raises_on_failed_request():
     with pytest.raises(RuntimeError):
         asyncio.run(fetch_trade_range(FailingTradeAdapter(), 'BTCUSDT', 0, BINANCE_MAX_INTERVAL_MS))
+
+
+def test_upsert_trade_rows_persists_leverage():
+    engine = create_engine(
+        'sqlite://',
+        connect_args={'check_same_thread': False},
+        poolclass=StaticPool,
+    )
+    SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(bind=engine)
+    session = SessionLocal()
+
+    try:
+        result = upsert_trade_rows(session, 1, [
+            {
+                'orderId': '123',
+                'symbol': 'TRUMPUSDT',
+                'side': 'BUY',
+                'positionSide': 'LONG',
+                'price': '3.281',
+                'qty': '2019.8',
+                'quoteQty': '6626.9638',
+                'commission': '1.25',
+                'commissionAsset': 'USDT',
+                'realizedPnl': '-24.2376',
+                'leverage': '10',
+                'time': 1710000000000,
+            }
+        ])
+        session.commit()
+
+        row = session.query(TransactionHistory).filter(TransactionHistory.transaction_id == 'ORDER_123').first()
+
+        assert result == {'inserted': 1, 'updated': 0}
+        assert row is not None
+        assert row.qty == 2019.8
+        assert row.quote_qty == 6626.9638
+        assert row.leverage == 10.0
+    finally:
+        session.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()

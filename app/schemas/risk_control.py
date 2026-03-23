@@ -206,6 +206,7 @@ class TransactionHistoryBase(BaseModel):
     commission: Optional[float]
     commission_asset: Optional[str]
     realized_pnl: Optional[float]
+    leverage: Optional[float]
     time: datetime
     order_id: Optional[str]
     transaction_id: Optional[str]
@@ -334,13 +335,43 @@ class CompletedTradeReviewSummary(BaseModel):
     profit_factor: Optional[float] = Field(None, description="完整交易盈亏因子")
 
 
+class OpenTradeReview(BaseModel):
+    id: str
+    account_id: int
+    symbol: str
+    position_side: Optional[str]
+    direction: str
+    leverage: Optional[float]
+    open_time: datetime
+    last_activity_time: datetime
+    holding_minutes: float
+    open_qty: float
+    entry_avg_price: float
+    realized_pnl: float
+    commission_cost: float
+    funding_pnl: float
+    unrealized_pnl: float
+    net_pnl: float
+    latest_mark_price: Optional[float]
+    entry_order_count: int
+    exit_order_count: int
+    order_ids: List[str]
+
+
+class OpenTradeReviewList(BaseModel):
+    total: int
+    items: List[OpenTradeReview]
+
+
 class DailyTradeReviewLinkedOrder(BaseModel):
     trade_id: str = Field(..., description="完整交易ID")
     symbol: str = Field(..., description="币种")
     direction: str = Field(..., description="方向")
+    trade_status: str = Field("completed", description="交易状态：completed/open")
     position_side: Optional[str] = Field(None, description="持仓侧")
     open_time: datetime = Field(..., description="开仓时间")
-    close_time: datetime = Field(..., description="平仓时间")
+    close_time: Optional[datetime] = Field(None, description="平仓时间，未平仓时为空")
+    last_activity_time: Optional[datetime] = Field(None, description="最近一次成交或状态更新时间")
     net_pnl: float = Field(..., description="净盈亏")
     order_ids: List[str] = Field(default_factory=list, description="关联订单ID列表")
 

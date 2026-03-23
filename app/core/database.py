@@ -115,6 +115,23 @@ def init_db():
     try:
         from sqlalchemy import text
         with engine.connect() as conn:
+            res = conn.execute(text("SHOW COLUMNS FROM transaction_history LIKE 'leverage'"))
+            exists = res.first() is not None
+            if not exists:
+                import logging
+                logging.info("init_db: transaction_history.leverage missing, attempting to add it")
+                try:
+                    conn.execute(text("ALTER TABLE transaction_history ADD COLUMN IF NOT EXISTS leverage DOUBLE DEFAULT NULL"))
+                except Exception as e:
+                    logging.info("init_db: ALTER transaction_history leverage IF NOT EXISTS failed — trying plain ALTER; error=%s", e)
+                    conn.execute(text("ALTER TABLE transaction_history ADD COLUMN leverage DOUBLE DEFAULT NULL"))
+    except Exception:
+        import logging
+        logging.exception("init_db: failed to add transaction_history.leverage column (ignored)")
+
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
             res = conn.execute(text("SHOW COLUMNS FROM accounts LIKE 'api_passphrase'"))
             exists = res.first() is not None
             if not exists:

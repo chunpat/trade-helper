@@ -220,6 +220,7 @@ def upsert_trade_rows(db: Session, account_id: int, trade_rows: Sequence[Dict]) 
                 'commission': float(trade.get('commission', 0) or 0.0),
                 'commission_asset': trade.get('commissionAsset'),
                 'realized_pnl': float(trade.get('realizedPnl', 0) or 0.0),
+                'leverage': float(trade.get('leverage', 0) or 0.0),
                 'time': int(trade.get('time', 0) or 0),
             }
             continue
@@ -230,6 +231,7 @@ def upsert_trade_rows(db: Session, account_id: int, trade_rows: Sequence[Dict]) 
         item['quote_qty'] += float(trade.get('quoteQty', 0) or 0.0)
         item['commission'] += float(trade.get('commission', 0) or 0.0)
         item['realized_pnl'] += float(trade.get('realizedPnl', 0) or 0.0)
+        item['leverage'] = item['leverage'] or float(trade.get('leverage', 0) or 0.0)
         item['time'] = max(item['time'], int(trade.get('time', 0) or 0))
 
     inserted = 0
@@ -253,6 +255,7 @@ def upsert_trade_rows(db: Session, account_id: int, trade_rows: Sequence[Dict]) 
                 commission=item['commission'],
                 commission_asset=item['commission_asset'],
                 realized_pnl=item['realized_pnl'],
+                leverage=item['leverage'] or None,
                 time=timestamp,
                 order_id=order_id,
                 transaction_id=transaction_id,
@@ -272,6 +275,7 @@ def upsert_trade_rows(db: Session, account_id: int, trade_rows: Sequence[Dict]) 
         existing.commission = item['commission']
         existing.commission_asset = item['commission_asset']
         existing.realized_pnl = item['realized_pnl']
+        existing.leverage = item['leverage'] or None
         existing.time = timestamp
         existing.order_id = order_id
         db.add(existing)
