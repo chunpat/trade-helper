@@ -800,3 +800,81 @@ def test_open_trades_endpoint_returns_active_positions(review_client):
     assert item['unrealized_pnl'] == 35.0
     assert item['net_pnl'] == 34.5
     assert item['order_ids'] == ['SOL_OPEN_1']
+
+
+def test_open_trades_exclude_campaigns_without_active_position(review_client):
+    client, session_factory = review_client
+    session = session_factory()
+
+    account = Account(
+        exchange='okx',
+        name='Open Trade Filter Account',
+        api_key='test-key',
+        api_secret='test-secret',
+        initial_balance=10000,
+    )
+    session.add(account)
+    session.flush()
+    account_id = account.id
+
+    session.add_all([
+        TransactionHistory(
+            account_id=account_id,
+            symbol='BTCUSDT',
+            type='TRADE',
+            side='BUY',
+            position_side='LONG',
+            price=100000,
+            qty=1,
+            quote_qty=100000,
+            commission=1,
+            commission_asset='USDT',
+            realized_pnl=0,
+            time=datetime(2026, 1, 3, 9, 0, 0),
+            order_id='BTC_OPEN_1',
+            transaction_id='ORDER_BTC_OPEN_1',
+        ),
+        TransactionHistory(
+            account_id=account_id,
+            symbol='SOLUSDT',
+            type='TRADE',
+            side='BUY',
+            position_side='LONG',
+            price=120,
+            qty=5,
+            quote_qty=600,
+            commission=1,
+            commission_asset='USDT',
+            realized_pnl=0,
+            time=datetime(2026, 1, 3, 10, 0, 0),
+            order_id='SOL_OPEN_2',
+            transaction_id='ORDER_SOL_OPEN_2',
+        ),
+        Position(
+            account_id=account_id,
+            symbol='SOLUSDT',
+            size=5,
+            entry_price=120,
+            current_price=127,
+            unrealized_pnl=35,
+            leverage=10,
+            risk_level=RiskLevelEnum.LOW,
+            is_active=True,
+            position_side='LONG',
+        ),
+    ])
+    session.commit()
+    session.close()
+
+    response = client.get(
+        '/api/v1/risk-control/history/open-trades',
+        params={
+            'account_id': account_id,
+            'end_time': '2026-01-03T13:30:00',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] == 1
+    assert [item['symbol'] for item in payload['items']] == ['SOLUSDT']

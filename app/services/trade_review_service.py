@@ -31,9 +31,14 @@ class TradeReviewService:
             symbol=symbol,
             end_time=end_time,
         )
+        active_positions = self._load_active_positions(active_campaigns)
 
         open_trades: List[Dict] = []
         for campaign in active_campaigns:
+            position = active_positions.get(self._position_lookup_key(campaign))
+            if not position or float(position.size or 0.0) <= EPSILON:
+                continue
+
             last_activity_time = campaign['close_time']
             if start_time is not None and last_activity_time < start_time:
                 continue
