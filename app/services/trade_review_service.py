@@ -265,6 +265,9 @@ class TradeReviewService:
             while remaining_qty > EPSILON:
                 active = active_campaigns.get(key)
                 if not active:
+                    if self._is_orphan_closing_trade(position_side=position_side, side=side):
+                        break
+
                     sequence_map[key] += 1
                     active = self._new_campaign(
                         account_id=row.account_id,
@@ -320,6 +323,13 @@ class TradeReviewService:
             self._finalize_campaign(active)
 
         return completed_trades, list(active_campaigns.values())
+
+    def _is_orphan_closing_trade(self, position_side: str, side: str) -> bool:
+        if position_side == 'LONG':
+            return side == 'SELL'
+        if position_side == 'SHORT':
+            return side == 'BUY'
+        return False
 
     def _attach_funding(
         self,

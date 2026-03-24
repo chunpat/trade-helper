@@ -878,3 +878,91 @@ def test_open_trades_exclude_campaigns_without_active_position(review_client):
     payload = response.json()
     assert payload['total'] == 1
     assert [item['symbol'] for item in payload['items']] == ['SOLUSDT']
+
+
+def test_completed_trades_ignore_orphan_close_rows(review_client):
+    client, session_factory = review_client
+    session = session_factory()
+
+    account = Account(
+        exchange='okx',
+        name='Completed Trade Filter Account',
+        api_key='test-key',
+        api_secret='test-secret',
+        initial_balance=10000,
+    )
+    session.add(account)
+    session.flush()
+    account_id = account.id
+
+    session.add_all([
+        TransactionHistory(
+            account_id=account_id,
+            symbol='BTCUSDT',
+            type='TRADE',
+            side='SELL',
+            position_side='LONG',
+            price=101000,
+            qty=1,
+            quote_qty=101000,
+            commission=1,
+            commission_asset='USDT',
+            realized_pnl=50,
+            time=datetime(2026, 1, 3, 8, 0, 0),
+            order_id='BTC_ORPHAN_CLOSE',
+            transaction_id='ORDER_BTC_ORPHAN_CLOSE',
+        ),
+        TransactionHistory(
+            account_id=account_id,
+            symbol='BTCUSDT',
+            type='TRADE',
+            side='BUY',
+            position_side='LONG',
+            price=100000,
+            qty=1,
+            quote_qty=100000,
+            commission=1,
+            commission_asset='USDT',
+            realized_pnl=0,
+            time=datetime(2026, 1, 3, 9, 0, 0),
+            order_id='BTC_REAL_OPEN',
+            transaction_id='ORDER_BTC_REAL_OPEN',
+        ),
+        TransactionHistory(
+            account_id=account_id,
+            symbol='BTCUSDT',
+            type='TRADE',
+            side='SELL',
+            position_side='LONG',
+            price=102000,
+            qty=1,
+            quote_qty=102000,
+            commission=1,
+            commission_asset='USDT',
+            realized_pnl=80,
+            time=datetime(2026, 1, 3, 10, 0, 0),
+            order_id='BTC_REAL_CLOSE',
+            transaction_id='ORDER_BTC_REAL_CLOSE',
+        ),
+    ])
+    session.commit()
+    session.close()
+
+    response = client.get(
+        '/api/v1/risk-control/history/completed-trades',
+        params={
+            'account_id': account_id,
+            'start_time': '2026-01-03T00:00:00',
+            'end_time': '2026-01-04T00:00:00',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] == 1
+    item = payload['items'][0]
+    assert item['symbol'] == 'BTCUSDT'
+    assert item['open_time'] == '2026-01-03T09:00:00'
+    assert item['close_time'] == '2026-01-03T10:00:00'
+    assert item['entry_order_count'] == 1
+    assert item['exit_order_count'] == 1
