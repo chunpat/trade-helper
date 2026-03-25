@@ -79,6 +79,15 @@
 - `ENABLE_GPT_5_1` 只控制市场看板里的本地摘要文案，不会触发 OpenAI 请求
 - 异常新闻真实性分析是否调用远程模型，由 `ANOMALY_LLM_PROVIDER` 决定；设为 `disabled` 时只走本地启发式分析
 
+## 认证与会话续期
+
+- 后端采用双 JWT 方案: 短效 `access token` + 长效 `refresh token`
+- 前端登录后会同时保存两种 token，并记录 access token 的本地过期时间
+- 当前端检测到 access token 快过期，或业务请求收到 `401` 时，会自动调用 `/api/v1/auth/refresh` 静默续期
+- Refresh token 使用轮换策略: 每次刷新成功后，旧 refresh token 会立即失效
+- 调用 `/api/v1/auth/logout` 时，当前 refresh token 会被吊销，之后不能继续换取新的 access token
+- 业务接口只接受 `access token`；`refresh token` 不能直接访问受保护接口
+
 ## 系统要求
 
 - Python 3.8+
@@ -275,6 +284,9 @@ docker compose up -d --build
 | `START_MARKET_POLLER` | 控制当前进程是否启动行情轮询 |
 | `START_POSITION_SYNC` | 控制当前进程是否启动仓位同步 |
 | `START_ANOMALY_MONITOR` | 控制当前进程是否启动异常扫描和新闻入库 |
+| `SECRET_KEY` | JWT 签名密钥，生产环境必须替换 |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token 有效期，建议保持短效，例如 `15` 到 `30` 分钟 |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | Refresh token 有效期，建议 `7` 到 `30` 天 |
 | `ANOMALY_LLM_PROVIDER` | 异常新闻分析模式，常见值为 `disabled` 或 `openai-compatible` |
 | `NEWS_PROVIDER` | 新闻兜底提供方，常见值为 `auto`、`brave`、`cryptopanic` |
 | `NEWS_ARCHIVE_ENABLED` | 是否启用持久化新闻归档 |
@@ -299,6 +311,25 @@ LLM_API_KEY=your-llm-api-key
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
 ```
+
+认证相关的最小配置示例:
+
+```bash
+SECRET_KEY=replace-with-a-long-random-secret
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=7
+```
+
+默认登录与续期接口:
+
+```text
+POST /api/v1/auth/token
+POST /api/v1/auth/refresh
+POST /api/v1/auth/logout
+GET  /api/v1/auth/me
+```
+
+如果你希望缩短 access token 生命周期来提高安全性，只需要调小 `ACCESS_TOKEN_EXPIRE_MINUTES`。前端仍会通过 refresh token 做无感续期，不需要同步改页面逻辑。
 
 ## 风控规则配置示例
 
