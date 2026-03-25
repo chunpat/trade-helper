@@ -39,6 +39,19 @@ class User(Base, BaseMixin):
     password_hash = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
+    refresh_tokens = relationship("RefreshToken", back_populates="user")
+
+
+class RefreshToken(Base, BaseMixin):
+    __tablename__ = 'refresh_tokens'
+
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    token_jti = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="refresh_tokens")
 
 
 class RiskConfig(Base, BaseMixin):

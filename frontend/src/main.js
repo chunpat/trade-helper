@@ -5,6 +5,7 @@ import 'element-plus/dist/index.css'
 import App from './App.vue'
 import router from './router'
 import store from './store'
+import { getStoredAuthState } from './api'
 import { startWebSocket } from './services/wsClient'
 
 // Create Vue app
@@ -20,8 +21,9 @@ app.use(ElementPlus)
 app.use(store)
 app.use(router)
 
-// try to populate current user if token exists
-if (localStorage.getItem('token')) {
+// try to populate current user if auth state exists
+const authState = getStoredAuthState()
+if (authState.token || authState.refreshToken) {
   // fetch current user into store (best-effort)
   store.dispatch('fetchCurrentUser').catch(() => {})
 }

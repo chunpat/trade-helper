@@ -1,10 +1,14 @@
 import { createStore } from 'vuex'
-import { riskControl } from '../api'
+import { clearAuthStorage, getAuthStorageEventName, getStoredAuthState, riskControl, saveAuthTokens } from '../api'
 import { getStoredDisplayTimezone, setStoredDisplayTimezone } from '../utils/datetime'
 
-export default createStore({
+const storedAuthState = getStoredAuthState()
+
+const store = createStore({
   state: {
-    token: localStorage.getItem('token') || null,
+    token: storedAuthState.token,
+    refreshToken: storedAuthState.refreshToken,
+    tokenExpiresAt: storedAuthState.tokenExpiresAt,
     displayTimezone: getStoredDisplayTimezone(),
     currentUser: null,
     accounts: [],
@@ -29,8 +33,10 @@ export default createStore({
   },
 
   mutations: {
-    SET_TOKEN(state, token) {
-      state.token = token
+    SET_AUTH_STATE(state, authState) {
+      state.token = authState?.token || null
+      state.refreshToken = authState?.refreshToken || null
+      state.tokenExpiresAt = authState?.tokenExpiresAt || null
     },
     SET_DISPLAY_TIMEZONE(state, timezone) {
       state.displayTimezone = timezone || 'system'
@@ -92,9 +98,7 @@ export default createStore({
     async login({ commit }, { username, password }) {
       try {
         const data = await riskControl.login({ username, password })
-        const token = data.access_token
-        localStorage.setItem('token', token)
-        commit('SET_TOKEN', token)
+        commit('SET_AUTH_STATE', saveAuthTokens(data))
         // optionally fetch current user
         // we don't have an endpoint returning me yet (me exists), but we can call it
         try {
@@ -108,21 +112,30 @@ export default createStore({
         throw e
       }
     },
-    logout({ commit }) {
-      localStorage.removeItem('token')
-      commit('SET_TOKEN', null)
+    async logout({ commit, state }) {
+      if (state.refreshToken) {
+        try {
+          await riskControl.logout({ refresh_token: state.refreshToken })
+        } catch (_) {
+          // ignore logout failures and clear local auth state regardless
+        }
+      }
+
+      clearAuthStorage()
+      commit('SET_AUTH_STATE', { token: null, refreshToken: null, tokenExpiresAt: null })
       commit('SET_CURRENT_USER', null)
     },
     async fetchCurrentUser({ commit, state }) {
-      if (!state.token) return null
+      const authState = state.token || state.refreshToken ? state : getStoredAuthState()
+      if (!authState.token && !authState.refreshToken) return null
       try {
         const me = await riskControl.getMe()
         commit('SET_CURRENT_USER', me)
         return me
       } catch (e) {
         // token invalid or other issue - clear token
-        localStorage.removeItem('token')
-        commit('SET_TOKEN', null)
+        clearAuthStorage()
+        commit('SET_AUTH_STATE', { token: null, refreshToken: null, tokenExpiresAt: null })
         commit('SET_CURRENT_USER', null)
         return null
       }
@@ -296,3 +309,11 @@ export default createStore({
     }
   }
 })
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(getAuthStorageEventName(), event => {
+    store.commit('SET_AUTH_STATE', event.detail || getStoredAuthState())
+  })
+}
+
+export default store

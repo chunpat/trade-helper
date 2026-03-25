@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { getStoredAuthState } from '../api'
 import store from '../store'
 
 const routes = [
@@ -63,7 +64,8 @@ const router = createRouter({
 // Global navigation guard for auth
 router.beforeEach((to, from, next) => {
   const requiresAuth = to.matched.some(record => record.meta && record.meta.requiresAuth)
-  const token = store.state.token || localStorage.getItem('token')
+  const authState = getStoredAuthState()
+  const token = store.state.token || authState.token || authState.refreshToken
   if (requiresAuth && !token) {
     return next({ name: 'Login' })
   }

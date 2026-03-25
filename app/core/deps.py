@@ -5,7 +5,7 @@ from jose import JWTError
 
 from app.core.database import SessionLocal
 from app.models.risk_control import User
-from app.core.security import decode_token
+from app.core.security import ACCESS_TOKEN_TYPE, decode_token, get_token_subject, get_token_type
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
@@ -19,7 +19,10 @@ def get_db():
 def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)) -> User:
     try:
         payload = decode_token(token)
-        username: Optional[str] = payload.get("sub")
+        token_type = get_token_type(payload)
+        if token_type != ACCESS_TOKEN_TYPE:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
+        username: Optional[str] = get_token_subject(payload)
         if username is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth token")
     except JWTError:

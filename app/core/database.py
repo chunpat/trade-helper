@@ -55,6 +55,7 @@ def init_db():
     from app.models.base import Base
     from app.models.risk_control import (
         Account,
+        RefreshToken,
         RiskConfig,
         Position,
         RiskAlert,
