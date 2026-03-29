@@ -39,7 +39,7 @@
             <el-table-column prop="current_price" label="Current" width="140"></el-table-column>
             <el-table-column prop="unrealized_pnl" label="Unrealized PnL" width="160">
               <template #default="{ row }">
-                <span :class="row.unrealized_pnl >= 0 ? 'pnl-positive' : 'pnl-negative'">{{ row.unrealized_pnl }}</span>
+                <span :class="pnlClass(row.unrealized_pnl)">{{ row.unrealized_pnl }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="risk_level" label="Risk" width="120">
@@ -115,7 +115,7 @@
             </el-table-column>
             <el-table-column prop="realized_pnl" label="变动金额/PnL" width="150">
               <template #default="{ row }">
-                <span :class="row.realized_pnl >= 0 ? 'pnl-positive' : 'pnl-negative'">
+                <span :class="pnlClass(row.realized_pnl)">
                   {{ row.realized_pnl }}
                 </span>
               </template>
@@ -278,6 +278,28 @@ export default {
     formatDate(dateStr) {
       if (!dateStr) return '-'
       return formatDisplayDateTime(dateStr, this.$store.getters.displayTimezone)
+    },
+    toNumericValue (value) {
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : 0
+      }
+      if (typeof value === 'string') {
+        const normalized = value.replaceAll(',', '').trim()
+        const parsed = Number(normalized)
+        return Number.isFinite(parsed) ? parsed : 0
+      }
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : 0
+    },
+    pnlClass (value) {
+      const amount = this.toNumericValue(value)
+      if (amount > 0) {
+        return 'pnl-positive'
+      }
+      if (amount < 0) {
+        return 'pnl-negative'
+      }
+      return ''
     },
     getRiskLevelType(level) {
       const map = {
