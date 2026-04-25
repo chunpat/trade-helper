@@ -20,6 +20,17 @@ class PositionSyncService:
         self._history_sync_counter = 0
         self._history_sync_interval = 10  # Sync history every 10 position sync cycles
 
+    @staticmethod
+    def normalize_position_side(position_side: str | None, position_amount: float) -> str:
+        normalized_side = (position_side or "NET").strip().upper()
+        if normalized_side == 'BOTH':
+            if position_amount > 0:
+                return 'LONG'
+            if position_amount < 0:
+                return 'SHORT'
+            return 'NET'
+        return normalized_side or 'NET'
+
     async def _sync_account(self, account: Account):
         adapter = create_adapter_for_account(account)
         if not adapter:
@@ -74,8 +85,8 @@ class PositionSyncService:
                 for r in rows:
                     try:
                         symbol = r.get('symbol')
-                        pside = (r.get('positionSide') or "NET").upper()
                         amt = float(r.get('positionAmt', 0) or 0)
+                        pside = self.normalize_position_side(r.get('positionSide'), amt)
                         entry_price = float(r.get('entryPrice', 0)) if r.get('entryPrice') else None
                         mark_price = float(r.get('markPrice', 0)) if r.get('markPrice') else None
                         unrealized = float(r.get('unRealizedProfit', 0) or 0)

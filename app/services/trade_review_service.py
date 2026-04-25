@@ -12,6 +12,13 @@ EPSILON = 1e-8
 CURVE_POINT_LIMIT = 240
 
 
+def _normalize_symbol(symbol: Optional[str]) -> Optional[str]:
+    if symbol is None:
+        return None
+    normalized = symbol.strip().upper()
+    return normalized or None
+
+
 class TradeReviewService:
     def __init__(self, db: Session):
         self.db = db
@@ -214,11 +221,12 @@ class TradeReviewService:
         symbol: Optional[str] = None,
         end_time: Optional[datetime] = None,
     ) -> Tuple[List[Dict], List[Dict]]:
+        normalized_symbol = _normalize_symbol(symbol)
         trade_query = self.db.query(TransactionHistory).filter(TransactionHistory.type == 'TRADE')
         if account_id is not None:
             trade_query = trade_query.filter(TransactionHistory.account_id == account_id)
-        if symbol:
-            trade_query = trade_query.filter(func.upper(TransactionHistory.symbol) == symbol.strip().upper())
+        if normalized_symbol:
+            trade_query = trade_query.filter(TransactionHistory.symbol == normalized_symbol)
         if end_time is not None:
             trade_query = trade_query.filter(TransactionHistory.time <= end_time)
 
@@ -227,7 +235,7 @@ class TradeReviewService:
             TransactionHistory.symbol.asc(),
             TransactionHistory.time.asc(),
             TransactionHistory.id.asc(),
-        ).all()
+        ).yield_per(1000)
 
         active_campaigns: Dict[Tuple[int, str, str], Dict] = {}
         sequence_map: Dict[Tuple[int, str, str], int] = defaultdict(int)
@@ -340,6 +348,8 @@ class TradeReviewService:
         if not completed_trades:
             return
 
+        normalized_symbol = _normalize_symbol(symbol)
+
         min_open_time = min(item['open_time'] for item in completed_trades)
         max_close_time = max(item['close_time'] for item in completed_trades)
 
@@ -350,8 +360,8 @@ class TradeReviewService:
         )
         if account_id is not None:
             funding_query = funding_query.filter(TransactionHistory.account_id == account_id)
-        if symbol:
-            funding_query = funding_query.filter(func.upper(TransactionHistory.symbol) == symbol.strip().upper())
+        if normalized_symbol:
+            funding_query = funding_query.filter(TransactionHistory.symbol == normalized_symbol)
 
         funding_rows = funding_query.order_by(TransactionHistory.time.asc(), TransactionHistory.id.asc()).all()
         campaigns_by_key: Dict[Tuple[int, str], List[Dict]] = defaultdict(list)
@@ -411,7 +421,7 @@ class TradeReviewService:
             ticker_rows_by_key[(account_id, trade_symbol)] = (
                 self.db.query(TickerHistory)
                 .filter(TickerHistory.account_id == account_id)
-                .filter(func.upper(TickerHistory.symbol) == trade_symbol)
+                .filter(TickerHistory.symbol == trade_symbol)
                 .filter(TickerHistory.timestamp >= time_range['open_time'])
                 .filter(TickerHistory.timestamp <= time_range['close_time'])
                 .order_by(TickerHistory.timestamp.asc(), TickerHistory.id.asc())
@@ -836,27 +846,45 @@ class TradeReviewService:
                 continue
 
             account_id, symbol, position_side = lookup_key
-            query = (
-                self.db.query(Position)
-                .filter(Position.account_id == account_id)
-                .filter(func.upper(Position.symbol) == symbol)
-                .filter(Position.is_active == True)
-            )
-            if position_side == 'NET':
-                query = query.filter((Position.position_side.is_(None)) | (func.upper(Position.position_side) == 'NET'))
-            else:
-                query = query.filter(func.upper(Position.position_side) == position_side)
+            position = None
+            for candidate_side in self._position_lookup_candidates(campaign):
+                query = (
+                    self.db.query(Position)
+                    .filter(Position.account_id == account_id)
+                    .filter(Position.symbol == symbol)
+                    .filter(Position.is_active == True)
+                )
+                if candidate_side == 'NET':
+                    query = query.filter((Position.position_side.is_(None)) | (func.upper(Position.position_side) == 'NET'))
+                else:
+                    query = query.filter(func.upper(Position.position_side) == candidate_side)
 
-            position = query.order_by(Position.updated_at.desc(), Position.id.desc()).first()
+                position = query.order_by(Position.updated_at.desc(), Position.id.desc()).first()
+                if position:
+                    break
+
             if position:
                 positions[lookup_key] = position
         return positions
+
+    def _position_lookup_candidates(self, campaign: Dict) -> List[str]:
+        position_side = (campaign.get('position_side') or 'NET').strip().upper()
+        direction = (campaign.get('direction') or '').strip().upper()
+
+        candidates: List[str] = []
+        for side in [position_side, direction if position_side in {'BOTH', 'NET'} else None, 'NET' if position_side == 'BOTH' else None]:
+            normalized_side = (side or '').strip().upper()
+            if not normalized_side or normalized_side in candidates:
+                continue
+            candidates.append(normalized_side)
+
+        return candidates or ['NET']
 
     def _position_lookup_key(self, campaign: Dict) -> Tuple[int, str, str]:
         return (
             campaign['account_id'],
             campaign['symbol'],
-            (campaign.get('position_side') or 'NET').strip().upper(),
+            self._position_lookup_candidates(campaign)[0],
         )
 
     def _load_latest_ticker_rows(
@@ -872,7 +900,7 @@ class TradeReviewService:
             latest_rows[key] = (
                 self.db.query(TickerHistory)
                 .filter(TickerHistory.account_id == campaign['account_id'])
-                .filter(func.upper(TickerHistory.symbol) == campaign['symbol'])
+                .filter(TickerHistory.symbol == campaign['symbol'])
                 .filter(TickerHistory.timestamp >= campaign['open_time'])
                 .filter(TickerHistory.timestamp <= reference_time)
                 .order_by(TickerHistory.timestamp.desc(), TickerHistory.id.desc())
@@ -895,11 +923,15 @@ class TradeReviewService:
         return order_ids
 
     def _serialize_open_trade(self, campaign: Dict) -> Dict:
+        display_position_side = (campaign.get('position_side') or 'NET').strip().upper()
+        if display_position_side == 'BOTH':
+            display_position_side = (campaign.get('direction') or 'NET').strip().upper()
+
         return {
             'id': campaign['id'],
             'account_id': campaign['account_id'],
             'symbol': campaign['symbol'],
-            'position_side': campaign['position_side'],
+            'position_side': None if display_position_side == 'NET' else display_position_side,
             'direction': campaign['direction'],
             'leverage': campaign.get('leverage'),
             'open_time': campaign['open_time'],

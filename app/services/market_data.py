@@ -89,7 +89,12 @@ class MarketDataService:
                 return None
 
             position.current_price = price
-            position.unrealized_pnl = (price - position.entry_price) * position.size
+            position.unrealized_pnl = RiskControlService.calculate_unrealized_pnl_amount(
+                entry_price=position.entry_price,
+                current_price=price,
+                size=position.size,
+                position_side=getattr(position, 'position_side', None),
+            )
 
             # recompute risk_level by loading config and using RiskControlService
             risk_config = db.query(RiskConfig).filter(

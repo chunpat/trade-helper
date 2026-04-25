@@ -880,6 +880,73 @@ def test_open_trades_exclude_campaigns_without_active_position(review_client):
     assert [item['symbol'] for item in payload['items']] == ['SOLUSDT']
 
 
+def test_open_trades_match_active_position_when_history_position_side_is_both(review_client):
+    client, session_factory = review_client
+    session = session_factory()
+
+    account = Account(
+        exchange='binance',
+        name='One Way Mode Account',
+        api_key='test-key',
+        api_secret='test-secret',
+        initial_balance=10000,
+    )
+    session.add(account)
+    session.flush()
+    account_id = account.id
+
+    session.add_all([
+        TransactionHistory(
+            account_id=account_id,
+            symbol='SIRENUSDT',
+            type='TRADE',
+            side='SELL',
+            position_side='BOTH',
+            price=1.5952,
+            qty=466,
+            quote_qty=743.3632,
+            commission=0.8,
+            commission_asset='USDT',
+            realized_pnl=0,
+            time=datetime(2026, 3, 25, 17, 37, 9),
+            order_id='SIREN_OPEN_1',
+            transaction_id='ORDER_SIREN_OPEN_1',
+        ),
+        Position(
+            account_id=account_id,
+            symbol='SIRENUSDT',
+            size=466,
+            entry_price=1.5952,
+            current_price=1.73077,
+            unrealized_pnl=-63.17562,
+            leverage=2,
+            risk_level=RiskLevelEnum.MEDIUM,
+            is_active=True,
+            position_side='SHORT',
+        ),
+    ])
+    session.commit()
+    session.close()
+
+    response = client.get(
+        '/api/v1/risk-control/history/open-trades',
+        params={
+            'account_id': account_id,
+            'end_time': '2026-03-30T12:00:00',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] == 1
+    item = payload['items'][0]
+    assert item['symbol'] == 'SIRENUSDT'
+    assert item['direction'] == 'SHORT'
+    assert item['position_side'] == 'SHORT'
+    assert item['open_qty'] == 466.0
+    assert item['unrealized_pnl'] == -63.17562
+
+
 def test_completed_trades_ignore_orphan_close_rows(review_client):
     client, session_factory = review_client
     session = session_factory()

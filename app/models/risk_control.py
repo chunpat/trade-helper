@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Boolean, JSON, ForeignKey, Enum, Integer, DateTime, Date, Text, UniqueConstraint
+from sqlalchemy import Column, String, Float, Boolean, JSON, ForeignKey, Enum, Integer, DateTime, Date, Text, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -118,6 +118,9 @@ class OrderLog(Base, BaseMixin):
 
 class TickerHistory(Base, BaseMixin):
     __tablename__ = "ticker_history"
+    __table_args__ = (
+        Index("ix_ticker_history_account_symbol_timestamp_id", "account_id", "symbol", "timestamp", "id"),
+    )
 
     symbol = Column(String(20), nullable=False, index=True)
     price = Column(Float, nullable=False)
@@ -128,6 +131,11 @@ class TickerHistory(Base, BaseMixin):
 
 class TransactionHistory(Base, BaseMixin):
     __tablename__ = "transaction_history"
+    __table_args__ = (
+        Index("ix_transaction_history_type_time_id", "type", "time", "id"),
+        Index("ix_transaction_history_account_type_time_id", "account_id", "type", "time", "id"),
+        Index("ix_transaction_history_type_account_symbol_time_id", "type", "account_id", "symbol", "time", "id"),
+    )
 
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     symbol = Column(String(20))
@@ -149,6 +157,9 @@ class TransactionHistory(Base, BaseMixin):
 
 class AccountSnapshot(Base, BaseMixin):
     __tablename__ = "account_snapshots"
+    __table_args__ = (
+        Index("ix_account_snapshots_account_timestamp_id", "account_id", "timestamp", "id"),
+    )
 
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     total_equity = Column(Float, nullable=False)

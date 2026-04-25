@@ -76,6 +76,14 @@ def init_db():
     try:
         from sqlalchemy import text
         with engine.connect() as conn:
+            def ensure_index(table_name: str, index_name: str, create_sql: str) -> None:
+                res = conn.execute(text(f"SHOW INDEX FROM {table_name} WHERE Key_name = :index_name"), {"index_name": index_name})
+                if res.first() is not None:
+                    return
+                import logging
+                logging.info("init_db: %s missing, attempting to create it", index_name)
+                conn.execute(text(create_sql))
+
             # check whether column exists
             res = conn.execute(text("SHOW COLUMNS FROM positions LIKE 'position_side'"))
             exists = res.first() is not None
@@ -180,3 +188,43 @@ def init_db():
     except Exception:
         import logging
         logging.exception("init_db: failed to add daily_trade_reviews.linked_orders column (ignored)")
+
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            def ensure_index(table_name: str, index_name: str, create_sql: str) -> None:
+                res = conn.execute(text(f"SHOW INDEX FROM {table_name} WHERE Key_name = :index_name"), {"index_name": index_name})
+                if res.first() is not None:
+                    return
+                import logging
+                logging.info("init_db: %s missing, attempting to create it", index_name)
+                conn.execute(text(create_sql))
+
+            ensure_index(
+                "transaction_history",
+                "ix_transaction_history_type_time_id",
+                "CREATE INDEX ix_transaction_history_type_time_id ON transaction_history (type, time, id)",
+            )
+            ensure_index(
+                "transaction_history",
+                "ix_transaction_history_account_type_time_id",
+                "CREATE INDEX ix_transaction_history_account_type_time_id ON transaction_history (account_id, type, time, id)",
+            )
+            ensure_index(
+                "transaction_history",
+                "ix_transaction_history_type_account_symbol_time_id",
+                "CREATE INDEX ix_transaction_history_type_account_symbol_time_id ON transaction_history (type, account_id, symbol, time, id)",
+            )
+            ensure_index(
+                "ticker_history",
+                "ix_ticker_history_account_symbol_timestamp_id",
+                "CREATE INDEX ix_ticker_history_account_symbol_timestamp_id ON ticker_history (account_id, symbol, timestamp, id)",
+            )
+            ensure_index(
+                "account_snapshots",
+                "ix_account_snapshots_account_timestamp_id",
+                "CREATE INDEX ix_account_snapshots_account_timestamp_id ON account_snapshots (account_id, timestamp, id)",
+            )
+    except Exception:
+        import logging
+        logging.exception("init_db: failed to create history query indexes (ignored)")

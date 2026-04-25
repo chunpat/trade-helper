@@ -1381,25 +1381,38 @@ export default {
       return account ? account.name : `#${accountId}`
     }
 
+    const toNumericValue = (value) => {
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : 0
+      }
+      if (typeof value === 'string') {
+        const normalized = value.replaceAll(',', '').trim()
+        const parsed = Number(normalized)
+        return Number.isFinite(parsed) ? parsed : 0
+      }
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : 0
+    }
+
     const formatNumber = (value) => {
       if (value === null || value === undefined || value === '') {
         return '-'
       }
-      return Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 })
+      return toNumericValue(value).toLocaleString(undefined, { maximumFractionDigits: 4 })
     }
 
     const formatCurrency = (value) => {
       if (value === null || value === undefined) {
         return '-'
       }
-      return Number(value).toLocaleString(undefined, {
+      return toNumericValue(value).toLocaleString(undefined, {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
       })
     }
 
     const formatSignedCurrency = (value) => {
-      const amount = Number(value || 0)
+      const amount = toNumericValue(value)
       const sign = amount > 0 ? '+' : ''
       return `${sign}${formatCurrency(amount)}`
     }
@@ -1427,14 +1440,14 @@ export default {
     }
 
     const formatPercent = (value) => {
-      if (value === null || value === undefined || Number.isNaN(Number(value))) {
+      if (value === null || value === undefined || value === '') {
         return '-'
       }
-      return `${Number(value).toFixed(2)}%`
+      return `${toNumericValue(value).toFixed(2)}%`
     }
 
     const formatSignedPercent = (value) => {
-      const amount = Number(value || 0)
+      const amount = toNumericValue(value)
       const sign = amount > 0 ? '+' : ''
       return `${sign}${formatPercent(amount)}`
     }
@@ -1463,7 +1476,7 @@ export default {
     }
 
     const pnlClass = (value) => {
-      const amount = Number(value || 0)
+      const amount = toNumericValue(value)
       if (amount > 0) {
         return 'pnl-positive'
       }

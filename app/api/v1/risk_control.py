@@ -241,12 +241,34 @@ def _build_transaction_history_query(
     from app.models.risk_control import TransactionHistory
 
     query = db.query(TransactionHistory)
+    normalized_symbol = symbol.strip().upper() if symbol else None
+    can_use_type_time_hint = transaction_type is not None or record_scope == "trades"
 
     if account_id is not None:
         query = query.filter(TransactionHistory.account_id == account_id)
-    if symbol:
-        query = query.filter(func.upper(TransactionHistory.symbol) == symbol.strip().upper())
+    if normalized_symbol:
+        query = query.filter(TransactionHistory.symbol == normalized_symbol)
     query = _apply_record_scope(query, TransactionHistory, record_scope)
+
+    if can_use_type_time_hint:
+        if account_id is not None and normalized_symbol:
+            query = query.with_hint(
+                TransactionHistory,
+                "USE INDEX (ix_transaction_history_type_account_symbol_time_id)",
+                dialect_name="mysql",
+            )
+        elif account_id is not None:
+            query = query.with_hint(
+                TransactionHistory,
+                "USE INDEX (ix_transaction_history_account_type_time_id)",
+                dialect_name="mysql",
+            )
+        else:
+            query = query.with_hint(
+                TransactionHistory,
+                "USE INDEX (ix_transaction_history_type_time_id)",
+                dialect_name="mysql",
+            )
 
     if transaction_type:
         query = query.filter(TransactionHistory.type == transaction_type)
@@ -1324,7 +1346,7 @@ async def get_transaction_history(
         end_time=end_time,
     )
 
-    history = query.order_by(TransactionHistory.time.desc()).offset(skip).limit(limit).all()
+    history = query.order_by(TransactionHistory.time.desc(), TransactionHistory.id.desc()).offset(skip).limit(limit).all()
     return history
 
 @router.post("/accounts/{account_id}/sync-history")

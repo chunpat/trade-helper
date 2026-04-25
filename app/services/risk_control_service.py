@@ -7,6 +7,42 @@ class RiskControlService:
     def __init__(self, db: Session):
         self.db = db
 
+    @staticmethod
+    def normalize_position_side(position_side: Optional[str]) -> str:
+        return (position_side or "LONG").strip().upper()
+
+    @classmethod
+    def calculate_unrealized_pnl_amount(
+        cls,
+        entry_price: Optional[float],
+        current_price: Optional[float],
+        size: Optional[float],
+        position_side: Optional[str] = None,
+    ) -> float:
+        if not entry_price or current_price is None or size is None:
+            return 0.0
+
+        quantity = abs(size)
+        side = cls.normalize_position_side(position_side)
+        if side == 'SHORT':
+            return (entry_price - current_price) * quantity
+        return (current_price - entry_price) * quantity
+
+    @classmethod
+    def calculate_unrealized_pnl_ratio(
+        cls,
+        entry_price: Optional[float],
+        current_price: Optional[float],
+        position_side: Optional[str] = None,
+    ) -> float:
+        if not entry_price or current_price is None:
+            return 0.0
+
+        side = cls.normalize_position_side(position_side)
+        if side == 'SHORT':
+            return (entry_price - current_price) / entry_price
+        return (current_price - entry_price) / entry_price
+
     def check_position_risk(self, account_id: int, symbol: str, size: float, leverage: float) -> Dict:
         """检查持仓风险"""
         account = self.db.query(Account).filter(Account.id == account_id).first()
@@ -75,8 +111,12 @@ class RiskControlService:
             return RiskLevelEnum.MEDIUM
 
         # 计算未实现盈亏率
-        pnl_ratio = (position.current_price - position.entry_price) / position.entry_price
-        position_value = position.size * position.current_price
+        pnl_ratio = self.calculate_unrealized_pnl_ratio(
+            entry_price=position.entry_price,
+            current_price=position.current_price,
+            position_side=getattr(position, 'position_side', None),
+        )
+        position_value = abs(position.size) * position.current_price
 
         if pnl_ratio <= -risk_config.risk_ratio_threshold:
             return RiskLevelEnum.CRITICAL
@@ -130,7 +170,12 @@ class RiskControlService:
             return None
 
         position.current_price = current_price
-        position.unrealized_pnl = (current_price - position.entry_price) * position.size
+        position.unrealized_pnl = self.calculate_unrealized_pnl_amount(
+            entry_price=position.entry_price,
+            current_price=current_price,
+            size=position.size,
+            position_side=getattr(position, 'position_side', None),
+        )
 
         # 更新风险等级
         risk_config = self.db.query(RiskConfig).filter(
@@ -158,7 +203,7 @@ class RiskControlService:
 
         for position in positions:
             if position.current_price:
-                position_value = position.size * position.current_price
+                position_value = abs(position.size) * position.current_price
                 total_position_value += position_value
                 total_unrealized_pnl += position.unrealized_pnl or 0
                 risk_levels.append(position.risk_level)
