@@ -398,3 +398,24 @@ class DailyTradeReviewInDB(DailyTradeReviewBase):
 
     class Config:
         orm_mode = True
+
+
+class PositionIssue(BaseModel):
+    severity: str = Field(..., description="严重程度：critical/high/medium/low")
+    issue_type: str = Field(..., description="问题类型标识")
+    title: str = Field(..., description="问题标题")
+    description: str = Field(..., description="问题详细描述")
+    involved_symbols: List[str] = Field(default_factory=list, description="涉及币种")
+    suggestion: str = Field(..., description="建议操作")
+
+
+class PositionAnalysisResponse(BaseModel):
+    account_id: Optional[int] = Field(None, description="账户ID，null 表示所有账户")
+    account_name: Optional[str] = Field(None, description="账户名称")
+    overall_risk_level: str = Field("low", description="综合风险等级")
+    total_position_value: float = Field(0.0, description="总持仓价值(USDT)")
+    total_margin: float = Field(0.0, description="总保证金(USDT)")
+    total_unrealized_pnl: float = Field(0.0, description="总未实现盈亏")
+    account_equity: Optional[float] = Field(None, description="账户总权益")
+    position_count: int = Field(0, description="活跃持仓数")
+    issues: List[PositionIssue] = Field(default_factory=list, description="问题与建议列表")

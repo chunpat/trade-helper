@@ -1417,6 +1417,18 @@ async def start_sync_account_history(
     )
 
 
+@router.get("/positions/analysis", response_model=schemas.PositionAnalysisResponse)
+async def get_position_analysis(
+    account_id: Optional[int] = Query(None, description="账户ID，不传则分析所有账户"),
+    symbol: Optional[str] = Query(None, description="币种过滤"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """分析当前持仓并返回问题建议列表"""
+    service = RiskControlService(db)
+    return service.analyze_positions(account_id=account_id, symbol=symbol)
+
+
 @router.get("/accounts/{account_id}/sync-history/status")
 async def get_sync_account_history_status(
     account_id: int,

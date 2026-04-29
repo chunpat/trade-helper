@@ -349,6 +349,74 @@
       </template>
     </el-dialog>
 
+    <el-card shadow="hover" class="position-analysis-card" v-loading="loading.positionAnalysis">
+      <template #header>
+        <div class="section-header">
+          <div>
+            <span>当前持仓评估与建议</span>
+            <p>基于当前持仓数据自动分析风险点并给出建议</p>
+          </div>
+          <el-tag v-if="positionAnalysis.position_count" :type="positionRiskTagType" effect="dark">
+            {{ positionRiskLabel }}
+          </el-tag>
+        </div>
+      </template>
+
+      <el-empty v-if="!positionAnalysis.position_count" description="当前没有活跃持仓" :image-size="72" />
+
+      <template v-else>
+        <div class="position-analysis-summary">
+          <div class="analysis-metric">
+            <span class="analysis-metric-label">活跃持仓</span>
+            <strong>{{ positionAnalysis.position_count }} 个</strong>
+          </div>
+          <div class="analysis-metric">
+            <span class="analysis-metric-label">总保证金</span>
+            <strong>{{ formatCurrency(positionAnalysis.total_margin) }}</strong>
+          </div>
+          <div class="analysis-metric">
+            <span class="analysis-metric-label">总浮亏盈</span>
+            <strong :class="pnlClass(positionAnalysis.total_unrealized_pnl)">
+              {{ formatSignedCurrency(positionAnalysis.total_unrealized_pnl) }}
+            </strong>
+          </div>
+          <div class="analysis-metric">
+            <span class="analysis-metric-label">账户权益</span>
+            <strong>{{ positionAnalysis.account_equity != null ? formatCurrency(positionAnalysis.account_equity) : '-' }}</strong>
+          </div>
+        </div>
+
+        <el-alert
+          v-if="!positionAnalysis.issues.length"
+          title="当前持仓一切正常，未发现明显风险点"
+          type="success"
+          :closable="false"
+          show-icon
+          class="position-analysis-alert"
+        />
+
+        <div v-else class="position-issues-list">
+          <div
+            v-for="(issue, idx) in positionAnalysis.issues"
+            :key="idx"
+            class="position-issue-item"
+          >
+            <div class="position-issue-head">
+              <el-tag :type="issueSeverityTag(issue.severity)" effect="dark" size="small">
+                {{ issueSeverityLabel(issue.severity) }}
+              </el-tag>
+              <strong>{{ issue.title }}</strong>
+            </div>
+            <p class="position-issue-desc">{{ issue.description }}</p>
+            <div v-if="issue.involved_symbols.length" class="position-issue-meta">
+              涉及：{{ issue.involved_symbols.join('、') }}
+            </div>
+            <p class="position-issue-suggestion">建议：{{ issue.suggestion }}</p>
+          </div>
+        </div>
+      </template>
+    </el-card>
+
     <el-card shadow="hover" class="history-card" v-loading="loading.openTrades">
       <template #header>
         <div class="section-header">
@@ -1083,12 +1151,26 @@ export default {
       completedTimeline: false,
       completedTrades: false,
       rawSummary: false,
-      rawHistory: false
+      rawHistory: false,
+      positionAnalysis: false
     })
+    const createEmptyPositionAnalysis = () => ({
+      account_id: null,
+      account_name: null,
+      overall_risk_level: 'low',
+      total_position_value: 0,
+      total_margin: 0,
+      total_unrealized_pnl: 0,
+      account_equity: null,
+      position_count: 0,
+      issues: []
+    })
+
     const completedSummary = reactive(createEmptyCompletedSummary())
     const rawSummary = reactive(createEmptyRawSummary())
     const dailyReviewForm = reactive(createEmptyDailyReviewForm())
     const dailyReviewMeta = reactive(createEmptyDailyReviewMeta())
+    const positionAnalysis = reactive(createEmptyPositionAnalysis())
     const timelineData = reactive({
       xAxis: [],
       series: []
@@ -1498,6 +1580,26 @@ export default {
       return map[value] || 'info'
     }
 
+    const issueSeverityTag = (severity) => {
+      const map = { critical: 'danger', high: 'warning', medium: 'info', low: 'success' }
+      return map[severity] || 'info'
+    }
+
+    const issueSeverityLabel = (severity) => {
+      const map = { critical: '严重', high: '高', medium: '中', low: '低' }
+      return map[severity] || severity
+    }
+
+    const positionRiskTagType = computed(() => {
+      const map = { critical: 'danger', high: 'warning', medium: 'info', low: 'success' }
+      return map[positionAnalysis.overall_risk_level] || 'info'
+    })
+
+    const positionRiskLabel = computed(() => {
+      const map = { critical: '严重风险', high: '高风险', medium: '中等风险', low: '低风险' }
+      return map[positionAnalysis.overall_risk_level] || positionAnalysis.overall_risk_level
+    })
+
     const ensureTimelineChart = async () => {
       await nextTick()
       if (!timelineChartRef.value) {
@@ -1870,6 +1972,22 @@ export default {
       }
     }
 
+    const fetchPositionAnalysis = async () => {
+      loading.positionAnalysis = true
+      try {
+        const params = {}
+        if (filters.account_id != null) params.account_id = filters.account_id
+        if (filters.symbol) params.symbol = filters.symbol
+        const data = await riskControl.getPositionAnalysis(params)
+        Object.assign(positionAnalysis, createEmptyPositionAnalysis(), data)
+      } catch (error) {
+        console.error('Failed to fetch position analysis:', error)
+        Object.assign(positionAnalysis, createEmptyPositionAnalysis())
+      } finally {
+        loading.positionAnalysis = false
+      }
+    }
+
     const fetchOpenTrades = async () => {
       loading.openTrades = true
       try {
@@ -2103,6 +2221,7 @@ export default {
         rawHistoryPage.value = 1
       }
       await Promise.all([
+        fetchPositionAnalysis(),
         fetchOpenTrades(),
         fetchCompletedSummary(),
         fetchCompletedTimeline(),
@@ -2410,6 +2529,11 @@ export default {
       openTradeTotal,
       openCompletedTradeDrawer,
       pnlClass,
+      positionAnalysis,
+      positionRiskTagType,
+      positionRiskLabel,
+      issueSeverityTag,
+      issueSeverityLabel,
       rawFilters,
       rawHistoryData,
       rawHistoryPage,
@@ -2923,6 +3047,85 @@ export default {
   }
 }
 
+.position-analysis-card {
+  .position-analysis-summary {
+    display: flex;
+    gap: 32px;
+    padding: 16px 0;
+    border-bottom: 1px solid #ebeef5;
+    margin-bottom: 16px;
+  }
+
+  .analysis-metric {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    .analysis-metric-label {
+      font-size: 13px;
+      color: #909399;
+    }
+
+    strong {
+      font-size: 20px;
+      font-weight: 600;
+    }
+  }
+
+  .position-analysis-alert {
+    margin: 8px 0;
+  }
+
+  .position-issues-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .position-issue-item {
+    padding: 14px 16px;
+    border: 1px solid #ebeef5;
+    border-radius: 10px;
+    background: #fafbfc;
+    transition: border-color 0.2s;
+
+    &:hover {
+      border-color: #c0c4cc;
+    }
+  }
+
+  .position-issue-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+
+    strong {
+      font-size: 15px;
+    }
+  }
+
+  .position-issue-desc {
+    margin: 0 0 6px;
+    color: #606266;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .position-issue-meta {
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: #909399;
+  }
+
+  .position-issue-suggestion {
+    margin: 0;
+    font-size: 13px;
+    color: #409eff;
+    line-height: 1.6;
+  }
+}
+
 @media (max-width: 640px) {
   .review-hero {
     padding: 20px;
@@ -2943,6 +3146,13 @@ export default {
 
   .raw-type-select {
     width: 100%;
+  }
+
+  .position-analysis-card {
+    .position-analysis-summary {
+      flex-wrap: wrap;
+      gap: 16px;
+    }
   }
 }
 </style>

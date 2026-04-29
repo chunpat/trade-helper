@@ -287,6 +287,11 @@ export const riskControl = {
     return api.get('/auth/me')
   },
   
+  // Position analysis
+  getPositionAnalysis(params) {
+    return api.get('/risk-control/positions/analysis', { params })
+  },
+
   // Order risk check
   checkOrderRisk(params) {
     return api.post('/risk-control/check-order-risk', params)
