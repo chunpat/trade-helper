@@ -673,22 +673,24 @@ class MarketInsightService:
         
         # 生成更专业的建议价格 (动态 RR 2.0-3.0)
         suggested_entry = metric.last_price
-        
+
         # 计算 ATR 估算 (简单使用 24h 波动率的 1/10)
         volatility = (metric.high_24h - metric.low_24h) / metric.last_price if metric.last_price > 0 else 0.05
-        sl_percent = max(min(volatility * 0.5, 0.05), 0.015) # 1.5% - 5.0% 止损
-        tp_percent = sl_percent * 2.5 # 盈亏比 2.5
-        
+        sl_pct = max(min(volatility * 0.5, 0.05), 0.015)  # 1.5% - 5.0% 止损
+        tp_pct = sl_pct * 2.5  # 盈亏比 2.5
+        rr_ratio = round(tp_pct / sl_pct, 2)
+
+        # neutral 信号也提供参考值（前端用于双向显示）
         if signal_type == "long":
-            suggested_stop_loss = metric.last_price * (1 - sl_percent)
-            suggested_take_profit = metric.last_price * (1 + tp_percent)
+            suggested_stop_loss = metric.last_price * (1 - sl_pct)
+            suggested_take_profit = metric.last_price * (1 + tp_pct)
         elif signal_type == "short":
-            suggested_stop_loss = metric.last_price * (1 + sl_percent)
-            suggested_take_profit = metric.last_price * (1 - tp_percent)
+            suggested_stop_loss = metric.last_price * (1 + sl_pct)
+            suggested_take_profit = metric.last_price * (1 - tp_pct)
         else:
-            suggested_stop_loss = None
-            suggested_take_profit = None
-        
+            suggested_stop_loss = metric.last_price * (1 - sl_pct)
+            suggested_take_profit = metric.last_price * (1 + tp_pct)
+
         return TradingSignal(
             symbol=metric.symbol,
             signal_type=signal_type,
@@ -697,6 +699,9 @@ class MarketInsightService:
             suggested_entry=suggested_entry,
             suggested_stop_loss=suggested_stop_loss,
             suggested_take_profit=suggested_take_profit,
+            rr_ratio=rr_ratio,
+            sl_percent=sl_pct,
+            tp_percent=tp_pct,
             timestamp=datetime.now()
         )
     

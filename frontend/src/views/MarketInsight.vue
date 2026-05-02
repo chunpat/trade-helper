@@ -313,7 +313,11 @@
                 </div>
               </div>
               <div class="rr-ratio">
-                期望盈亏比: <el-tag size="mini" type="info">1 : 2.5</el-tag>
+                期望盈亏比: <el-tag size="mini" type="info">{{ getRRRatioLabel(signal) }}</el-tag>
+              </div>
+              <div v-if="signal.signal_type === 'neutral' && signal.sl_percent" class="neutral-prices">
+                <div class="neutral-direction long-dir">做多参考：止损 ${{ formatPrice(signal.suggested_entry * (1 - signal.sl_percent)) }} / 止盈 ${{ formatPrice(signal.suggested_entry * (1 + signal.tp_percent)) }}</div>
+                <div class="neutral-direction short-dir">做空参考：止损 ${{ formatPrice(signal.suggested_entry * (1 + signal.sl_percent)) }} / 止盈 ${{ formatPrice(signal.suggested_entry * (1 - signal.tp_percent)) }}</div>
               </div>
             </div>
           </div>
@@ -1379,7 +1383,7 @@ function formatSymbol(symbol) {
 }
 
 function formatPrice(price) {
-  if (!price) return '0.00'
+  if (price == null || Number.isNaN(Number(price))) return '--'
   if (price < 1) return price.toFixed(4)
   if (price < 10) return price.toFixed(3)
   return price.toFixed(2)
@@ -1516,6 +1520,13 @@ function getSignalColor(type) {
     neutral: '#909399'
   }
   return colors[type] || '#909399'
+}
+
+function getRRRatioLabel(signal) {
+  if (signal.rr_ratio != null && signal.rr_ratio > 0) {
+    return `1 : ${signal.rr_ratio.toFixed(1)}`
+  }
+  return '1 : 2.5'
 }
 
 function getFngTagType(label) {
@@ -1842,6 +1853,28 @@ function removeFromWatchlist(symbol) {
   font-size: 11px;
   color: #909399;
   text-align: right;
+}
+
+.neutral-prices {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #dcdfe6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.neutral-direction {
+  font-size: 12px;
+  color: #909399;
+}
+
+.neutral-direction.long-dir {
+  color: #67C23A;
+}
+
+.neutral-direction.short-dir {
+  color: #F56C6C;
 }
 
 .sentiment-card {

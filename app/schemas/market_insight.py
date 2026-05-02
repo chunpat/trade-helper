@@ -111,6 +111,9 @@ class TradingSignal(BaseModel):
     suggested_entry: Optional[float] = Field(None, description="建议入场价")
     suggested_stop_loss: Optional[float] = Field(None, description="建议止损价")
     suggested_take_profit: Optional[float] = Field(None, description="建议止盈价")
+    rr_ratio: Optional[float] = Field(None, description="风险收益比 (止盈距离/止损距离)")
+    sl_percent: Optional[float] = Field(None, description="止损百分比（用于前端计算双向价格）")
+    tp_percent: Optional[float] = Field(None, description="止盈百分比（用于前端计算双向价格）")
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
