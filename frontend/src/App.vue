@@ -1,5 +1,8 @@
 <template>
-  <el-container class="app-container">
+  <div v-if="isBlankLayout" class="blank-layout">
+    <router-view></router-view>
+  </div>
+  <el-container v-else class="app-container">
     <el-aside width="200px">
       <el-menu
         :router="true"
@@ -38,7 +41,7 @@
         </el-menu-item>
       </el-menu>
     </el-aside>
-    
+
     <el-container>
       <el-header height="60px">
         <div class="header-title">数字货币合约交易风控系统</div>
@@ -67,7 +70,7 @@
           </div>
         </div>
       </el-header>
-      
+
       <el-main>
         <router-view></router-view>
       </el-main>
@@ -88,6 +91,9 @@ export default {
     }
   },
   computed: {
+    isBlankLayout() {
+      return this.$route.meta && this.$route.meta.layout === 'blank'
+    },
     displayTimezone() {
       return this.$store.getters.displayTimezone
     },

@@ -18,6 +18,7 @@ from app.schemas.market_insight import (
 )
 from app.services.news_archive_service import news_archive_service
 from app.services.news_analysis_service import news_analysis_service
+from app.services.narrative_detector import narrative_detector
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,10 @@ class AnomalyMonitorService:
             stored = self._upsert_event(result, analysis, news_items)
             if stored:
                 recorded_events.append(stored)
+                try:
+                    await narrative_detector.detect(result, news_items, anomaly_event_id=stored["id"])
+                except Exception:
+                    logger.exception("anomaly-monitor: narrative detection failed for %s", result.get("symbol"))
 
         self._last_scan_at = datetime.utcnow()
         logger.info("anomaly-monitor: scan completed top_n=%s events=%s", self.top_n, len(recorded_events))

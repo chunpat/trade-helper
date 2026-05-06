@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 
+from app.core.database import SessionLocal
+from app.models.market_anomaly import NarrativeEvent
 from app.schemas.market_insight import (
     AnomalyEventDetail,
     AnomalyEventSummary,
@@ -11,12 +13,14 @@ from app.schemas.market_insight import (
     MarketMetrics,
     MarketSentiment,
     MarketNews,
+    NarrativeEventSummary,
     TradingSignal,
     MarketOverview
 )
 from app.services.anomaly_monitor_service import anomaly_monitor_service
 from app.services.market_insight_service import market_insight_service
 from app.services.news_archive_service import news_archive_service
+from app.services.narrative_detector import narrative_detector
 
 router = APIRouter(prefix="/market-insight", tags=["market-insight"])
 
@@ -163,6 +167,111 @@ async def trigger_anomaly_scan(
     await anomaly_monitor_service.scan_once()
     return await anomaly_monitor_service.list_active_anomalies(limit=limit)
 
+
+NARRATIVE_TYPE_LABELS = {
+    "product_launch": "产品/功能上线",
+    "exchange_listing": "交易所上币",
+    "partnership": "重大合作/投资",
+    "regulation": "监管利好",
+    "insider_leak": "内幕/传闻",
+    "pure_speculation": "纯市场炒作",
+    "macro_sentiment": "宏观情绪驱动",
+    "other": "其他",
+}
+
+
+def _to_narrative_summary(event: NarrativeEvent) -> NarrativeEventSummary:
+    return NarrativeEventSummary(
+        id=event.id,
+        symbol=event.symbol,
+        narrative_type=event.narrative_type,
+        narrative_type_label=NARRATIVE_TYPE_LABELS.get(event.narrative_type, event.narrative_type),
+        narrative_title=event.narrative_title,
+        narrative_summary=event.narrative_summary,
+        confidence=event.confidence,
+        is_positive_catalyst=str(getattr(event, "is_positive_catalyst", "false")).lower() == "true",
+        catalyst_strength=getattr(event, "catalyst_strength", 0) or 0,
+        suggested_action=getattr(event, "suggested_action", None),
+        risk_warning=getattr(event, "risk_warning", None),
+        price_change_percent_24h=event.price_change_percent_24h,
+        anomaly_score=event.anomaly_score,
+        anomaly_event_id=event.anomaly_event_id,
+        news_sources=event.news_sources or [],
+        detected_at=event.detected_at,
+    )
+
+
+@router.get("/narratives", response_model=List[NarrativeEventSummary])
+async def list_narratives(
+    limit: int = Query(20, ge=1, le=100, description="返回数量"),
+    symbol: Optional[str] = Query(None, description="交易对符号过滤"),
+    narrative_type: Optional[str] = Query(None, description="叙事类型过滤"),
+    min_confidence: float = Query(0, ge=0, le=100, description="最低置信度"),
+    positive_only: bool = Query(False, description="仅返回重大利好"),
+    hours: int = Query(72, ge=1, le=720, description="最近N小时内"),
+):
+    """获取重大利好叙事事件列表"""
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        query = db.query(NarrativeEvent).filter(NarrativeEvent.detected_at >= cutoff)
+        if symbol:
+            query = query.filter(NarrativeEvent.symbol == symbol.upper())
+        if narrative_type:
+            query = query.filter(NarrativeEvent.narrative_type == narrative_type)
+        if min_confidence > 0:
+            query = query.filter(NarrativeEvent.confidence >= min_confidence)
+        if positive_only:
+            query = query.filter(NarrativeEvent.is_positive_catalyst == True)
+        events = query.order_by(NarrativeEvent.detected_at.desc()).limit(limit).all()
+        return [_to_narrative_summary(e) for e in events]
+    finally:
+        db.close()
+
+
+@router.get("/narratives/{narrative_id}", response_model=NarrativeEventSummary)
+async def get_narrative_detail(narrative_id: int):
+    """获取叙事事件详情"""
+    db = SessionLocal()
+    try:
+        event = db.query(NarrativeEvent).filter(NarrativeEvent.id == narrative_id).first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Narrative event not found")
+        return _to_narrative_summary(event)
+    finally:
+        db.close()
+
+
+@router.post("/narratives/detect", response_model=NarrativeEventSummary)
+async def trigger_narrative_detect(
+    symbol: str = Query(..., description="交易对符号"),
+    limit: int = Query(6, ge=1, le=20, description="关联新闻数量"),
+):
+    """手动触发叙事检测（用于测试）"""
+    from app.services.news_archive_service import news_archive_service
+
+    news_items = await news_archive_service.ensure_symbol_news(symbol.upper(), limit=limit)
+    anomaly_data = {
+        "symbol": symbol.upper(),
+        "anomaly_score": 0.65,
+        "price_change_percent_24h": 10.0,
+    }
+    result = await narrative_detector.detect(anomaly_data, news_items)
+    if not result:
+        raise HTTPException(status_code=500, detail="Narrative detection failed")
+    return NarrativeEventSummary(
+        id=0,
+        symbol=symbol.upper(),
+        narrative_type=result.get("narrative_type", "other"),
+        narrative_type_label=NARRATIVE_TYPE_LABELS.get(result.get("narrative_type", "other"), "其他"),
+        narrative_title=result.get("narrative_title", ""),
+        narrative_summary=result.get("narrative_summary"),
+        confidence=result.get("confidence", 0),
+        is_positive_catalyst=result.get("is_positive_catalyst", False),
+        catalyst_strength=result.get("catalyst_strength", 0),
+        suggested_action=result.get("suggested_action"),
+        risk_warning=result.get("risk_warning"),
+    )
 
 
 @router.get("/signals", response_model=List[TradingSignal])

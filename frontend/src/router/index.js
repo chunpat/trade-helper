@@ -5,6 +5,18 @@ import store from '../store'
 const routes = [
   {
     path: '/',
+    name: 'Landing',
+    component: () => import('../views/Landing.vue'),
+    meta: { layout: 'blank' }
+  },
+  {
+    path: '/pricing',
+    name: 'Pricing',
+    component: () => import('../views/Pricing.vue'),
+    meta: { layout: 'blank' }
+  },
+  {
+    path: '/app',
     redirect: '/dashboard'
   },
   {

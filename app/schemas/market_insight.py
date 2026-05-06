@@ -102,6 +102,26 @@ class AnomalyEventDetail(AnomalyEventSummary):
     news: List[MarketNews] = Field(default_factory=list)
 
 
+class NarrativeEventSummary(BaseModel):
+    """重大利好叙事事件摘要"""
+    id: int
+    symbol: str = Field(..., description="交易对符号")
+    narrative_type: str = Field(..., description="叙事类型: product_launch/exchange_listing/partnership/regulation/insider_leak/pure_speculation/macro_sentiment/other")
+    narrative_type_label: str = Field(..., description="叙事类型中文")
+    narrative_title: str = Field(..., description="叙事标题")
+    narrative_summary: Optional[str] = Field(None)
+    confidence: float = Field(..., description="置信度 0-100")
+    is_positive_catalyst: bool = Field(False)
+    catalyst_strength: float = Field(0, description="利好强度 0-100")
+    suggested_action: Optional[str] = Field(None)
+    risk_warning: Optional[str] = Field(None)
+    price_change_percent_24h: Optional[float] = Field(None)
+    anomaly_score: Optional[float] = Field(None)
+    anomaly_event_id: Optional[int] = Field(None)
+    news_sources: List[str] = Field(default_factory=list)
+    detected_at: Optional[datetime] = None
+
+
 class TradingSignal(BaseModel):
     """交易信号"""
     symbol: str = Field(..., description="交易对符号")

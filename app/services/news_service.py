@@ -600,6 +600,7 @@ class NewsService:
                 continue
 
             source_domain = self._extract_domain(url) or self._extract_domain(feed_url)
+            full_text = f"{title or ''} {summary or ''}"
             news_items.append(
                 MarketNews(
                     title=title,
@@ -609,7 +610,7 @@ class NewsService:
                     url=url,
                     summary=summary,
                     published_at=published_at,
-                    symbols=[],
+                    symbols=self._extract_symbols_from_text(full_text),
                 )
             )
         return news_items
@@ -631,6 +632,7 @@ class NewsService:
                 continue
 
             source_domain = self._extract_domain(url) or self._extract_domain(feed_url)
+            full_text = f"{title or ''} {summary or ''}"
             news_items.append(
                 MarketNews(
                     title=title,
@@ -640,7 +642,7 @@ class NewsService:
                     url=url,
                     summary=summary,
                     published_at=published_at,
-                    symbols=[],
+                    symbols=self._extract_symbols_from_text(full_text),
                 )
             )
         return news_items
@@ -746,6 +748,26 @@ class NewsService:
             symbols=symbols,
         )
 
+    def _validate_short_symbol_match(self, symbol: str, title: Optional[str], summary: Optional[str]) -> bool:
+        """Verify that a short (≤3 char) symbol actually refers to the crypto token, not a common English word."""
+        haystack = f"{title or ''} {summary or ''}"
+        pattern = re.compile(
+            rf'\b{re.escape(symbol)}\b\s*(token|protocol|price| coin|crypto|chain|network|trading|usdt|usd|exchange|listing|market|futures|spot|airdrop|mining|staking|governance|voting)',
+            re.IGNORECASE,
+        )
+        if pattern.search(haystack):
+            return True
+        dollar_pattern = re.compile(rf'\${re.escape(symbol)}\b', re.IGNORECASE)
+        if dollar_pattern.search(haystack):
+            return True
+        pair_pattern = re.compile(
+            rf'{re.escape(symbol)}(?:USDT|USDC|BUSD|FDUSD|/USDT|/USD|/BTC|/ETH)',
+            re.IGNORECASE,
+        )
+        if pair_pattern.search(haystack):
+            return True
+        return False
+
     def _to_market_news_from_brave(self, item: Dict[str, Any], asset_symbol: Optional[str] = None) -> MarketNews:
         meta_url = item.get("meta_url") or {}
         url = item.get("url")
@@ -757,6 +779,9 @@ class NewsService:
         )
 
         symbols = [asset_symbol] if asset_symbol else []
+        if asset_symbol and len(asset_symbol) <= 3:
+            if not self._validate_short_symbol_match(asset_symbol, item.get("title"), summary):
+                symbols = []
         return MarketNews(
             title=item.get("title") or "Untitled",
             source=meta_url.get("hostname") or item.get("source") or "Brave Search",

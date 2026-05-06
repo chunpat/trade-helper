@@ -22,6 +22,14 @@ class NewsAnalysisService:
         "decrypt.co",
         "bloomberg.com",
         "reuters.com",
+        "blockworks.co",
+        "cryptoslate.com",
+        "bitcoinmagazine.com",
+        "news.bitcoin.com",
+        "thedefiant.io",
+        "coingape.com",
+        "ambcrypto.com",
+        "panewslab.com",
     }
 
     def __init__(self):

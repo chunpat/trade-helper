@@ -87,6 +87,28 @@ class AnomalyNews(Base, BaseMixin):
     event = relationship("AnomalyEvent", back_populates="news_items")
 
 
+class NarrativeEvent(Base, BaseMixin):
+    __tablename__ = "narrative_events"
+
+    symbol = Column(String(20), nullable=False, index=True)
+    narrative_type = Column(String(30), nullable=False, index=True)
+    narrative_title = Column(String(200), nullable=False)
+    narrative_summary = Column(Text)
+    confidence = Column(Float, nullable=False)
+    is_positive_catalyst = Column(Text, nullable=False, default="false")
+    catalyst_strength = Column(Float, default=0)
+    suggested_action = Column(String(20))
+    risk_warning = Column(Text)
+    price_change_percent_24h = Column(Float)
+    anomaly_score = Column(Float)
+    anomaly_event_id = Column(Integer, ForeignKey("anomaly_events.id"), index=True)
+    news_sources = Column(JSON)
+    source_news_ids = Column(JSON)
+    llm_payload = Column(JSON)
+    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    expires_at = Column(DateTime)
+
+
 class NewsArchive(Base, BaseMixin):
     __tablename__ = "news_archive"
 

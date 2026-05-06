@@ -67,6 +67,7 @@ def init_db():
         MarketMetricSnapshot,
         AnomalyEvent,
         AnomalyNews,
+        NarrativeEvent,
         NewsArchive,
     )
     
