@@ -5,7 +5,7 @@
         <p class="eyebrow">Polymarket Copy Trading</p>
         <h1>交易员池与候选缓存</h1>
         <p class="hero-copy">
-          后端会周期抓取候选交易员并缓存分析结果。这里可以切换榜单池、查看缓存状态、强制刷新，以及展开单个交易员的可跟单画像。
+          后端会周期抓取候选交易员并缓存分析结果。这里可以切换榜单池、查看缓存状态、强制刷新，以及进入独立详情页查看更完整的可跟单画像。
         </p>
       </div>
       <div class="hero-actions">
@@ -251,158 +251,33 @@
 
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="scope">
-            <el-button link type="primary" @click="openTraderDetail(scope.row)">查看详情</el-button>
+            <el-button link type="primary" @click="openTraderDetail(scope.row)">进入详情页</el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
-
-    <el-drawer v-model="detailVisible" size="58%" :with-header="false" destroy-on-close>
-      <div v-if="detailProfile" class="detail-drawer">
-        <div class="detail-hero">
-          <div class="detail-identity">
-            <el-avatar :size="56" :src="detailProfile.profile_image || undefined">
-              {{ getAvatarFallback(detailProfile) }}
-            </el-avatar>
-            <div>
-              <div class="detail-title-row">
-                <h2>{{ detailProfile.name || detailProfile.pseudonym || shortenWallet(detailProfile.wallet_address) }}</h2>
-                <el-tag v-if="detailProfile.verified_badge" type="success">认证</el-tag>
-              </div>
-              <div class="detail-wallet">{{ detailProfile.wallet_address }}</div>
-              <p v-if="detailProfile.bio" class="detail-bio">{{ detailProfile.bio }}</p>
-            </div>
-          </div>
-          <el-button :icon="Refresh" :loading="loadingDetail" @click="reloadDetail">刷新详情</el-button>
-        </div>
-
-        <el-row :gutter="12" class="detail-stats">
-          <el-col :xs="12" :md="6">
-            <div class="detail-stat-card">
-              <span class="label">近30天成交</span>
-              <strong>{{ detailProfile.trade_count_30d }}</strong>
-            </div>
-          </el-col>
-          <el-col :xs="12" :md="6">
-            <div class="detail-stat-card">
-              <span class="label">近30天成交额</span>
-              <strong>{{ formatMoney(detailProfile.volume_usdc_30d) }}</strong>
-            </div>
-          </el-col>
-          <el-col :xs="12" :md="6">
-            <div class="detail-stat-card">
-              <span class="label">已实现收益</span>
-              <strong>{{ detailProfile.realized_pnl_30d == null ? '-' : formatMoney(detailProfile.realized_pnl_30d) }}</strong>
-            </div>
-          </el-col>
-          <el-col :xs="12" :md="6">
-            <div class="detail-stat-card">
-              <span class="label">平仓胜率</span>
-              <strong>{{ formatWinRate(detailProfile.win_rate_30d) }}</strong>
-            </div>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16" class="detail-panels">
-          <el-col :xs="24" :lg="10">
-            <el-card shadow="never" class="detail-card accent-card">
-              <template #header>
-                <div class="card-header">
-                  <span>跟单评估</span>
-                  <el-tag :type="detailProfile.followability.likely_bot ? 'danger' : 'primary'" size="small">
-                    {{ formatVerdict(detailProfile.followability.verdict) }}
-                  </el-tag>
-                </div>
-              </template>
-              <div class="big-score">{{ detailProfile.followability.score.toFixed(0) }}</div>
-              <div class="big-score-label">可跟单评分</div>
-              <div class="followability-grid">
-                <div>
-                  <span>成交间隔中位数</span>
-                  <strong>{{ formatSeconds(detailProfile.followability.median_trade_interval_seconds) }}</strong>
-                </div>
-                <div>
-                  <span>每小时成交</span>
-                  <strong>{{ formatNumber(detailProfile.followability.trades_per_hour_30d) }}</strong>
-                </div>
-                <div>
-                  <span>平均单笔金额</span>
-                  <strong>{{ formatMoney(detailProfile.followability.avg_trade_size_usdc_30d) }}</strong>
-                </div>
-                <div>
-                  <span>头部市场集中度</span>
-                  <strong>{{ formatPercent(detailProfile.followability.top_market_share_30d) }}</strong>
-                </div>
-              </div>
-              <div class="reason-list">
-                <div v-for="reason in detailProfile.followability.reasons" :key="reason" class="reason-item">
-                  {{ reason }}
-                </div>
-              </div>
-              <div v-if="detailProfile.followability.bot_reasons?.length" class="bot-reasons">
-                <div class="bot-reason-title">机器人判定原因</div>
-                <div v-for="reason in detailProfile.followability.bot_reasons" :key="reason" class="reason-item danger">
-                  {{ reason }}
-                </div>
-              </div>
-            </el-card>
-          </el-col>
-
-          <el-col :xs="24" :lg="14">
-            <el-card shadow="never" class="detail-card">
-              <template #header>
-                <div class="card-header">
-                  <span>当前持仓</span>
-                  <el-tag size="small" type="info">{{ detailProfile.current_positions.length }}</el-tag>
-                </div>
-              </template>
-              <el-table :data="detailProfile.current_positions" size="small" max-height="220">
-                <el-table-column prop="title" label="市场" min-width="180" />
-                <el-table-column prop="outcome" label="方向" width="90" />
-                <el-table-column label="当前价值" width="120" align="right">
-                  <template #default="scope">{{ formatMoney(scope.row.current_value) }}</template>
-                </el-table-column>
-                <el-table-column label="收益率" width="100" align="right">
-                  <template #default="scope">{{ formatPercent(scope.row.percent_pnl, 2) }}</template>
-                </el-table-column>
-              </el-table>
-            </el-card>
-
-            <el-card shadow="never" class="detail-card">
-              <template #header>
-                <div class="card-header">
-                  <span>近期活动</span>
-                  <el-tag size="small">{{ detailProfile.recent_activities.length }}</el-tag>
-                </div>
-              </template>
-              <el-table :data="detailProfile.recent_activities" size="small" max-height="260">
-                <el-table-column prop="activity_type" label="类型" width="90" />
-                <el-table-column prop="title" label="市场" min-width="180" />
-                <el-table-column prop="side" label="方向" width="80" />
-                <el-table-column label="金额" width="100" align="right">
-                  <template #default="scope">{{ formatMoney(scope.row.usdc_size) }}</template>
-                </el-table-column>
-                <el-table-column label="时间" min-width="160">
-                  <template #default="scope">{{ formatDateTime(scope.row.timestamp) }}</template>
-                </el-table-column>
-              </el-table>
-            </el-card>
-          </el-col>
-        </el-row>
-      </div>
-      <div v-else class="detail-loading">
-        <el-skeleton :rows="8" animated />
-      </div>
-    </el-drawer>
   </div>
 </template>
 
 <script>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { polymarket } from '@/api'
 import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
+import {
+  formatPolymarketMoney,
+  formatPolymarketNumber,
+  formatPolymarketPercent,
+  formatPolymarketTraderStyle,
+  formatPolymarketVerdict,
+  formatPolymarketWinRate,
+  getPolymarketAvatarFallback,
+  getPolymarketFollowabilityColor,
+  getPolymarketStyleTagType,
+  shortenPolymarketWallet
+} from '@/utils/polymarket'
 
 const categoryOptions = ['OVERALL', 'POLITICS', 'SPORTS', 'CRYPTO', 'CULTURE', 'MENTIONS', 'WEATHER', 'ECONOMICS', 'TECH', 'FINANCE']
 const timePeriodOptions = ['DAY', 'WEEK', 'MONTH', 'ALL']
@@ -414,14 +289,11 @@ export default {
     Refresh
   },
   setup() {
+    const router = useRouter()
     const loadingTraders = ref(false)
     const loadingStatus = ref(false)
     const refreshingPool = ref(false)
-    const loadingDetail = ref(false)
-    const detailVisible = ref(false)
     const traders = ref([])
-    const detailProfile = ref(null)
-    const selectedWallet = ref('')
     const cacheStatus = reactive({
       running: false,
       interval_seconds: 0,
@@ -510,30 +382,11 @@ export default {
       }
     }
 
-    const openTraderDetail = async row => {
-      selectedWallet.value = row.wallet_address
-      detailVisible.value = true
-      detailProfile.value = null
-      await loadTraderDetail(row.wallet_address)
-    }
-
-    const loadTraderDetail = async wallet => {
-      loadingDetail.value = true
-      try {
-        detailProfile.value = await polymarket.getTraderProfile(wallet)
-      } catch (error) {
-        console.error('Failed to load trader detail:', error)
-        ElMessage.error('加载交易员详情失败')
-      } finally {
-        loadingDetail.value = false
-      }
-    }
-
-    const reloadDetail = async () => {
-      if (!selectedWallet.value) {
-        return
-      }
-      await loadTraderDetail(selectedWallet.value)
+    const openTraderDetail = row => {
+      router.push({
+        name: 'PolymarketTraderDetail',
+        params: { wallet: row.wallet_address }
+      })
     }
 
     const resetWallets = () => {
@@ -545,105 +398,6 @@ export default {
         return '-'
       }
       return formatDisplayDateTime(value)
-    }
-
-    const formatMoney = value => {
-      if (value === null || value === undefined || Number.isNaN(Number(value))) {
-        return '-'
-      }
-      const numeric = Number(value)
-      if (Math.abs(numeric) >= 1000000) {
-        return `$${(numeric / 1000000).toFixed(2)}M`
-      }
-      if (Math.abs(numeric) >= 1000) {
-        return `$${(numeric / 1000).toFixed(1)}K`
-      }
-      return `$${numeric.toFixed(2)}`
-    }
-
-    const formatPercent = (value, digits = 1) => {
-      if (value === null || value === undefined || Number.isNaN(Number(value))) {
-        return '-'
-      }
-      return `${Number(value).toFixed(digits)}%`
-    }
-
-    const formatWinRate = value => {
-      if (value === null || value === undefined) {
-        return '-'
-      }
-      const numeric = Number(value)
-      return numeric <= 1 ? `${(numeric * 100).toFixed(1)}%` : `${numeric.toFixed(1)}%`
-    }
-
-    const formatNumber = value => {
-      if (value === null || value === undefined || Number.isNaN(Number(value))) {
-        return '-'
-      }
-      return Number(value).toFixed(2)
-    }
-
-    const formatSeconds = value => {
-      if (value === null || value === undefined) {
-        return '-'
-      }
-      const numeric = Number(value)
-      if (numeric < 60) {
-        return `${numeric.toFixed(0)} 秒`
-      }
-      if (numeric < 3600) {
-        return `${(numeric / 60).toFixed(1)} 分钟`
-      }
-      return `${(numeric / 3600).toFixed(1)} 小时`
-    }
-
-    const formatVerdict = verdict => {
-      return {
-        candidate: '优先候选',
-        watchlist: '观察名单',
-        cautious: '谨慎跟随',
-        avoid: '不建议跟随'
-      }[verdict] || verdict || '-'
-    }
-
-    const formatTraderStyle = style => {
-      return {
-        discretionary: '主观交易',
-        high_frequency: '高频风格',
-        specialist: '单题材聚焦',
-        broad_portfolio: '广覆盖组合'
-      }[style] || style || '未知'
-    }
-
-    const getStyleTagType = style => {
-      return {
-        discretionary: 'success',
-        high_frequency: 'warning',
-        specialist: 'primary',
-        broad_portfolio: 'info'
-      }[style] || 'info'
-    }
-
-    const getFollowabilityColor = score => {
-      if (score >= 75) {
-        return '#16a34a'
-      }
-      if (score >= 55) {
-        return '#f59e0b'
-      }
-      return '#ef4444'
-    }
-
-    const shortenWallet = wallet => {
-      if (!wallet) {
-        return '-'
-      }
-      return `${wallet.slice(0, 6)}...${wallet.slice(-4)}`
-    }
-
-    const getAvatarFallback = row => {
-      const source = row?.name || row?.pseudonym || row?.wallet_address || 'PM'
-      return source.slice(0, 2).toUpperCase()
     }
 
     onMounted(async () => {
@@ -660,10 +414,7 @@ export default {
       loadingTraders,
       loadingStatus,
       refreshingPool,
-      loadingDetail,
-      detailVisible,
       traders,
-      detailProfile,
       cacheStatus,
       filters,
       currentPoolStatus,
@@ -671,20 +422,18 @@ export default {
       loadTraders,
       refreshCurrentPool,
       openTraderDetail,
-      reloadDetail,
       resetWallets,
       formatDateTime,
-      formatMoney,
-      formatPercent,
-      formatWinRate,
-      formatNumber,
-      formatSeconds,
-      formatVerdict,
-      formatTraderStyle,
-      getStyleTagType,
-      getFollowabilityColor,
-      shortenWallet,
-      getAvatarFallback,
+      formatMoney: formatPolymarketMoney,
+      formatPercent: formatPolymarketPercent,
+      formatWinRate: formatPolymarketWinRate,
+      formatNumber: formatPolymarketNumber,
+      formatVerdict: formatPolymarketVerdict,
+      formatTraderStyle: formatPolymarketTraderStyle,
+      getStyleTagType: getPolymarketStyleTagType,
+      getFollowabilityColor: getPolymarketFollowabilityColor,
+      shortenWallet: shortenPolymarketWallet,
+      getAvatarFallback: getPolymarketAvatarFallback,
       Refresh
     }
   }
@@ -747,9 +496,7 @@ export default {
   gap: 12px;
 }
 
-.status-grid,
-.detail-stats,
-.detail-panels {
+.status-grid {
   width: 100%;
 }
 
@@ -770,24 +517,21 @@ export default {
   gap: 12px;
 }
 
-.metric-item,
-.detail-stat-card {
+.metric-item {
   padding: 14px 16px;
   border-radius: 16px;
   background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
   border: 1px solid rgba(148, 163, 184, 0.18);
 }
 
-.metric-item strong,
-.detail-stat-card strong {
+.metric-item strong {
   display: block;
   margin-top: 6px;
   font-size: 18px;
   color: #0f172a;
 }
 
-.metric-label,
-.detail-stat-card .label {
+.metric-label {
   font-size: 12px;
   color: #64748b;
 }
@@ -807,8 +551,7 @@ export default {
   color: rgba(148, 163, 184, 0.88);
 }
 
-.current-pool-meta,
-.detail-wallet {
+.current-pool-meta {
   margin-top: 8px;
   word-break: break-all;
   font-family: Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
@@ -830,9 +573,7 @@ export default {
   line-height: 1.6;
 }
 
-.trader-cell,
-.detail-identity,
-.detail-title-row {
+.trader-cell {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -865,106 +606,8 @@ export default {
   color: #475569;
 }
 
-.detail-drawer {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.detail-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.detail-title-row h2 {
-  margin: 0;
-  font-size: 26px;
-  color: #0f172a;
-}
-
-.detail-bio {
-  margin: 8px 0 0;
-  color: #475569;
-  line-height: 1.7;
-}
-
-.detail-card {
-  border-radius: 20px;
-}
-
-.accent-card {
-  background: linear-gradient(180deg, #f8fafc 0%, #eff6ff 100%);
-}
-
-.big-score {
-  font-size: 52px;
-  line-height: 1;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.big-score-label {
-  margin-top: 6px;
-  color: #475569;
-  font-size: 13px;
-}
-
-.followability-grid {
-  margin-top: 18px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.followability-grid div {
-  padding: 12px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.78);
-}
-
-.followability-grid span {
-  display: block;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.followability-grid strong {
-  display: block;
-  margin-top: 4px;
-  font-size: 16px;
-}
-
-.reason-list,
-.bot-reasons {
-  margin-top: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.reason-item {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.04);
-  color: #334155;
-  line-height: 1.6;
-  font-size: 13px;
-}
-
-.reason-item.danger,
-.bot-reason-title {
-  color: #b91c1c;
-}
-
-.detail-loading {
-  padding: 24px;
-}
-
 @media (max-width: 960px) {
-  .hero-panel,
-  .detail-hero {
+  .hero-panel {
     flex-direction: column;
   }
 
@@ -973,9 +616,7 @@ export default {
   .header-right-actions {
     flex-wrap: wrap;
   }
-
-  .status-metrics,
-  .followability-grid {
+  .status-metrics {
     grid-template-columns: 1fr;
   }
 }

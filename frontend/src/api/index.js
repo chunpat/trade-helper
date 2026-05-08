@@ -329,8 +329,8 @@ export const polymarket = {
   listTraders(params) {
     return api.get('/polymarket/traders', { params })
   },
-  getTraderProfile(walletAddress) {
-    return api.get(`/polymarket/traders/${walletAddress}`)
+  getTraderProfile(walletAddress, params) {
+    return api.get(`/polymarket/traders/${walletAddress}`, { params })
   },
   getTraderActivity(walletAddress, params) {
     return api.get(`/polymarket/traders/${walletAddress}/activity`, { params })

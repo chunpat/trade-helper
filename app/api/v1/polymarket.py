@@ -91,8 +91,17 @@ async def get_polymarket_trader_cache_status():
 
 
 @router.get("/traders/{wallet}", response_model=PolymarketTraderProfile)
-async def get_polymarket_trader_profile(wallet: str):
+async def get_polymarket_trader_profile(
+    wallet: str,
+    use_cache: bool = Query(True, description="是否优先读取交易员详情缓存"),
+    force_refresh: bool = Query(False, description="是否强制刷新交易员详情缓存"),
+):
     try:
+        if use_cache:
+            return await polymarket_trader_cache_service.get_trader_profile(
+                wallet=wallet,
+                force_refresh=force_refresh,
+            )
         return await polymarket_trader_analytics_service.analyze_trader(wallet)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -105,8 +114,17 @@ async def get_polymarket_trader_activity(
     wallet: str,
     limit: int = Query(100, ge=1, le=200, description="返回数量"),
     hours: int = Query(72, ge=1, le=720, description="最近 N 小时"),
+    use_cache: bool = Query(True, description="是否优先读取交易员活动缓存"),
+    force_refresh: bool = Query(False, description="是否强制刷新交易员活动缓存"),
 ):
     try:
+        if use_cache:
+            return await polymarket_trader_cache_service.get_trader_activity(
+                wallet=wallet,
+                limit=limit,
+                hours=hours,
+                force_refresh=force_refresh,
+            )
         return await polymarket_trader_analytics_service.get_activity(wallet, limit=limit, hours=hours)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

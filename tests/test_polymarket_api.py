@@ -164,10 +164,11 @@ def test_polymarket_trader_cache_refresh_endpoint(monkeypatch):
 
 
 def test_get_polymarket_trader_activity_endpoint(monkeypatch):
-    async def fake_get_activity(wallet: str, *, limit: int, hours: int):
+    async def fake_get_activity(wallet: str, *, limit: int, hours: int, force_refresh: bool):
         assert wallet == "0x1234567890abcdef1234567890abcdef12345678"
         assert limit == 20
         assert hours == 48
+        assert force_refresh is False
         return [
             PolymarketActivityItem(
                 proxy_wallet=wallet,
@@ -177,7 +178,7 @@ def test_get_polymarket_trader_activity_endpoint(monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(polymarket_api.polymarket_trader_analytics_service, "get_activity", fake_get_activity)
+    monkeypatch.setattr(polymarket_api.polymarket_trader_cache_service, "get_trader_activity", fake_get_activity)
 
     client = TestClient(create_test_app())
     response = client.get(
@@ -191,7 +192,8 @@ def test_get_polymarket_trader_activity_endpoint(monkeypatch):
 
 
 def test_get_polymarket_trader_profile_endpoint(monkeypatch):
-    async def fake_analyze_trader(wallet: str):
+    async def fake_get_trader_profile(wallet: str, *, force_refresh: bool):
+        assert force_refresh is False
         return PolymarketTraderProfile(
             wallet_address=wallet,
             name="Trader One",
@@ -224,7 +226,7 @@ def test_get_polymarket_trader_profile_endpoint(monkeypatch):
             recent_closed_positions=[],
         )
 
-    monkeypatch.setattr(polymarket_api.polymarket_trader_analytics_service, "analyze_trader", fake_analyze_trader)
+    monkeypatch.setattr(polymarket_api.polymarket_trader_cache_service, "get_trader_profile", fake_get_trader_profile)
 
     client = TestClient(create_test_app())
     response = client.get("/api/v1/polymarket/traders/0x1234567890abcdef1234567890abcdef12345678")

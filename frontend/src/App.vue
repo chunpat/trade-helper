@@ -6,7 +6,7 @@
     <el-aside width="200px">
       <el-menu
         :router="true"
-        :default-active="$route.path"
+        :default-active="activeMenuPath"
         class="app-menu"
         background-color="#304156"
         text-color="#fff"
@@ -103,6 +103,9 @@ export default {
     },
     displayTimezoneLabel() {
       return `${getDisplayTimezoneLabel(this.displayTimezone)} · ${getDisplayTimezoneOffsetLabel(this.displayTimezone)}`
+    },
+    activeMenuPath() {
+      return this.$route.meta?.activeMenu || this.$route.path
     },
     currentTimeText() {
       this.currentTimeTick

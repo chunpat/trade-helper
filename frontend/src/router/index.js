@@ -71,6 +71,12 @@ const routes = [
     name: 'PolymarketTraders',
     component: () => import('../views/PolymarketTraders.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/polymarket-traders/:wallet',
+    name: 'PolymarketTraderDetail',
+    component: () => import('../views/PolymarketTraderDetail.vue'),
+    meta: { requiresAuth: true, activeMenu: '/polymarket-traders' }
   }
 ]
 

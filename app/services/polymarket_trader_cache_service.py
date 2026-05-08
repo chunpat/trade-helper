@@ -5,8 +5,10 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from app.schemas.polymarket import (
+    PolymarketActivityItem,
     PolymarketTraderCachePoolInfo,
     PolymarketTraderCacheStatus,
+    PolymarketTraderProfile,
     PolymarketTraderSummary,
 )
 from app.services.polymarket_trader_analytics_service import (
@@ -31,6 +33,8 @@ class PolymarketTraderCacheService:
         self.ttl_seconds = ttl_seconds or int(os.getenv("POLYMARKET_TRADER_CACHE_TTL", "600"))
         self.default_pools = default_pools or self._read_default_pools_from_env()
         self._cache: Dict[str, Dict] = {}
+        self._profile_cache: Dict[str, Dict] = {}
+        self._activity_cache: Dict[str, Dict] = {}
         self._lock = asyncio.Lock()
         self._task = None
         self._running = False
@@ -57,14 +61,25 @@ class PolymarketTraderCacheService:
     def _build_cache_key(category: str, time_period: str, order_by: str, limit: int) -> str:
         return f"{category}:{time_period}:{order_by}:{limit}"
 
-    def _is_cache_valid(self, key: str) -> bool:
-        cached = self._cache.get(key)
-        if not cached:
+    @staticmethod
+    def _build_profile_cache_key(wallet: str) -> str:
+        return wallet.strip().lower()
+
+    @staticmethod
+    def _build_activity_cache_key(wallet: str, limit: int, hours: int) -> str:
+        return f"{wallet.strip().lower()}:{hours}:{limit}"
+
+    @staticmethod
+    def _is_snapshot_valid(snapshot: Optional[Dict]) -> bool:
+        if not snapshot:
             return False
-        expires_at = cached.get("expires_at")
+        expires_at = snapshot.get("expires_at")
         if not expires_at:
             return False
         return datetime.utcnow() < expires_at
+
+    def _is_cache_valid(self, key: str) -> bool:
+        return self._is_snapshot_valid(self._cache.get(key))
 
     def _snapshot_to_pool_info(self, key: str, snapshot: Dict) -> PolymarketTraderCachePoolInfo:
         expires_at = snapshot.get("expires_at")
@@ -145,6 +160,91 @@ class PolymarketTraderCacheService:
             order_by=order_by,
             limit=limit,
         )
+
+    async def refresh_trader_profile(self, *, wallet: str) -> PolymarketTraderProfile:
+        cache_key = self._build_profile_cache_key(wallet)
+        async with self._lock:
+            try:
+                profile = await self.analytics_service.analyze_trader(wallet)
+                now = datetime.utcnow()
+                self._profile_cache[cache_key] = {
+                    "wallet": wallet,
+                    "profile": profile,
+                    "last_refresh_at": now,
+                    "expires_at": now + timedelta(seconds=self.ttl_seconds),
+                    "last_error": None,
+                }
+                return profile
+            except Exception as exc:
+                existing = self._profile_cache.get(cache_key, {})
+                existing.update(
+                    {
+                        "wallet": wallet,
+                        "profile": existing.get("profile"),
+                        "last_refresh_at": existing.get("last_refresh_at"),
+                        "expires_at": existing.get("expires_at"),
+                        "last_error": str(exc),
+                    }
+                )
+                self._profile_cache[cache_key] = existing
+                raise
+
+    async def get_trader_profile(self, *, wallet: str, force_refresh: bool = False) -> PolymarketTraderProfile:
+        cache_key = self._build_profile_cache_key(wallet)
+        if not force_refresh and self._is_snapshot_valid(self._profile_cache.get(cache_key)):
+            return self._profile_cache[cache_key]["profile"]
+        return await self.refresh_trader_profile(wallet=wallet)
+
+    async def refresh_trader_activity(
+        self,
+        *,
+        wallet: str,
+        limit: int,
+        hours: int,
+    ) -> List[PolymarketActivityItem]:
+        cache_key = self._build_activity_cache_key(wallet, limit, hours)
+        async with self._lock:
+            try:
+                activities = await self.analytics_service.get_activity(wallet, limit=limit, hours=hours)
+                now = datetime.utcnow()
+                self._activity_cache[cache_key] = {
+                    "wallet": wallet,
+                    "limit": limit,
+                    "hours": hours,
+                    "activities": activities,
+                    "last_refresh_at": now,
+                    "expires_at": now + timedelta(seconds=self.ttl_seconds),
+                    "last_error": None,
+                }
+                return activities
+            except Exception as exc:
+                existing = self._activity_cache.get(cache_key, {})
+                existing.update(
+                    {
+                        "wallet": wallet,
+                        "limit": limit,
+                        "hours": hours,
+                        "activities": existing.get("activities", []),
+                        "last_refresh_at": existing.get("last_refresh_at"),
+                        "expires_at": existing.get("expires_at"),
+                        "last_error": str(exc),
+                    }
+                )
+                self._activity_cache[cache_key] = existing
+                raise
+
+    async def get_trader_activity(
+        self,
+        *,
+        wallet: str,
+        limit: int,
+        hours: int,
+        force_refresh: bool = False,
+    ) -> List[PolymarketActivityItem]:
+        cache_key = self._build_activity_cache_key(wallet, limit, hours)
+        if not force_refresh and self._is_snapshot_valid(self._activity_cache.get(cache_key)):
+            return self._activity_cache[cache_key]["activities"]
+        return await self.refresh_trader_activity(wallet=wallet, limit=limit, hours=hours)
 
     async def refresh_default_pools_once(self) -> None:
         for category, time_period, order_by, limit in self.default_pools:
