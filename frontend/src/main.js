@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import 'element-plus/dist/index.css'
+import { ElMessage } from 'element-plus'
 import App from './App.vue'
 import router from './router'
 import store from './store'
@@ -12,6 +13,7 @@ const app = createApp(App)
 // Use plugins
 app.use(store)
 app.use(router)
+app.config.globalProperties.$message = ElMessage
 
 // try to populate current user if auth state exists
 const authState = getStoredAuthState()
