@@ -22,7 +22,7 @@
         </el-button>
         <el-tag v-if="syncingHistory" type="warning" effect="dark">90天补数进行中</el-tag>
         <el-tag v-else-if="hasCompleted90DayBackfill" type="info" effect="dark">当前账户 90 天历史已补</el-tag>
-        <el-button type="primary" :loading="isRefreshing" @click="refreshAll({ resetPage: true })">
+        <el-button type="primary" :loading="isRefreshing" @click="refreshAll({ resetPage: true, forcePositionAnalysis: true })">
           刷新复盘
         </el-button>
       </div>
@@ -634,7 +634,10 @@
             <p>{{ rawScopeDescription }}</p>
           </div>
           <div class="raw-header-actions">
-            <el-select v-model="rawFilters.type" clearable placeholder="全部类型" class="raw-type-select" @change="handleRawFilterChange">
+            <el-button v-if="!rawHistoryLoaded" type="primary" plain @click="ensureRawHistoryLoaded">
+              加载原始流水
+            </el-button>
+            <el-select v-model="rawFilters.type" :disabled="!rawHistoryLoaded" clearable placeholder="全部类型" class="raw-type-select" @change="handleRawFilterChange">
               <el-option label="全部类型" value="" />
               <el-option
                 v-for="option in historyTypeOptions"
@@ -643,7 +646,7 @@
                 :value="option.value"
               />
             </el-select>
-            <el-radio-group v-model="recordScope" size="small" @change="handleRawFilterChange">
+            <el-radio-group v-model="recordScope" :disabled="!rawHistoryLoaded" size="small" @change="handleRawFilterChange">
               <el-radio-button
                 v-for="option in recordScopeOptions"
                 :key="option.value"
@@ -652,11 +655,20 @@
                 {{ option.label }}
               </el-radio-button>
             </el-radio-group>
-            <el-tag type="info" effect="plain">{{ rawHistoryScopeLabel }} · {{ rawHistoryTotal }} 条</el-tag>
+            <el-tag type="info" effect="plain">
+              {{ rawHistoryLoaded ? `${rawHistoryScopeLabel} · ${rawHistoryTotal} 条` : '按需加载，减少首屏请求' }}
+            </el-tag>
           </div>
         </div>
       </template>
 
+      <el-empty
+        v-if="!rawHistoryLoaded"
+        description="原始流水用于人工核对聚合结果，已改为按需加载以减少 Trade Review 首屏接口数。"
+        :image-size="72"
+      />
+
+      <template v-else>
       <el-table :data="rawHistoryData" border stripe>
         <el-table-column prop="time" label="时间" min-width="180">
           <template #default="{ row }">
@@ -735,6 +747,7 @@
           @current-change="handleRawHistoryPageChange"
         />
       </div>
+      </template>
     </el-card>
 
     <el-drawer v-model="completedTradeDrawerVisible" title="完整交易详情" size="46%">
@@ -997,7 +1010,7 @@
 <script>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import * as echarts from 'echarts'
+import echarts from '@/lib/echarts'
 import { useStore } from 'vuex'
 import { riskControl } from '@/api'
 import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
@@ -1134,6 +1147,7 @@ export default {
     const openTradePage = ref(1)
     const openTradePageSize = ref(20)
     const openTradeTotal = ref(0)
+    const rawHistoryLoaded = ref(false)
     const rawHistoryData = ref([])
     const rawHistoryPage = ref(1)
     const rawHistoryPageSize = ref(20)
@@ -1175,6 +1189,8 @@ export default {
       xAxis: [],
       series: []
     })
+    const lastPositionAnalysisQueryKey = ref('')
+    const hasFetchedPositionAnalysis = ref(false)
     const filters = reactive({
       account_id: null,
       symbol: ''
@@ -1920,72 +1936,70 @@ export default {
       })
     }
 
-    const fetchCompletedSummary = async () => {
-      loading.completedSummary = true
-      try {
-        const data = await riskControl.getCompletedTradeSummary(buildBaseParams())
-        Object.assign(completedSummary, createEmptyCompletedSummary(), data)
-      } catch (error) {
-        console.error('Failed to fetch completed trade summary:', error)
-        Object.assign(completedSummary, createEmptyCompletedSummary())
-        ElMessage.error('获取完整交易概览失败')
-      } finally {
-        loading.completedSummary = false
-      }
+    const setCompletedTradeReviewLoading = (value) => {
+      loading.completedSummary = value
+      loading.completedTimeline = value
+      loading.completedTrades = value
     }
 
-    const fetchCompletedTimeline = async () => {
-      loading.completedTimeline = true
+    const fetchCompletedTradeReviewBundle = async () => {
+      setCompletedTradeReviewLoading(true)
       try {
-        const data = await riskControl.getCompletedTradeTimeline(buildBaseParams())
-        timelineData.xAxis = data.xAxis || []
-        timelineData.series = data.series || []
-        await renderTimelineChart()
-      } catch (error) {
-        console.error('Failed to fetch completed trade timeline:', error)
-        timelineData.xAxis = []
-        timelineData.series = []
-        await renderTimelineChart()
-        ElMessage.error('获取完整交易曲线失败')
-      } finally {
-        loading.completedTimeline = false
-      }
-    }
-
-    const fetchCompletedTrades = async () => {
-      loading.completedTrades = true
-      try {
-        const data = await riskControl.getCompletedTrades({
+        const data = await riskControl.getCompletedTradeReviewBundle({
           ...buildBaseParams(),
           skip: (completedTradePage.value - 1) * completedTradePageSize.value,
           limit: completedTradePageSize.value
         })
+        Object.assign(completedSummary, createEmptyCompletedSummary(), data.summary || {})
+        timelineData.xAxis = data.timeline?.xAxis || []
+        timelineData.series = data.timeline?.series || []
         completedTrades.value = data.items || []
         completedTradeTotal.value = data.total || 0
+        await renderTimelineChart()
       } catch (error) {
-        console.error('Failed to fetch completed trades:', error)
+        console.error('Failed to fetch completed trade review bundle:', error)
+        Object.assign(completedSummary, createEmptyCompletedSummary())
+        timelineData.xAxis = []
+        timelineData.series = []
         completedTrades.value = []
         completedTradeTotal.value = 0
-        ElMessage.error('获取完整交易明细失败')
+        await renderTimelineChart()
+        ElMessage.error('获取完整交易复盘数据失败')
       } finally {
-        loading.completedTrades = false
+        setCompletedTradeReviewLoading(false)
       }
     }
 
-    const fetchPositionAnalysis = async () => {
+    const fetchPositionAnalysis = async ({ force = false } = {}) => {
+      const params = {}
+      if (filters.account_id != null) params.account_id = filters.account_id
+      if (filters.symbol) params.symbol = filters.symbol
+
+      const queryKey = JSON.stringify(params)
+      if (!force && hasFetchedPositionAnalysis.value && lastPositionAnalysisQueryKey.value === queryKey) {
+        return
+      }
+
       loading.positionAnalysis = true
       try {
-        const params = {}
-        if (filters.account_id != null) params.account_id = filters.account_id
-        if (filters.symbol) params.symbol = filters.symbol
         const data = await riskControl.getPositionAnalysis(params)
         Object.assign(positionAnalysis, createEmptyPositionAnalysis(), data)
+        lastPositionAnalysisQueryKey.value = queryKey
+        hasFetchedPositionAnalysis.value = true
       } catch (error) {
         console.error('Failed to fetch position analysis:', error)
         Object.assign(positionAnalysis, createEmptyPositionAnalysis())
       } finally {
         loading.positionAnalysis = false
       }
+    }
+
+    const ensureRawHistoryLoaded = async () => {
+      if (rawHistoryLoaded.value) {
+        return
+      }
+      rawHistoryLoaded.value = true
+      await Promise.all([fetchRawSummary(), fetchRawHistory()])
     }
 
     const fetchOpenTrades = async () => {
@@ -2214,21 +2228,23 @@ export default {
       }
     }
 
-    const refreshAll = async ({ resetPage = false } = {}) => {
+    const refreshAll = async ({ resetPage = false, forcePositionAnalysis = false } = {}) => {
       if (resetPage) {
         openTradePage.value = 1
         completedTradePage.value = 1
         rawHistoryPage.value = 1
       }
-      await Promise.all([
-        fetchPositionAnalysis(),
+      const tasks = [
+        fetchPositionAnalysis({ force: forcePositionAnalysis }),
         fetchOpenTrades(),
-        fetchCompletedSummary(),
-        fetchCompletedTimeline(),
-        fetchCompletedTrades(),
-        fetchRawSummary(),
-        fetchRawHistory()
-      ])
+        fetchCompletedTradeReviewBundle()
+      ]
+
+      if (rawHistoryLoaded.value) {
+        tasks.push(fetchRawSummary(), fetchRawHistory())
+      }
+
+      await Promise.all(tasks)
     }
 
     const resetFilters = async () => {
@@ -2239,7 +2255,7 @@ export default {
       dateRange.value = createDefaultDateRange()
       recentDailyReviews.value = []
       resetDailyReviewState()
-      await refreshAll({ resetPage: true })
+          await refreshAll({ resetPage: true, forcePositionAnalysis: true })
     }
 
     const handleOpenTradeSizeChange = async (value) => {
@@ -2256,27 +2272,30 @@ export default {
     const handleCompletedTradeSizeChange = async (value) => {
       completedTradePageSize.value = value
       completedTradePage.value = 1
-      await fetchCompletedTrades()
+      await fetchCompletedTradeReviewBundle()
     }
 
     const handleCompletedTradePageChange = async (value) => {
       completedTradePage.value = value
-      await fetchCompletedTrades()
+      await fetchCompletedTradeReviewBundle()
     }
 
     const handleRawHistorySizeChange = async (value) => {
       rawHistoryPageSize.value = value
       rawHistoryPage.value = 1
+      await ensureRawHistoryLoaded()
       await fetchRawHistory()
     }
 
     const handleRawHistoryPageChange = async (value) => {
       rawHistoryPage.value = value
+      await ensureRawHistoryLoaded()
       await fetchRawHistory()
     }
 
     const handleRawFilterChange = async () => {
       rawHistoryPage.value = 1
+      await ensureRawHistoryLoaded()
       await Promise.all([fetchRawSummary(), fetchRawHistory()])
     }
 
@@ -2444,7 +2463,7 @@ export default {
         syncingHistory.value = false
         await store.dispatch('fetchAccounts')
         ElMessage.success(result.message || '90天历史回补完成')
-        await refreshAll({ resetPage: true })
+        await refreshAll({ resetPage: true, forcePositionAnalysis: true })
       } catch (error) {
         console.error('Failed to sync account history:', error)
         ElMessage.error(error.response?.data?.detail || '回补账户历史失败')
@@ -2464,7 +2483,7 @@ export default {
         console.error('Failed to fetch accounts for trade review:', error)
       }
       await renderTimelineChart()
-      await refreshAll({ resetPage: true })
+      await refreshAll({ resetPage: true, forcePositionAnalysis: true })
     })
 
     onBeforeUnmount(() => {
@@ -2495,6 +2514,7 @@ export default {
       dailyReviewMeta,
       dateRange,
       dateShortcuts,
+      ensureRawHistoryLoaded,
       filters,
       formatCurrency,
       formatDateTime,
@@ -2536,6 +2556,7 @@ export default {
       issueSeverityLabel,
       rawFilters,
       rawHistoryData,
+      rawHistoryLoaded,
       rawHistoryPage,
       rawHistoryPageSize,
       rawHistoryScopeLabel,

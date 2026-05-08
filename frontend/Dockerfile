@@ -6,11 +6,11 @@ WORKDIR /app
 
 # Add build arguments
 ARG NODE_ENV=production
-ARG API_URL
+ARG API_URL=/api/v1
 
 # Set environment variables
 ENV NODE_ENV=$NODE_ENV
-ENV VUE_APP_API_URL=$API_URL
+ENV VITE_API_URL=$API_URL
 
 # Configure npm to use taobao registry
 RUN npm config set registry https://registry.npmmirror.com

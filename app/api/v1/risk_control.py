@@ -1156,6 +1156,31 @@ async def get_completed_trade_history(
     return schemas.CompletedTradeReviewList(**result)
 
 
+@router.get("/history/completed-trades/review", response_model=schemas.CompletedTradeReviewBundle)
+async def get_completed_trade_review_bundle(
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """一次返回完整交易列表、概览和时间序列，避免重复重建完整交易。"""
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    service = TradeReviewService(db)
+    result = service.build_completed_trade_review_bundle(
+        account_id=account_id,
+        symbol=symbol,
+        start_time=start_time,
+        end_time=end_time,
+        skip=skip,
+        limit=limit,
+    )
+    return schemas.CompletedTradeReviewBundle(**result)
+
+
 @router.get("/history/open-trades", response_model=schemas.OpenTradeReviewList)
 async def get_open_trade_history(
     account_id: Optional[int] = None,

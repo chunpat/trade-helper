@@ -214,16 +214,33 @@ python scripts/run_anomaly_worker.py
 ### 4. Docker Compose
 
 ```bash
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 默认服务角色:
 
 - `backend`: API、WebSocket、行情轮询、仓位同步
 - `insight-worker`: 异常扫描、新闻抓取、信息库更新
-- `mysql`: MySQL 8
 - `redis`: Redis 6
 - `frontend`: Nginx 承载的前端静态页面
+
+环境文件说明:
+
+- `docker-compose.yml`: 公共基础配置，默认不包含 MySQL，适合生产或接外部数据库
+- `docker-compose.dev.yml`: 开发环境覆盖，提供 MySQL、代码挂载和后端热重载
+- `docker-compose.prod.yml`: 生产环境覆盖，提供容器访问宿主机的能力
+
+开发环境启动:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+生产环境启动（宿主机 MySQL）:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d redis backend insight-worker frontend
+```
 
 默认容器访问地址:
 

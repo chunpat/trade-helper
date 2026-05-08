@@ -76,7 +76,7 @@ function shouldRefreshBeforeRequest() {
 }
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8029/api/v1',
+  baseURL: import.meta.env.VITE_API_URL || '/api/v1',
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json'
@@ -241,6 +241,9 @@ export const riskControl = {
   },
   getCompletedTrades(params) {
     return api.get('/risk-control/history/completed-trades', { params })
+  },
+  getCompletedTradeReviewBundle(params) {
+    return api.get('/risk-control/history/completed-trades/review', { params })
   },
   getOpenTrades(params) {
     return api.get('/risk-control/history/open-trades', { params })

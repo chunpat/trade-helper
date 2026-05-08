@@ -7,12 +7,12 @@ networks:
     driver: bridge
 
 x-backend-env: &backend-env
-  DB_HOST: mysql
+  DB_HOST: ${DB_HOST}
   DB_PORT: ${DB_PORT}
   DB_USER: ${DB_USER}
   DB_PASSWORD: ${DB_PASSWORD}
   DB_NAME: ${DB_NAME}
-  REDIS_HOST: redis
+  REDIS_HOST: ${REDIS_HOST}
   REDIS_PORT: 6379
   ENABLE_GPT_5_1: ${ENABLE_GPT_5_1:-False}
   ANOMALY_LLM_PROVIDER: ${ANOMALY_LLM_PROVIDER:-disabled}
@@ -56,31 +56,6 @@ x-backend-env: &backend-env
   ANOMALY_NEWS_LIMIT: ${ANOMALY_NEWS_LIMIT:-6}
 
 services:
-  mysql:
-    image: mysql:8.0
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-      MYSQL_DATABASE: ${DB_NAME}
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    networks:
-      - backend-network
-      - shared-network
-    command: --default-authentication-plugin=mysql_native_password
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   redis:
     image: redis:6-alpine
     deploy:
@@ -112,8 +87,6 @@ services:
         limits:
           cpus: '1'
           memory: 1G
-    volumes:
-      - .:/app
     networks:
       - backend-network
       - shared-network
@@ -125,10 +98,7 @@ services:
       START_MARKET_POLLER: "True"
       START_POSITION_SYNC: "True"
       START_ANOMALY_MONITOR: "False"
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -141,8 +111,6 @@ services:
         limits:
           cpus: '1'
           memory: 1G
-    volumes:
-      - .:/app
     networks:
       - backend-network
       - shared-network
@@ -152,10 +120,7 @@ services:
       START_MARKET_POLLER: "False"
       START_POSITION_SYNC: "False"
       START_ANOMALY_MONITOR: "True"
-    command: python scripts/run_anomaly_worker.py
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -165,7 +130,7 @@ services:
       dockerfile: Dockerfile
       args:
         - NODE_ENV=production
-        - API_URL=http://localhost:8029/api/v1
+        - API_URL=/api/v1
     restart: always
     ports:
       - "8030:80"
@@ -187,5 +152,4 @@ services:
 
 
 volumes:
-  mysql_data:
   redis_data:

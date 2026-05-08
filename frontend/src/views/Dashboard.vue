@@ -156,7 +156,7 @@
 <script>
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import * as echarts from 'echarts'
+import echarts from '@/lib/echarts'
 import { dashboard } from '@/api'
 
 export default {

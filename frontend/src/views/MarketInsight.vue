@@ -805,7 +805,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useStore } from 'vuex'
 import { Refresh } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
+import echarts from '@/lib/echarts'
 import { marketInsight } from '@/api'
 import { ElMessage } from 'element-plus'
 import KlineChart from '@/components/KlineChart.vue'

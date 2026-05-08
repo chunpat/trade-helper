@@ -1,0 +1,8 @@
+services:
+  backend:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  insight-worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

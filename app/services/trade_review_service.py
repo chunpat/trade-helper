@@ -23,6 +23,35 @@ class TradeReviewService:
     def __init__(self, db: Session):
         self.db = db
 
+    def build_completed_trade_review_bundle(
+        self,
+        account_id: Optional[int] = None,
+        symbol: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> Dict:
+        completed_trades = self._build_completed_trades(
+            account_id=account_id,
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        total = len(completed_trades)
+        items = completed_trades[skip:skip + limit]
+        self._attach_trade_analytics(items)
+        return {
+            'total': total,
+            'items': items,
+            'summary': self._summarize_completed_trades_from_items(completed_trades),
+            'timeline': self._build_completed_trade_timeline_from_items(
+                completed_trades,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+        }
+
     def list_open_trades(
         self,
         account_id: Optional[int] = None,
@@ -73,19 +102,15 @@ class TradeReviewService:
         skip: int = 0,
         limit: int = 100,
     ) -> Dict:
-        completed_trades = self._build_completed_trades(
+        bundle = self.build_completed_trade_review_bundle(
             account_id=account_id,
             symbol=symbol,
             start_time=start_time,
             end_time=end_time,
+            skip=skip,
+            limit=limit,
         )
-        total = len(completed_trades)
-        items = completed_trades[skip:skip + limit]
-        self._attach_trade_analytics(items)
-        return {
-            'total': total,
-            'items': items,
-        }
+        return {'total': bundle['total'], 'items': bundle['items']}
 
     def summarize_completed_trades(
         self,
@@ -101,6 +126,9 @@ class TradeReviewService:
             end_time=end_time,
         )
 
+        return self._summarize_completed_trades_from_items(completed_trades)
+
+    def _summarize_completed_trades_from_items(self, completed_trades: List[Dict]) -> Dict:
         total_count = len(completed_trades)
         net_values = [float(item['net_pnl']) for item in completed_trades]
         gross_values = [float(item['gross_realized_pnl']) for item in completed_trades]
@@ -143,6 +171,20 @@ class TradeReviewService:
             start_time=start_time,
             end_time=end_time,
         )
+
+        return self._build_completed_trade_timeline_from_items(
+            completed_trades,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+    def _build_completed_trade_timeline_from_items(
+        self,
+        completed_trades: List[Dict],
+        *,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> Dict:
 
         if not completed_trades:
             return {

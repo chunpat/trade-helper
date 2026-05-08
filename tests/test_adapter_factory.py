@@ -1,5 +1,8 @@
 import asyncio
+import hashlib
+import hmac
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 from app.services.exchange.binance_adapter import BinanceAdapter, create_adapter_for_account
 from app.services.exchange.okx_adapter import OkxAdapter
@@ -45,6 +48,31 @@ def test_create_adapter_for_account_rejects_okx_without_passphrase():
     adapter = create_adapter_for_account(account)
 
     assert adapter is None
+
+
+def test_binance_build_signed_query_urlencodes_unicode_symbol():
+    adapter = BinanceAdapter('key', 'secret')
+
+    query = adapter._build_signed_query([
+        ('timestamp', 1),
+        ('recvWindow', 15000),
+        ('limit', 5),
+        ('symbol', '币安人生USDT'),
+    ])
+
+    encoded_qs = urlencode([
+        ('timestamp', '1'),
+        ('recvWindow', '15000'),
+        ('limit', '5'),
+        ('symbol', '币安人生USDT'),
+    ])
+    expected_sig = hmac.new(
+        b'secret',
+        encoded_qs.encode('utf-8'),
+        hashlib.sha256,
+    ).hexdigest()
+
+    assert query == f'{encoded_qs}&signature={expected_sig}'
 
 
 class _FakeResponse:

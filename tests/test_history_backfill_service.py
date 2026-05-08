@@ -11,6 +11,7 @@ from app.services.history_backfill_service import (
     BINANCE_MAX_INTERVAL_MS,
     fetch_income_range,
     fetch_trade_range,
+    filter_trade_symbols_for_adapter,
     upsert_trade_rows,
 )
 
@@ -50,6 +51,10 @@ class FailingTradeAdapter:
         return None
 
 
+class StubBinanceLikeAdapter:
+    supports_all_symbol_trades = False
+
+
 def test_fetch_trade_range_splits_over_seven_days():
     adapter = StubTradeAdapter()
     start_ms = 0
@@ -77,6 +82,15 @@ def test_fetch_income_range_splits_over_seven_days():
 def test_fetch_trade_range_raises_on_failed_request():
     with pytest.raises(RuntimeError):
         asyncio.run(fetch_trade_range(FailingTradeAdapter(), 'BTCUSDT', 0, BINANCE_MAX_INTERVAL_MS))
+
+
+def test_filter_trade_symbols_for_binance_adapter_preserves_unicode_symbols():
+    filtered = filter_trade_symbols_for_adapter(
+        StubBinanceLikeAdapter(),
+        ['labusdt', '币安人生USDT', 'TRUMPUSDT', '', '  labusdt  '],
+    )
+
+    assert filtered == ['LABUSDT', 'TRUMPUSDT', '币安人生USDT']
 
 
 def test_upsert_trade_rows_persists_leverage():

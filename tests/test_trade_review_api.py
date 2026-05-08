@@ -674,6 +674,36 @@ def test_completed_trade_summary_includes_commission_and_funding(review_client):
     assert payload['average_net_pnl'] == 1188.0
 
 
+def test_completed_trade_review_bundle_returns_summary_timeline_and_paginated_items(review_client):
+    client, session_factory = review_client
+    account_id = seed_completed_round_trip_history(session_factory)
+
+    response = client.get(
+        '/api/v1/risk-control/history/completed-trades/review',
+        params={
+            'account_id': account_id,
+            'skip': 0,
+            'limit': 1,
+            'start_time': '2026-01-01T00:00:00',
+            'end_time': '2026-01-02T23:59:59',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['total'] == 2
+    assert len(payload['items']) == 1
+    assert payload['items'][0]['symbol'] == 'ETHUSDT'
+    assert payload['summary']['total_count'] == 2
+    assert payload['summary']['net_pnl'] == 2376.0
+    assert payload['timeline']['xAxis'][0] == '01-01 00:00'
+    assert payload['timeline']['xAxis'][-1] == '01-02 23:00'
+    assert payload['timeline']['series'][0]['data'][18] == 1981.0
+    assert payload['timeline']['series'][0]['data'][44] == 395.0
+    assert payload['timeline']['series'][1]['data'][-1] == 2376.0
+    assert sum(payload['timeline']['series'][2]['data']) == 2.0
+
+
 def test_completed_trade_detail_contains_legs_and_funding_items(review_client):
     client, session_factory = review_client
     account_id = seed_completed_round_trip_history(session_factory)

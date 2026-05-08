@@ -335,6 +335,13 @@ class CompletedTradeReviewSummary(BaseModel):
     profit_factor: Optional[float] = Field(None, description="完整交易盈亏因子")
 
 
+class CompletedTradeReviewBundle(BaseModel):
+    total: int
+    items: List[CompletedTradeReview]
+    summary: CompletedTradeReviewSummary
+    timeline: TransactionHistoryTimeline
+
+
 class OpenTradeReview(BaseModel):
     id: str
     account_id: int

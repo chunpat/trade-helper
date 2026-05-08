@@ -153,6 +153,11 @@ def collect_trade_symbols(
     return sorted(symbols)
 
 
+def filter_trade_symbols_for_adapter(adapter, symbols: Sequence[str]) -> List[str]:
+    del adapter
+    return sorted({symbol.strip().upper() for symbol in symbols if symbol and symbol.strip()})
+
+
 def upsert_income_rows(db: Session, account_id: int, income_rows: Sequence[Dict]) -> Dict[str, int]:
     inserted = 0
     updated = 0
@@ -468,6 +473,7 @@ async def backfill_account_history(
         start_time=start_time,
         extra_symbols=extra_symbols,
     )
+    symbols = filter_trade_symbols_for_adapter(adapter, symbols)
 
     all_trade_rows: List[Dict] = []
     if getattr(adapter, 'supports_all_symbol_trades', False):

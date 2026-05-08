@@ -14,6 +14,7 @@ import json
 import time
 from typing import Dict, List, Optional
 import logging
+from urllib.parse import urlencode
 
 import httpx
 
@@ -38,6 +39,21 @@ class BinanceAdapter:
     def _sign(self, params: str) -> str:
         return hmac.new(self.api_secret.encode('utf-8'), params.encode('utf-8'), hashlib.sha256).hexdigest()
 
+    def _build_signed_query(self, params: List[tuple[str, object]]) -> str:
+        normalized_params = []
+        for key, value in params:
+            if value is None:
+                continue
+
+            normalized_value = value.upper() if key == "symbol" and isinstance(value, str) else value
+            normalized_params.append((key, str(normalized_value)))
+
+        qs = urlencode(normalized_params)
+        return f"{qs}&signature={self._sign(qs)}"
+
+    def _build_signed_url(self, *, base: str, request_path: str, params: List[tuple[str, object]]) -> str:
+        return f"{base}{request_path}?{self._build_signed_query(params)}"
+
     async def _get_server_time(self, base: str, time_path: str) -> int:
         try:
             async with self._get_client(timeout=10.0) as client:
@@ -58,16 +74,17 @@ class BinanceAdapter:
         base: str,
         time_path: str,
         request_path: str,
-        extra_qs: str = "",
+        extra_params: Optional[List[tuple[str, object]]] = None,
         recv_window: int = 15000,
     ) -> Dict:
         ts = await self._get_server_time(base, time_path)
-        query_parts = [f"timestamp={ts}", f"recvWindow={recv_window}"]
-        if extra_qs:
-            query_parts.append(extra_qs.lstrip("&"))
-        qs = "&".join(query_parts)
-        sig = self._sign(qs)
-        url = f"{base}{request_path}?{qs}&signature={sig}"
+        query_parts: List[tuple[str, object]] = [
+            ("timestamp", ts),
+            ("recvWindow", recv_window),
+        ]
+        if extra_params:
+            query_parts.extend(extra_params)
+        url = self._build_signed_url(base=base, request_path=request_path, params=query_parts)
         headers = {"X-MBX-APIKEY": self.api_key}
 
         try:
@@ -213,9 +230,14 @@ class BinanceAdapter:
         ts = int(server_ts)
         # include a recvWindow to account for small clock skew if any
         recv_window = 15000
-        qs = f"timestamp={ts}&recvWindow={recv_window}"
-        sig = self._sign(qs)
-        url = f"{self.BASE}/fapi/v2/positionRisk?{qs}&signature={sig}"
+        url = self._build_signed_url(
+            base=self.BASE,
+            request_path="/fapi/v2/positionRisk",
+            params=[
+                ("timestamp", ts),
+                ("recvWindow", recv_window),
+            ],
+        )
 
         headers = {"X-MBX-APIKEY": self.api_key}
 
@@ -247,9 +269,14 @@ class BinanceAdapter:
 
         ts = int(server_ts)
         recv_window = 15000
-        qs = f"timestamp={ts}&recvWindow={recv_window}"
-        sig = self._sign(qs)
-        url = f"{self.BASE}/fapi/v2/account?{qs}&signature={sig}"
+        url = self._build_signed_url(
+            base=self.BASE,
+            request_path="/fapi/v2/account",
+            params=[
+                ("timestamp", ts),
+                ("recvWindow", recv_window),
+            ],
+        )
 
         headers = {"X-MBX-APIKEY": self.api_key}
 
@@ -300,22 +327,24 @@ class BinanceAdapter:
         ts = int(server_ts)
         recv_window = 15000
         query_parts = [
-            f"timestamp={ts}",
-            f"recvWindow={recv_window}",
-            f"limit={limit}",
+            ("timestamp", ts),
+            ("recvWindow", recv_window),
+            ("limit", limit),
         ]
         if start_time is not None:
-            query_parts.append(f"startTime={int(start_time)}")
+            query_parts.append(("startTime", int(start_time)))
         if end_time is not None:
-            query_parts.append(f"endTime={int(end_time)}")
+            query_parts.append(("endTime", int(end_time)))
         if symbol:
-            query_parts.append(f"symbol={symbol.upper()}")
+            query_parts.append(("symbol", symbol))
         if income_type:
-            query_parts.append(f"incomeType={income_type}")
+            query_parts.append(("incomeType", income_type))
 
-        qs = "&".join(query_parts)
-        sig = self._sign(qs)
-        url = f"{self.BASE}/fapi/v1/income?{qs}&signature={sig}"
+        url = self._build_signed_url(
+            base=self.BASE,
+            request_path="/fapi/v1/income",
+            params=query_parts,
+        )
 
         headers = {"X-MBX-APIKEY": self.api_key}
 
@@ -354,20 +383,22 @@ class BinanceAdapter:
         ts = int(server_ts)
         recv_window = 15000
         query_parts = [
-            f"timestamp={ts}",
-            f"recvWindow={recv_window}",
-            f"limit={limit}",
+            ("timestamp", ts),
+            ("recvWindow", recv_window),
+            ("limit", limit),
         ]
         if symbol:
-            query_parts.append(f"symbol={symbol.upper()}")
+            query_parts.append(("symbol", symbol))
         if start_time is not None:
-            query_parts.append(f"startTime={int(start_time)}")
+            query_parts.append(("startTime", int(start_time)))
         if end_time is not None:
-            query_parts.append(f"endTime={int(end_time)}")
+            query_parts.append(("endTime", int(end_time)))
 
-        qs = "&".join(query_parts)
-        sig = self._sign(qs)
-        url = f"{self.BASE}/fapi/v1/userTrades?{qs}&signature={sig}"
+        url = self._build_signed_url(
+            base=self.BASE,
+            request_path="/fapi/v1/userTrades",
+            params=query_parts,
+        )
 
         headers = {"X-MBX-APIKEY": self.api_key}
 

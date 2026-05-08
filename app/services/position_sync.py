@@ -31,6 +31,72 @@ class PositionSyncService:
             return 'NET'
         return normalized_side or 'NET'
 
+    @staticmethod
+    def _collect_recent_trade_symbols(db, account_id: int, income_history: List[Dict]) -> List[str]:
+        symbols = {
+            str(item.get('symbol')).strip().upper()
+            for item in income_history or []
+            if item.get('symbol')
+        }
+
+        active_symbols = [
+            row[0]
+            for row in db.query(Position.symbol)
+            .filter(Position.account_id == account_id)
+            .filter(Position.is_active == True)
+            .filter(Position.symbol.isnot(None))
+            .distinct()
+            .all()
+            if row[0]
+        ]
+        symbols.update(str(symbol).strip().upper() for symbol in active_symbols)
+        return sorted(symbols)
+
+    @staticmethod
+    def _build_recent_trade_window_ms(income_history: List[Dict]) -> tuple[int, int]:
+        timestamps = [
+            int(item.get('time'))
+            for item in income_history or []
+            if item.get('time') is not None
+        ]
+        end_ms = int(datetime.utcnow().timestamp() * 1000)
+        if timestamps:
+            return max(min(timestamps) - 60_000, 0), end_ms
+        return int((datetime.utcnow() - timedelta(minutes=15)).timestamp() * 1000), end_ms
+
+    @staticmethod
+    def _dedupe_trade_rows(trade_rows: List[Dict]) -> List[Dict]:
+        deduped = {}
+        for trade in trade_rows:
+            key = trade.get('id') or trade.get('tradeId') or (
+                f"{trade.get('orderId')}:{trade.get('time')}:{trade.get('qty')}"
+            )
+            if key is None:
+                continue
+            deduped[str(key)] = trade
+        return list(deduped.values())
+
+    async def _fetch_recent_user_trades(self, account, adapter, db, income_history: List[Dict]) -> List[Dict]:
+        start_ms, end_ms = self._build_recent_trade_window_ms(income_history)
+        symbols = self._collect_recent_trade_symbols(db, account.id, income_history)
+
+        trade_rows: List[Dict] = []
+        if not symbols:
+            rows = await adapter.fetch_user_trades(limit=1000, start_time=start_ms, end_time=end_ms)
+            return self._dedupe_trade_rows(rows or [])
+
+        for symbol in symbols:
+            rows = await adapter.fetch_user_trades(
+                symbol=symbol,
+                limit=1000,
+                start_time=start_ms,
+                end_time=end_ms,
+            )
+            if rows:
+                trade_rows.extend(rows)
+
+        return self._dedupe_trade_rows(trade_rows)
+
     async def _sync_account(self, account: Account):
         adapter = create_adapter_for_account(account)
         if not adapter:
@@ -297,10 +363,11 @@ class PositionSyncService:
             ).delete(synchronize_session=False)
             db.commit()
 
-            income_history = await adapter.fetch_income_history(limit=50)
-            user_trades = await adapter.fetch_user_trades(limit=50)
-            
-            count = 0
+            income_history = await adapter.fetch_income_history(limit=1000)
+            user_trades = await self._fetch_recent_user_trades(account, adapter, db, income_history or [])
+
+            inserted_count = 0
+            updated_count = 0
             if income_history:
                 for item in income_history:
                     tran_id = item.get('tranId')
@@ -317,7 +384,7 @@ class PositionSyncService:
                             transaction_id=str(tran_id)
                         )
                         db.add(db_item)
-                        count += 1
+                        inserted_count += 1
 
             if user_trades:
                 # Aggregate trades by orderId
@@ -375,22 +442,34 @@ class PositionSyncService:
                             transaction_id=global_id
                         )
                         db.add(db_item)
-                        count += 1
+                        inserted_count += 1
                     else:
                         # Update existing aggregated record if data changed
+                        exists.account_id = account.id
+                        exists.symbol = data['symbol']
+                        exists.type = "TRADE"
+                        exists.side = data['side']
                         exists.price = avg_price
                         exists.qty = data['qty']
                         exists.quote_qty = data['quote_qty']
                         exists.position_side = data.get('position_side')
                         exists.commission = data['commission']
+                        exists.commission_asset = data['commission_asset']
                         exists.realized_pnl = data['realized_pnl']
                         exists.leverage = data['leverage'] or None
                         exists.time = datetime.utcfromtimestamp(data['time'] / 1000)
+                        exists.order_id = oid
                         db.add(exists)
+                        updated_count += 1
             
-            if count > 0:
+            if inserted_count > 0 or updated_count > 0:
                 db.commit()
-                logging.info("position-sync: synced %s new history items for account %s", count, account.id)
+                logging.info(
+                    "position-sync: synced history for account %s (inserted=%s, updated=%s)",
+                    account.id,
+                    inserted_count,
+                    updated_count,
+                )
         except Exception:
             logging.exception("position-sync: error syncing history for account %s", account.id)
             db.rollback()
