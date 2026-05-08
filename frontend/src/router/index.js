@@ -65,6 +65,12 @@ const routes = [
     name: 'MarketInsight',
     component: () => import('../views/MarketInsight.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/polymarket-traders',
+    name: 'PolymarketTraders',
+    component: () => import('../views/PolymarketTraders.vue'),
+    meta: { requiresAuth: true }
   }
 ]
 

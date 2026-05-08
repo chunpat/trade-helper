@@ -325,6 +325,27 @@ export const marketInsight = {
   }
 }
 
+export const polymarket = {
+  listTraders(params) {
+    return api.get('/polymarket/traders', { params })
+  },
+  getTraderProfile(walletAddress) {
+    return api.get(`/polymarket/traders/${walletAddress}`)
+  },
+  getTraderActivity(walletAddress, params) {
+    return api.get(`/polymarket/traders/${walletAddress}/activity`, { params })
+  },
+  getTraderFollowability(walletAddress) {
+    return api.get(`/polymarket/traders/${walletAddress}/followability`)
+  },
+  getTraderCacheStatus() {
+    return api.get('/polymarket/traders/cache/status')
+  },
+  refreshTraderCache(params) {
+    return api.post('/polymarket/traders/cache/refresh', null, { params })
+  }
+}
+
 export const dashboard = {
   getSummary() {
     return api.get('/dashboard/summary')
@@ -346,5 +367,6 @@ export const dashboard = {
 export default {
   riskControl,
   dashboard,
-  marketInsight
+  marketInsight,
+  polymarket
 }

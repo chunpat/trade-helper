@@ -19,6 +19,10 @@
           <el-icon><TrendCharts /></el-icon>
           <span>市场洞察</span>
         </el-menu-item>
+        <el-menu-item index="/polymarket-traders">
+          <el-icon><Opportunity /></el-icon>
+          <span>Polymarket 交易员池</span>
+        </el-menu-item>
         <el-menu-item index="/accounts">
           <el-icon><Wallet /></el-icon>
           <span>账户管理</span>
@@ -79,7 +83,7 @@
 </template>
 
 <script>
-import { DataLine, Wallet, TrendCharts, Histogram, Document, Warning, Setting, CaretBottom } from '@element-plus/icons-vue'
+import { DataLine, Wallet, TrendCharts, Histogram, Document, Warning, Setting, CaretBottom, Opportunity } from '@element-plus/icons-vue'
 import { formatCurrentDateTime, getDisplayTimezoneLabel, getDisplayTimezoneOffsetLabel } from '@/utils/datetime'
 
 export default {
@@ -130,7 +134,8 @@ export default {
     Document,
     Warning,
     Setting,
-    CaretBottom
+    CaretBottom,
+    Opportunity
   }
 }
 </script>

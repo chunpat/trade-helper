@@ -804,7 +804,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useStore } from 'vuex'
-import { Refresh } from '@element-plus/icons-vue'
+import { Loading, Refresh } from '@element-plus/icons-vue'
 import echarts from '@/lib/echarts'
 import { marketInsight } from '@/api'
 import { ElMessage } from 'element-plus'

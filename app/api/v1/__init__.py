@@ -4,6 +4,7 @@ from .market import router as market_router
 from .auth import router as auth_router
 from .dashboard import router as dashboard_router
 from .market_insight import router as market_insight_router
+from .polymarket import router as polymarket_router
 
 router = APIRouter()
 
@@ -12,6 +13,7 @@ router.include_router(market_router)
 router.include_router(auth_router)
 router.include_router(dashboard_router)
 router.include_router(market_insight_router)
+router.include_router(polymarket_router)
 
 # Add other routers here as the application grows
 # router.include_router(some_other_router)
