@@ -242,6 +242,12 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d redis backend insight-worker frontend
 ```
 
+前端生产部署建议:
+
+- 推荐先构建前端静态资源，再由 Nginx 提供静态文件服务
+- 浏览器统一访问同域 `/api/v1` 和 `/ws`，由 Nginx 反向代理到后端容器
+- 不建议生产环境让浏览器直接请求 `http://后端主机:8029/api/v1`，这样会引入跨域、端口暴露和代理链路不一致问题
+
 默认容器访问地址:
 
 - API 文档: http://localhost:8029/api/docs
