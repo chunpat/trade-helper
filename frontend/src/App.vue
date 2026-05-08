@@ -21,7 +21,7 @@
         </el-menu-item>
         <el-menu-item index="/polymarket-traders">
           <el-icon><Opportunity /></el-icon>
-          <span>Polymarket 交易员池</span>
+          <span>Polymarket</span>
         </el-menu-item>
         <el-menu-item index="/accounts">
           <el-icon><Wallet /></el-icon>

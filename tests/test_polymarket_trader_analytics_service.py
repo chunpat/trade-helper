@@ -5,12 +5,14 @@ from app.services.polymarket_trader_analytics_service import PolymarketTraderAna
 
 
 class FakePolymarketDataClient:
-    def __init__(self, *, profile=None, activity=None, positions=None, closed_positions=None, leaderboard=None):
+    def __init__(self, *, profile=None, activity=None, positions=None, closed_positions=None, leaderboard=None, leaderboard_by_request=None):
         self.profile = profile or {}
         self.activity = activity or []
         self.positions = positions or []
         self.closed_positions = closed_positions or []
         self.leaderboard = leaderboard or []
+        self.leaderboard_by_request = leaderboard_by_request or {}
+        self.leaderboard_calls = []
 
     async def get_public_profile(self, address: str):
         return self.profile
@@ -25,6 +27,9 @@ class FakePolymarketDataClient:
         return self.closed_positions[:limit]
 
     async def get_leaderboard(self, *, category: str = "OVERALL", time_period: str = "WEEK", order_by: str = "PNL", limit: int = 10, offset: int = 0):
+        self.leaderboard_calls.append((category, time_period, order_by, limit, offset))
+        if self.leaderboard_by_request:
+            return self.leaderboard_by_request.get((category, time_period, order_by, offset), [])[:limit]
         return self.leaderboard[:limit]
 
 
@@ -140,3 +145,127 @@ def test_analyze_trader_flags_likely_bot_when_high_frequency_and_tiny_size():
     assert profile.followability.likely_bot is True
     assert profile.followability.verdict == "avoid"
     assert profile.trade_count_24h == 45
+
+
+def test_list_traders_expands_candidate_discovery_and_dedupes_wallets():
+    wallets = [
+        "0x1234567890abcdef1234567890abcdef12345678",
+        "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        "0x1111111111111111111111111111111111111111",
+    ]
+    now = datetime.utcnow()
+    activity = [
+        {
+            "proxyWallet": wallets[0],
+            "timestamp": int((now - timedelta(days=1)).timestamp()),
+            "type": "TRADE",
+            "conditionId": "0xmarket1",
+            "side": "BUY",
+            "size": 100,
+            "usdcSize": 1200,
+            "price": 0.64,
+        }
+    ]
+    closed_positions = [
+        {
+            "conditionId": "0xmarket1",
+            "realizedPnl": 250,
+            "timestamp": int((now - timedelta(days=4)).timestamp()),
+            "title": "Will BTC exceed 120k?",
+            "outcome": "Yes",
+        }
+    ]
+    client = FakePolymarketDataClient(
+        profile={"name": "Trader One", "verifiedBadge": True},
+        activity=activity,
+        positions=[],
+        closed_positions=closed_positions,
+        leaderboard_by_request={
+            ("OVERALL", "WEEK", "PNL", 0): [
+                {"proxyWallet": wallets[0], "rank": 1, "pnl": 100, "vol": 5000},
+                {"proxyWallet": wallets[1], "rank": 2, "pnl": 80, "vol": 4000},
+            ],
+            ("OVERALL", "WEEK", "PNL", 20): [
+                {"proxyWallet": wallets[2], "rank": 21, "pnl": 60, "vol": 3000},
+            ],
+            ("OVERALL", "WEEK", "VOL", 0): [
+                {"proxyWallet": wallets[1], "rank": 1, "pnl": 75, "vol": 9000},
+                {"proxyWallet": wallets[2], "rank": 2, "pnl": 55, "vol": 8000},
+            ],
+        },
+    )
+    service = PolymarketTraderAnalyticsService(client=client)
+
+    traders = asyncio.run(service.list_traders(category="OVERALL", time_period="WEEK", order_by="PNL", limit=3))
+
+    assert len(traders) == 3
+    assert len({item.wallet_address for item in traders}) == 3
+    assert any(call[2] == "VOL" for call in client.leaderboard_calls)
+    assert any(call[4] == 20 for call in client.leaderboard_calls)
+
+
+def test_list_traders_scans_adjacent_periods_and_related_categories():
+    wallets = [
+        "0x2000000000000000000000000000000000000001",
+        "0x2000000000000000000000000000000000000002",
+        "0x2000000000000000000000000000000000000003",
+        "0x2000000000000000000000000000000000000004",
+        "0x2000000000000000000000000000000000000005",
+    ]
+    now = datetime.utcnow()
+    activity = [
+        {
+            "proxyWallet": wallets[0],
+            "timestamp": int((now - timedelta(days=1)).timestamp()),
+            "type": "TRADE",
+            "conditionId": "0xmarketx",
+            "side": "BUY",
+            "size": 120,
+            "usdcSize": 1400,
+            "price": 0.55,
+        }
+    ]
+    closed_positions = [
+        {
+            "conditionId": "0xmarketx",
+            "realizedPnl": 180,
+            "timestamp": int((now - timedelta(days=3)).timestamp()),
+            "title": "Will ETH break ATH?",
+            "outcome": "Yes",
+        }
+    ]
+    client = FakePolymarketDataClient(
+        profile={"name": "Cross Pool Trader"},
+        activity=activity,
+        positions=[],
+        closed_positions=closed_positions,
+        leaderboard_by_request={
+            ("CRYPTO", "WEEK", "PNL", 0): [
+                {"proxyWallet": wallets[0], "rank": 1, "pnl": 90, "vol": 5000},
+            ],
+            ("CRYPTO", "WEEK", "PNL", 20): [
+                {"proxyWallet": wallets[1], "rank": 21, "pnl": 88, "vol": 4200},
+            ],
+            ("CRYPTO", "WEEK", "VOL", 0): [
+                {"proxyWallet": wallets[2], "rank": 1, "pnl": 80, "vol": 9000},
+            ],
+            ("CRYPTO", "MONTH", "PNL", 0): [
+                {"proxyWallet": wallets[3], "rank": 5, "pnl": 150, "vol": 7000},
+            ],
+            ("OVERALL", "WEEK", "PNL", 0): [
+                {"proxyWallet": wallets[4], "rank": 3, "pnl": 120, "vol": 6500},
+            ],
+            ("OVERALL", "MONTH", "PNL", 0): [
+                {"proxyWallet": wallets[4], "rank": 6, "pnl": 160, "vol": 8300},
+            ],
+        },
+    )
+    service = PolymarketTraderAnalyticsService(client=client)
+
+    traders = asyncio.run(service.list_traders(category="CRYPTO", time_period="WEEK", order_by="PNL", limit=5))
+
+    assert len(traders) == 5
+    assert {item.wallet_address for item in traders} == set(wallets)
+    assert any(call[:3] == ("CRYPTO", "MONTH", "PNL") for call in client.leaderboard_calls)
+    assert any(call[:3] == ("OVERALL", "WEEK", "PNL") for call in client.leaderboard_calls)
+    assert any(call[:3] == ("OVERALL", "MONTH", "PNL") for call in client.leaderboard_calls)

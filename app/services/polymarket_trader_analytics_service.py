@@ -139,6 +139,57 @@ class PolymarketTraderAnalyticsService:
         )
 
     @staticmethod
+    def _expanded_leaderboard_specs(
+        *,
+        category: str,
+        time_period: str,
+        order_by: str,
+        limit: int,
+    ) -> List[Tuple[str, str, str, int, int]]:
+        page_size = min(max(limit, 20), 25)
+        alternate_order = "VOL" if order_by == "PNL" else "PNL"
+        specs: List[Tuple[str, str, str, int, int]] = []
+        seen = set()
+
+        def append_spec(item_category: str, item_time_period: str, item_order_by: str, item_offset: int) -> None:
+            spec = (item_category, item_time_period, item_order_by, page_size, item_offset)
+            if spec in seen:
+                return
+            seen.add(spec)
+            specs.append(spec)
+
+        if time_period == "DAY":
+            adjacent_periods = ["WEEK"]
+        elif time_period == "WEEK":
+            adjacent_periods = ["MONTH", "DAY"]
+        elif time_period == "MONTH":
+            adjacent_periods = ["WEEK"]
+        else:
+            adjacent_periods = ["MONTH", "WEEK"]
+
+        if category == "OVERALL":
+            related_categories = ["CRYPTO", "POLITICS", "FINANCE"]
+        else:
+            related_categories = ["OVERALL"]
+
+        append_spec(category, time_period, order_by, 0)
+        append_spec(category, time_period, order_by, page_size)
+        append_spec(category, time_period, alternate_order, 0)
+
+        for adjacent_period in adjacent_periods:
+            append_spec(category, adjacent_period, order_by, 0)
+
+        for related_category in related_categories:
+            append_spec(related_category, time_period, order_by, 0)
+
+        if adjacent_periods:
+            pivot_period = adjacent_periods[0]
+            for related_category in related_categories[:2]:
+                append_spec(related_category, pivot_period, order_by, 0)
+
+        return specs
+
+    @staticmethod
     def _filter_since(items: Sequence, attr: str, cutoff: datetime) -> List:
         return [item for item in items if getattr(item, attr) and getattr(item, attr) >= cutoff]
 
@@ -153,6 +204,33 @@ class PolymarketTraderAnalyticsService:
         if item.size is not None and item.price is not None:
             return float(item.size) * float(item.price)
         return 0.0
+
+    @staticmethod
+    def _candidate_priority(summary: PolymarketTraderSummary) -> Tuple[int, int, int, float, float, int, float]:
+        realized_pnl = float(summary.realized_pnl_30d or 0.0)
+        volume_usdc = float(summary.volume_usdc_30d or 0.0)
+        trade_count = int(summary.trade_count_30d or 0)
+        followability_score = float(summary.followability.score if summary.followability else 0.0)
+        profitable = 1 if realized_pnl > 0 else 0
+        meaningful_volume = 1 if volume_usdc >= 1000 else 0
+        quant_viable = 1 if profitable and trade_count >= 100 else 0
+        return (
+            profitable,
+            meaningful_volume,
+            quant_viable,
+            realized_pnl,
+            volume_usdc,
+            trade_count,
+            followability_score,
+        )
+
+    @staticmethod
+    def _summary_from_profile(profile: PolymarketTraderProfile) -> PolymarketTraderSummary:
+        return PolymarketTraderSummary(
+            **profile.model_dump(
+                exclude={"created_at", "recent_markets", "recent_activities", "current_positions", "recent_closed_positions"}
+            )
+        )
 
     def _median_trade_interval_seconds(self, trades: Sequence[PolymarketActivityItem]) -> Optional[float]:
         timestamps = sorted({int(item.timestamp.timestamp()) for item in trades if item.timestamp})
@@ -424,6 +502,8 @@ class PolymarketTraderAnalyticsService:
             notes.append("该交易员来自 Polymarket leaderboard 候选池")
         if followability.likely_bot:
             notes.append("当前行为更偏程序化，建议先模拟跟单再考虑实盘")
+        if trader_style == "high_frequency" and (realized_pnl_30d or 0) > 0:
+            notes.append("该账户偏量化/高频风格，人工复制性一般，但可进一步评估自动化跟单可行性")
         if win_rate_30d is None:
             notes.append("近30天平仓样本不足，胜率仅供参考")
         if len(trades_30d) == 0:
@@ -496,24 +576,45 @@ class PolymarketTraderAnalyticsService:
         if wallets:
             normalized_wallets = [self.normalize_wallet(wallet) for wallet in wallets[:limit]]
             profiles = await asyncio.gather(*(self.analyze_trader(wallet) for wallet in normalized_wallets))
-            return [
-                PolymarketTraderSummary(
-                    **profile.model_dump(
-                        exclude={"created_at", "recent_markets", "recent_activities", "current_positions", "recent_closed_positions"}
-                    )
-                )
-                for profile in profiles
-            ]
+            summaries = [self._summary_from_profile(profile) for profile in profiles]
+            return sorted(summaries, key=self._candidate_priority, reverse=True)[:limit]
 
-        leaderboard_rows = await self.client.get_leaderboard(
+        discovery_specs = self._expanded_leaderboard_specs(
             category=category,
             time_period=time_period,
             order_by=order_by,
             limit=limit,
-            offset=0,
         )
+        leaderboard_batches = await asyncio.gather(
+            *(
+                self.client.get_leaderboard(
+                    category=item_category,
+                    time_period=item_time_period,
+                    order_by=item_order_by,
+                    limit=item_limit,
+                    offset=item_offset,
+                )
+                for item_category, item_time_period, item_order_by, item_limit, item_offset in discovery_specs
+            )
+        )
+
+        candidate_rows: List[Dict] = []
+        seen_wallets = set()
+        analysis_limit = min(max(limit * 2, limit), 50)
+        for rows in leaderboard_batches:
+            for row in rows:
+                wallet = row.get("proxyWallet")
+                if not wallet or wallet in seen_wallets:
+                    continue
+                seen_wallets.add(wallet)
+                candidate_rows.append(row)
+                if len(candidate_rows) >= analysis_limit:
+                    break
+            if len(candidate_rows) >= analysis_limit:
+                break
+
         tasks = []
-        for row in leaderboard_rows[:limit]:
+        for row in candidate_rows:
             wallet = row.get("proxyWallet")
             if wallet:
                 tasks.append(
@@ -525,14 +626,8 @@ class PolymarketTraderAnalyticsService:
                     )
                 )
         profiles = await asyncio.gather(*tasks)
-        return [
-            PolymarketTraderSummary(
-                **profile.model_dump(
-                    exclude={"created_at", "recent_markets", "recent_activities", "current_positions", "recent_closed_positions"}
-                )
-            )
-            for profile in profiles
-        ]
+        summaries = [self._summary_from_profile(profile) for profile in profiles]
+        return sorted(summaries, key=self._candidate_priority, reverse=True)[:limit]
 
 
 polymarket_trader_analytics_service = PolymarketTraderAnalyticsService()

@@ -24,7 +24,7 @@ async def list_polymarket_traders(
     category: str = Query("OVERALL", description="榜单分类"),
     time_period: str = Query("WEEK", description="榜单周期 DAY/WEEK/MONTH/ALL"),
     order_by: str = Query("PNL", description="排序字段 PNL/VOL"),
-    limit: int = Query(10, ge=1, le=20, description="返回数量"),
+    limit: int = Query(10, ge=1, le=50, description="返回数量"),
     use_cache: bool = Query(True, description="未指定 wallets 时是否优先读候选池缓存"),
     force_refresh: bool = Query(False, description="是否强制刷新缓存后再返回"),
 ):
@@ -64,7 +64,7 @@ async def refresh_polymarket_trader_cache(
     category: str = Query("OVERALL", description="榜单分类"),
     time_period: str = Query("WEEK", description="榜单周期"),
     order_by: str = Query("PNL", description="排序字段"),
-    limit: int = Query(10, ge=1, le=20, description="候选数量"),
+    limit: int = Query(10, ge=1, le=50, description="候选数量"),
 ):
     try:
         await polymarket_trader_cache_service.refresh_pool(

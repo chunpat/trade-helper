@@ -242,6 +242,36 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d redis backend insight-worker frontend
 ```
 
+生产环境更新（代码有变更，需要重建镜像并重启）:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend insight-worker frontend
+```
+
+仅更新后端:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend insight-worker
+```
+
+仅更新前端:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build frontend
+```
+
+仅重启容器（代码和镜像都没变）:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml restart backend insight-worker frontend
+```
+
+查看运行日志:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f backend insight-worker frontend
+```
+
 前端生产部署建议:
 
 - 推荐先构建前端静态资源，再由 Nginx 提供静态文件服务

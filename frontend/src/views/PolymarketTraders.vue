@@ -52,7 +52,43 @@
               </el-col>
               <el-col :xs="24" :sm="12" :md="6">
                 <el-form-item label="数量">
-                  <el-input-number v-model="filters.limit" :min="5" :max="20" :step="5" style="width: 100%" />
+                  <el-input-number v-model="filters.limit" :min="5" :max="50" :step="5" style="width: 100%" />
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <el-row :gutter="12">
+              <el-col :xs="24" :sm="12" :md="8">
+                <el-form-item label="最小近30天成交额 (USDC)">
+                  <el-input-number
+                    v-model="filters.minVolumeUsd"
+                    :min="0"
+                    :step="500"
+                    :controls-position="'right'"
+                    style="width: 100%"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="24" :sm="12" :md="8">
+                <el-form-item label="最小可跟单评分">
+                  <el-input-number
+                    v-model="filters.minFollowabilityScore"
+                    :min="0"
+                    :max="100"
+                    :step="5"
+                    :controls-position="'right'"
+                    style="width: 100%"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="24" :sm="12" :md="8">
+                <el-form-item label="最小近30天已实现收益 (USDC)">
+                  <el-input-number
+                    v-model="filters.minRealizedPnlUsd"
+                    :step="100"
+                    :controls-position="'right'"
+                    style="width: 100%"
+                  />
                 </el-form-item>
               </el-col>
             </el-row>
@@ -68,6 +104,7 @@
 
             <div class="pool-form-actions">
               <el-button type="primary" :loading="loadingTraders" @click="loadTraders()">加载交易员池</el-button>
+              <el-button @click="resetBaseFilters">恢复默认基础筛选</el-button>
               <el-button @click="resetWallets">清空钱包筛选</el-button>
             </div>
           </el-form>
@@ -164,13 +201,13 @@
         <div class="card-header">
           <span>交易员候选池</span>
           <div class="header-right-actions">
-            <el-tag size="small" type="info">{{ traders.length }} 位交易员</el-tag>
+            <el-tag size="small" type="info">{{ filteredTraders.length }} / {{ traders.length }} 位交易员</el-tag>
             <el-switch v-model="filters.useCache" active-text="优先读缓存" inactive-text="实时拉取" />
           </div>
         </div>
       </template>
 
-      <el-table :data="traders" stripe v-loading="loadingTraders" class="trader-table">
+      <el-table :data="filteredTraders" stripe v-loading="loadingTraders" class="trader-table">
         <el-table-column label="交易员" min-width="220">
           <template #default="scope">
             <div class="trader-cell">
@@ -207,6 +244,20 @@
         <el-table-column label="近30天成交额" width="160" align="right">
           <template #default="scope">
             {{ formatMoney(scope.row.volume_usdc_30d) }}
+          </template>
+        </el-table-column>
+
+        <el-table-column label="近30天已实现收益" width="170" align="right">
+          <template #default="scope">
+            <span
+              :class="[
+                'pnl-value',
+                Number(scope.row.realized_pnl_30d || 0) > 0 ? 'positive' : '',
+                Number(scope.row.realized_pnl_30d || 0) < 0 ? 'negative' : ''
+              ]"
+            >
+              {{ formatMoney(scope.row.realized_pnl_30d) }}
+            </span>
           </template>
         </el-table-column>
 
@@ -282,6 +333,9 @@ import {
 const categoryOptions = ['OVERALL', 'POLITICS', 'SPORTS', 'CRYPTO', 'CULTURE', 'MENTIONS', 'WEATHER', 'ECONOMICS', 'TECH', 'FINANCE']
 const timePeriodOptions = ['DAY', 'WEEK', 'MONTH', 'ALL']
 const orderByOptions = ['PNL', 'VOL']
+const DEFAULT_MIN_VOLUME_USD = 1000
+const DEFAULT_MIN_FOLLOWABILITY_SCORE = 60
+const DEFAULT_MIN_REALIZED_PNL_USD = 0
 
 export default {
   name: 'PolymarketTraders',
@@ -305,12 +359,26 @@ export default {
       category: 'OVERALL',
       timePeriod: 'WEEK',
       orderBy: 'PNL',
-      limit: 10,
+      limit: 20,
+      minVolumeUsd: DEFAULT_MIN_VOLUME_USD,
+      minFollowabilityScore: DEFAULT_MIN_FOLLOWABILITY_SCORE,
+      minRealizedPnlUsd: DEFAULT_MIN_REALIZED_PNL_USD,
       wallets: '',
       useCache: true
     })
 
     const currentCacheKey = computed(() => `${filters.category}:${filters.timePeriod}:${filters.orderBy}:${filters.limit}`)
+    const filteredTraders = computed(() => {
+      const volumeThreshold = Number(filters.minVolumeUsd || 0)
+      const scoreThreshold = Number(filters.minFollowabilityScore || 0)
+      const pnlThreshold = Number(filters.minRealizedPnlUsd || 0)
+      return traders.value.filter(item => {
+        const volume = Number(item.volume_usdc_30d || 0)
+        const score = Number(item.followability?.score || 0)
+        const realizedPnl = Number(item.realized_pnl_30d || 0)
+        return volume >= volumeThreshold && score >= scoreThreshold && realizedPnl >= pnlThreshold
+      })
+    })
     const currentPoolStatus = computed(() => {
       return (cacheStatus.pools || []).find(item => item.cache_key === currentCacheKey.value) || null
     })
@@ -393,6 +461,12 @@ export default {
       filters.wallets = ''
     }
 
+    const resetBaseFilters = () => {
+      filters.minVolumeUsd = DEFAULT_MIN_VOLUME_USD
+      filters.minFollowabilityScore = DEFAULT_MIN_FOLLOWABILITY_SCORE
+      filters.minRealizedPnlUsd = DEFAULT_MIN_REALIZED_PNL_USD
+    }
+
     const formatDateTime = value => {
       if (!value) {
         return '-'
@@ -415,6 +489,7 @@ export default {
       loadingStatus,
       refreshingPool,
       traders,
+      filteredTraders,
       cacheStatus,
       filters,
       currentPoolStatus,
@@ -423,6 +498,7 @@ export default {
       refreshCurrentPool,
       openTraderDetail,
       resetWallets,
+      resetBaseFilters,
       formatDateTime,
       formatMoney: formatPolymarketMoney,
       formatPercent: formatPolymarketPercent,
@@ -590,6 +666,14 @@ export default {
 .minor-text {
   font-size: 12px;
   color: #64748b;
+}
+
+.pnl-value.positive {
+  color: #15803d;
+}
+
+.pnl-value.negative {
+  color: #b91c1c;
 }
 
 .score-cell {
