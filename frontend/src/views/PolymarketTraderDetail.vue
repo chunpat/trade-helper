@@ -124,6 +124,10 @@
           <div class="card-header activity-header">
             <span>历史活动筛选</span>
             <div class="activity-filters">
+              <el-select v-model="activityFilters.viewMode" size="small" style="width: 120px">
+                <el-option label="原始活动" value="raw" />
+                <el-option label="聚合成交" value="grouped" />
+              </el-select>
               <el-select v-model="activityFilters.hours" size="small" style="width: 110px" @change="refreshActivity">
                 <el-option label="24 小时" :value="24" />
                 <el-option label="72 小时" :value="72" />
@@ -146,11 +150,33 @@
           </div>
         </template>
 
-        <el-table :data="filteredActivities" v-loading="loadingActivity" size="small" max-height="360">
-          <el-table-column prop="activity_type" label="类型" width="90" />
+        <div v-if="activityFilters.viewMode === 'grouped'" class="aggregation-note">
+          聚合成交视图会优先按 transaction hash 合并同一笔链上成交；缺少 hash 时，再按市场、方向、结果和分钟窗口做兜底聚合。
+        </div>
+
+        <div class="activity-summary-row">
+          <div class="activity-summary-card">
+            <span>原始 TRADE 中位间隔</span>
+            <strong>{{ formatSeconds(rawTradeMedianIntervalSeconds) }}</strong>
+          </div>
+          <div class="activity-summary-card">
+            <span>聚合后中位间隔</span>
+            <strong>{{ formatSeconds(groupedTradeMedianIntervalSeconds) }}</strong>
+          </div>
+          <div class="activity-summary-card">
+            <span>聚合减少记录</span>
+            <strong>{{ groupedReductionCount }}</strong>
+          </div>
+        </div>
+
+        <el-table :data="displayActivities" v-loading="loadingActivity" size="small" max-height="360">
+          <el-table-column :prop="activityFilters.viewMode === 'grouped' ? 'display_type' : 'activity_type'" label="类型" width="90" />
           <el-table-column prop="title" label="市场" min-width="220" />
           <el-table-column prop="outcome" label="结果" width="90" />
           <el-table-column prop="side" label="方向" width="80" />
+          <el-table-column v-if="activityFilters.viewMode === 'grouped'" label="聚合笔数" width="90" align="right">
+            <template #default="scope">{{ scope.row.group_count }}</template>
+          </el-table-column>
           <el-table-column label="金额" width="110" align="right">
             <template #default="scope">{{ formatMoney(scope.row.usdc_size) }}</template>
           </el-table-column>
@@ -158,7 +184,12 @@
             <template #default="scope">{{ formatNumber(scope.row.price, 3) }}</template>
           </el-table-column>
           <el-table-column label="时间" min-width="170">
-            <template #default="scope">{{ formatDateTime(scope.row.timestamp) }}</template>
+            <template #default="scope">
+              <span v-if="activityFilters.viewMode === 'grouped' && scope.row.time_end && scope.row.time_end !== scope.row.timestamp">
+                {{ formatDateTime(scope.row.timestamp) }} - {{ formatDateTime(scope.row.time_end) }}
+              </span>
+              <span v-else>{{ formatDateTime(scope.row.timestamp) }}</span>
+            </template>
           </el-table-column>
         </el-table>
       </el-card>
@@ -254,7 +285,8 @@ export default {
     const activityFilters = reactive({
       hours: 168,
       limit: 100,
-      type: 'ALL'
+      type: 'ALL',
+      viewMode: 'raw'
     })
 
     let pnlChartInstance = null
@@ -267,6 +299,107 @@ export default {
         return activities.value
       }
       return activities.value.filter(item => item.activity_type === activityFilters.type)
+    })
+
+    const groupedActivities = computed(() => {
+      const groups = new Map()
+
+      filteredActivities.value.forEach(item => {
+        const timestampValue = item.timestamp ? new Date(item.timestamp).getTime() : 0
+        const minuteBucket = Math.floor(timestampValue / 60000)
+        const groupingKey = item.activity_type === 'TRADE'
+          ? (item.transaction_hash || [item.condition_id || item.title || 'unknown', item.side || 'NA', item.outcome || 'NA', minuteBucket].join('|'))
+          : `${item.activity_type}:${item.transaction_hash || timestampValue}:${item.condition_id || item.title || 'unknown'}`
+
+        if (!groups.has(groupingKey)) {
+          groups.set(groupingKey, {
+            ...item,
+            display_type: item.activity_type === 'TRADE' ? 'TRADE*' : item.activity_type,
+            group_count: 0,
+            time_end: item.timestamp,
+            aggregated_volume: 0,
+            weighted_price_sum: 0,
+            weighted_price_base: 0
+          })
+        }
+
+        const group = groups.get(groupingKey)
+        group.group_count += 1
+
+        const tradeAmount = Number(item.usdc_size || 0)
+        group.aggregated_volume += tradeAmount
+        if (item.price !== null && item.price !== undefined && tradeAmount > 0) {
+          group.weighted_price_sum += Number(item.price) * tradeAmount
+          group.weighted_price_base += tradeAmount
+        }
+
+        if (item.timestamp && (!group.timestamp || new Date(item.timestamp) < new Date(group.timestamp))) {
+          group.timestamp = item.timestamp
+        }
+        if (item.timestamp && (!group.time_end || new Date(item.timestamp) > new Date(group.time_end))) {
+          group.time_end = item.timestamp
+        }
+        if (tradeAmount > 0) {
+          group.usdc_size = Number(group.aggregated_volume.toFixed(2))
+        }
+        if (group.weighted_price_base > 0) {
+          group.price = Number((group.weighted_price_sum / group.weighted_price_base).toFixed(4))
+        }
+      })
+
+      return [...groups.values()].sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp))
+    })
+
+    const displayActivities = computed(() => {
+      if (activityFilters.viewMode === 'grouped') {
+        return groupedActivities.value
+      }
+      return filteredActivities.value
+    })
+
+    const calculateMedianIntervalSeconds = rows => {
+      const timestamps = [...new Set(
+        rows
+          .map(item => item?.timestamp ? Math.floor(new Date(item.timestamp).getTime() / 1000) : null)
+          .filter(value => value !== null)
+      )].sort((left, right) => left - right)
+
+      if (timestamps.length < 2) {
+        return null
+      }
+
+      const gaps = []
+      for (let index = 1; index < timestamps.length; index += 1) {
+        const gap = timestamps[index] - timestamps[index - 1]
+        if (gap >= 0) {
+          gaps.push(gap)
+        }
+      }
+
+      if (!gaps.length) {
+        return null
+      }
+
+      const sortedGaps = [...gaps].sort((left, right) => left - right)
+      const middleIndex = Math.floor(sortedGaps.length / 2)
+      if (sortedGaps.length % 2 === 1) {
+        return sortedGaps[middleIndex]
+      }
+      return Number(((sortedGaps[middleIndex - 1] + sortedGaps[middleIndex]) / 2).toFixed(2))
+    }
+
+    const rawTradeMedianIntervalSeconds = computed(() => {
+      return calculateMedianIntervalSeconds(filteredActivities.value.filter(item => item.activity_type === 'TRADE'))
+    })
+
+    const groupedTradeMedianIntervalSeconds = computed(() => {
+      return calculateMedianIntervalSeconds(groupedActivities.value.filter(item => item.activity_type === 'TRADE'))
+    })
+
+    const groupedReductionCount = computed(() => {
+      const rawTradeCount = filteredActivities.value.filter(item => item.activity_type === 'TRADE').length
+      const groupedTradeCount = groupedActivities.value.filter(item => item.activity_type === 'TRADE').length
+      return Math.max(0, rawTradeCount - groupedTradeCount)
     })
 
     const pnlSeries = computed(() => {
@@ -526,6 +659,10 @@ export default {
       loadingActivity,
       activityFilters,
       filteredActivities,
+      displayActivities,
+      rawTradeMedianIntervalSeconds,
+      groupedTradeMedianIntervalSeconds,
+      groupedReductionCount,
       marketPreferenceMetric,
       marketPreferenceMetricTag,
       pnlChartRef,
@@ -726,6 +863,39 @@ export default {
   margin-top: 4px;
 }
 
+.aggregation-note {
+  margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748b;
+}
+
+.activity-summary-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.activity-summary-card {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: linear-gradient(180deg, #f8fafc 0%, #eef6ff 100%);
+}
+
+.activity-summary-card span {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.activity-summary-card strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 18px;
+  color: #0f172a;
+}
+
 @media (max-width: 960px) {
   .detail-hero,
   .activity-header,
@@ -739,6 +909,10 @@ export default {
   }
 
   .mini-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .activity-summary-row {
     grid-template-columns: 1fr;
   }
 

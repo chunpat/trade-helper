@@ -70,6 +70,7 @@ def init_db():
         NarrativeEvent,
         NewsArchive,
     )
+    from app.models.polymarket_cache import PolymarketCacheEntry
     
     Base.metadata.create_all(bind=engine)
 
