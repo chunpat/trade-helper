@@ -71,6 +71,11 @@ def init_db():
         NewsArchive,
     )
     from app.models.polymarket_cache import PolymarketCacheEntry
+    from app.models.polymarket_copy import (
+        PolymarketCopySimulationRun,
+        PolymarketCopySourcePosition,
+        PolymarketCopyStrategy,
+    )
     
     Base.metadata.create_all(bind=engine)
 

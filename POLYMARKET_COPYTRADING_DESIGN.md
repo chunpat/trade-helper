@@ -145,6 +145,8 @@ Polymarket 官方公开数据并不会直接告诉你“这个人胜率高，适
 - `source_wallet`
 - `strategy_name`
 - `status`
+- `copy_mode`：`proportional_notional` / `fixed_notional`
+- `copy_ratio`
 - `allocation_mode`：固定金额 / 按比例 / 按上限
 - `allocation_value`
 - `max_order_usdc`
@@ -159,6 +161,19 @@ Polymarket 官方公开数据并不会直接告诉你“这个人胜率高，适
 - `dry_run`
 - `skip_high_frequency`
 - `skip_likely_bot`
+
+如果第一版先做“同比例跟单”，建议把 `copy_mode=proportional_notional` 作为默认值。
+
+额外建议字段：
+
+- `min_copy_order_usdc`
+- `max_position_notional_usdc`
+- `max_market_exposure_usdc`
+- `same_outcome_only`
+- `follow_reduce_only_after_open`
+- `allow_partial_close_sync`
+- `slippage_mode`：`strict` / `adaptive`
+- `signal_cooldown_seconds`
 
 ## 5. 交易员筛选与评分
 
@@ -268,6 +283,198 @@ Polymarket 的复制场景里，真正的问题不是能否下单，而是你看
 - 标记为 `BOT_LIKELY` 或 `UNFOLLOWABLE`
 - 允许人工观察
 - 不允许自动执行
+
+### 6.4 V1 同比例跟单设计
+
+如果你现在就要开始做自动化跟单，第一版最稳妥的不是“按净资产比例复制”，而是“按源单成交额同比例复制”。
+
+原因：
+
+1. 第三方钱包的真实可用资金和完整净值并不透明。
+2. 公开数据更稳定的是成交明细、持仓快照和活动序列，而不是账户权益。
+3. 对 V1 来说，按源单名义金额同比例复制，最容易实现、最容易解释、也最容易回测。
+
+#### 6.4.1 核心定义
+
+V1 建议把“同比例”定义为：
+
+`我方下单名义金额 = 源交易名义金额 * copy_ratio`
+
+例如：
+
+- 源地址买入 800 USDC 的 Yes
+- `copy_ratio = 0.25`
+- 我方目标下单金额 = 200 USDC
+
+建议先不要做：
+
+- 按账户净值动态缩放
+- 按已实现收益自动加杠杆
+- 多策略共享资金池自动再平衡
+
+这些都适合第二阶段再做。
+
+#### 6.4.2 开仓、加仓、减仓、平仓怎么映射
+
+要让同比例跟单真正可用，不能只复制 BUY，还要复制仓位变化。
+
+建议把源地址行为先转成 4 类内部信号：
+
+1. `OPEN`
+2. `ADD`
+3. `REDUCE`
+4. `CLOSE`
+
+V1 推荐规则：
+
+1. 如果源地址在某个 `condition_id + outcome` 上从 0 增到正数，记为 `OPEN`
+2. 如果原本已有仓位，本次同方向继续增加，记为 `ADD`
+3. 如果仓位减少但未归零，记为 `REDUCE`
+4. 如果仓位降到 0，记为 `CLOSE`
+
+这里的关键不是直接看单笔 `BUY/SELL`，而是维护一份“源地址影子仓位”。
+
+#### 6.4.3 为什么必须维护影子仓位
+
+只看单笔成交方向会出错，因为：
+
+1. 同一市场可能多次分批建仓。
+2. `SELL` 既可能是减仓，也可能是反手。
+3. 一笔订单可能拆成多笔 fill；单条明细无法表达完整仓位意图。
+
+因此建议新增一张内部状态表：
+
+- `polymarket_copy_source_positions`
+
+核心字段建议：
+
+- `strategy_id`
+- `source_wallet`
+- `condition_id`
+- `asset`
+- `outcome`
+- `estimated_source_size`
+- `estimated_source_notional_usdc`
+- `estimated_source_avg_price`
+- `last_source_activity_at`
+- `last_source_tx_hash`
+
+这张表不是链上真值，而是“为了做跟单决策而维护的源地址仓位影子账本”。
+
+#### 6.4.4 V1 下单公式
+
+对于 `OPEN` / `ADD`：
+
+`my_order_usdc = min(source_trade_usdc * copy_ratio, max_order_usdc, available_risk_budget)`
+
+再叠加以下过滤：
+
+1. 如果 `my_order_usdc < min_copy_order_usdc`，直接跳过
+2. 如果会导致单市场暴露超过 `max_market_exposure_usdc`，则截断或跳过
+3. 如果会导致总仓位超过 `max_position_notional_usdc`，则截断或跳过
+4. 如果当前盘口滑点超过阈值，直接跳过
+
+对于 `REDUCE` / `CLOSE`，不要再按固定金额复制，而要按“比例平仓”：
+
+`source_reduce_ratio = source_reduced_size / source_position_before`
+
+`my_reduce_size = my_position_before * source_reduce_ratio`
+
+这样做的好处是：
+
+1. 如果源地址减仓 30%，我方也减仓 30%
+2. 如果源地址全平，我方也全平
+3. 不依赖源地址的绝对金额是否和我方完全一致
+
+这是同比例跟单里最重要的一条，否则开仓是同比例，平仓会失真。
+
+#### 6.4.5 V1 强制约束
+
+为了让同比例跟单能先跑起来，建议 V1 加硬限制：
+
+1. 只跟 `TRADE` 事件，不处理 `MERGE` / `SPLIT` / `REDEEM`
+2. 只允许跟随白名单市场
+3. 只允许单向跟随，不做反手
+4. 若我方还没有对应持仓，则不执行 `REDUCE`，避免状态错乱
+5. 若源地址在极短时间内连续切换方向，直接进入冷却期
+6. 若检测到订单被拆成多笔 fill，只生成一个内部信号
+
+#### 6.4.6 建议的执行链路
+
+建议做法：
+
+1. 后台轮询目标钱包最新 activity
+2. 把同一订单意图的多笔 fill 聚合成一个有效成交
+3. 用影子仓位识别它是 `OPEN/ADD/REDUCE/CLOSE`
+4. 根据 `copy_ratio` 计算我方目标名义金额或减仓比例
+5. 运行风控：延迟、滑点、单笔金额、单市场暴露、总风险预算
+6. 生成激进限价单
+7. 提交订单并记录 source signal -> internal signal -> order -> fill 全链路
+8. 更新我方策略持仓和源地址影子仓位
+
+#### 6.4.7 幂等键建议
+
+同比例跟单比普通信号跟单更怕重复执行，因为重复一次就会把仓位倍率放大。
+
+V1 建议幂等键：
+
+- `strategy_id + source_wallet + signal_type + condition_id + asset + source_group_key`
+
+其中 `source_group_key` 建议来自：
+
+- 同一订单撮合聚合后的 `transaction_hash`
+- 或你内部生成的 grouped trade key
+
+#### 6.4.8 API 和配置建议
+
+如果先做同比例跟单，策略创建接口建议至少支持这些字段：
+
+- `copy_mode`
+- `copy_ratio`
+- `min_copy_order_usdc`
+- `max_order_usdc`
+- `max_position_notional_usdc`
+- `max_market_exposure_usdc`
+- `max_signal_delay_seconds`
+- `max_slippage_bps`
+- `close_only`
+- `dry_run`
+
+推荐默认值：
+
+- `copy_mode = proportional_notional`
+- `copy_ratio = 0.1`
+- `min_copy_order_usdc = 20`
+- `max_order_usdc = 200`
+- `max_signal_delay_seconds = 120`
+- `max_slippage_bps = 80`
+- `dry_run = true`
+
+#### 6.4.9 V1 不要做的事
+
+为了避免第一版过重，建议暂时不要做：
+
+1. 多源钱包合并跟单
+2. 自动再平衡到“和源地址一样的总仓位结构”
+3. 按源地址净值动态倍率调整
+4. 跟随挂单和撤单，只跟最终成交
+5. 全市场自动开放，先做白名单市场
+
+#### 6.4.10 我的建议结论
+
+如果现在就要落地第一版自动化跟单，建议从这条最小闭环开始：
+
+1. 只支持单个源钱包
+2. 只支持 `copy_mode=proportional_notional`
+3. 开仓/加仓按源单金额 * `copy_ratio`
+4. 减仓/平仓按源仓位变化比例同步
+5. 只做轮询 + 激进限价单 + 强风控 + dry-run
+
+这条路径最适合你当前仓库现状，因为：
+
+1. 你已经有交易员分析、聚合成交和可跟单性判断
+2. 只差策略、信号、影子仓位和执行闭环
+3. 先用同比例跟单验证“是否跟得上”，比一开始做复杂资金管理更有价值
 
 ## 7. 和现有系统怎么接
 

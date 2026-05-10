@@ -14,6 +14,13 @@ from app.schemas.polymarket import (
     PolymarketTraderProfile,
     PolymarketTraderSummary,
 )
+from app.schemas.polymarket_copy import (
+    PolymarketCopySimulationRequest,
+    PolymarketCopySimulationResult,
+    PolymarketCopySimulationSignal,
+    PolymarketCopySimulationSummary,
+    PolymarketCopyStrategyRead,
+)
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "app" / "api" / "v1" / "polymarket.py"
@@ -235,3 +242,112 @@ def test_get_polymarket_trader_profile_endpoint(monkeypatch):
     payload = response.json()
     assert payload["name"] == "Trader One"
     assert payload["followability"]["score"] == 81.0
+
+
+def _copy_strategy(strategy_id: int = 1) -> PolymarketCopyStrategyRead:
+    now = datetime.utcnow()
+    return PolymarketCopyStrategyRead(
+        id=strategy_id,
+        strategy_name="测试同比例跟单",
+        source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+        status="draft",
+        copy_mode="proportional_notional",
+        copy_ratio=0.25,
+        min_copy_order_usdc=20.0,
+        max_order_usdc=200.0,
+        max_position_notional_usdc=1000.0,
+        max_market_exposure_usdc=500.0,
+        max_signal_delay_seconds=120,
+        max_slippage_bps=80,
+        close_only=False,
+        dry_run=True,
+        same_outcome_only=True,
+        follow_reduce_only_after_open=True,
+        allow_partial_close_sync=True,
+        signal_cooldown_seconds=15,
+        allowed_markets=[],
+        blocked_markets=[],
+        notes=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_create_polymarket_copy_strategy_endpoint(monkeypatch):
+    def fake_create_strategy(payload):
+        assert payload.strategy_name == "测试同比例跟单"
+        assert payload.copy_ratio == 0.25
+        return _copy_strategy(3)
+
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "create_strategy", fake_create_strategy)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/polymarket/strategies",
+        json={
+            "strategy_name": "测试同比例跟单",
+            "source_wallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "copy_ratio": 0.25,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == 3
+    assert payload["copy_mode"] == "proportional_notional"
+
+
+def test_simulate_polymarket_copy_strategy_endpoint(monkeypatch):
+    async def fake_simulate(strategy_id, payload: PolymarketCopySimulationRequest):
+        assert strategy_id == 5
+        assert payload.lookback_hours == 96
+        return PolymarketCopySimulationResult(
+            strategy=_copy_strategy(5),
+            simulation_run_id=8,
+            lookback_hours=payload.lookback_hours,
+            activity_limit=payload.activity_limit,
+            summary=PolymarketCopySimulationSummary(
+                raw_trade_count=12,
+                grouped_trade_count=8,
+                simulated_signal_count=8,
+                executed_signal_count=6,
+                skipped_signal_count=2,
+                total_source_notional_usdc=640.0,
+                total_copied_notional_usdc=160.0,
+                skip_reason_counts={"below_min_copy_order": 2},
+            ),
+            signals=[
+                PolymarketCopySimulationSignal(
+                    signal_index=1,
+                    signal_type="OPEN",
+                    source_timestamp=datetime.utcnow(),
+                    title="Test market",
+                    condition_id="0xmarket",
+                    asset="0xasset",
+                    outcome="Yes",
+                    side="BUY",
+                    source_trade_usdc=100.0,
+                    source_position_before=0.0,
+                    source_position_after=200.0,
+                    follower_order_usdc=25.0,
+                    follower_position_before=0.0,
+                    follower_position_after=50.0,
+                    status="executed",
+                )
+            ],
+            notes=["测试"],
+        )
+
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "simulate_strategy", fake_simulate)
+
+    client = TestClient(create_test_app())
+    response = client.post(
+        "/api/v1/polymarket/strategies/5/simulate",
+        json={"lookback_hours": 96, "activity_limit": 150},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["simulation_run_id"] == 8
+    assert payload["summary"]["executed_signal_count"] == 6
+    assert payload["signals"][0]["signal_type"] == "OPEN"

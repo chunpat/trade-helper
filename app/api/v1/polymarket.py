@@ -10,6 +10,13 @@ from app.schemas.polymarket import (
     PolymarketTraderProfile,
     PolymarketTraderSummary,
 )
+from app.schemas.polymarket_copy import (
+    PolymarketCopySimulationRequest,
+    PolymarketCopySimulationResult,
+    PolymarketCopyStrategyCreate,
+    PolymarketCopyStrategyRead,
+)
+from app.services.polymarket_copy_service import polymarket_copy_service
 from app.services.polymarket_data_client import PolymarketAPIError
 from app.services.polymarket_trader_cache_service import polymarket_trader_cache_service
 from app.services.polymarket_trader_analytics_service import polymarket_trader_analytics_service
@@ -140,3 +147,36 @@ async def get_polymarket_trader_followability(wallet: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PolymarketAPIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/strategies", response_model=PolymarketCopyStrategyRead)
+async def create_polymarket_copy_strategy(payload: PolymarketCopyStrategyCreate):
+    try:
+        return polymarket_copy_service.create_strategy(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/strategies/{strategy_id}", response_model=PolymarketCopyStrategyRead)
+async def get_polymarket_copy_strategy(strategy_id: int):
+    strategy = polymarket_copy_service.get_strategy(strategy_id)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    return strategy
+
+
+@router.post("/strategies/{strategy_id}/simulate", response_model=PolymarketCopySimulationResult)
+async def simulate_polymarket_copy_strategy(
+    strategy_id: int,
+    payload: PolymarketCopySimulationRequest,
+):
+    try:
+        result = await polymarket_copy_service.simulate_strategy(strategy_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PolymarketAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    return result
