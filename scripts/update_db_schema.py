@@ -83,6 +83,13 @@ def update_schema():
                 ensure_column(
                     cursor,
                     "polymarket_copy_strategies",
+                    "execution_account_id",
+                    "ALTER TABLE polymarket_copy_strategies ADD COLUMN execution_account_id INT NULL AFTER source_wallet",
+                    "Column 'execution_account_id' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_strategies",
                     "runner_lookback_hours",
                     "ALTER TABLE polymarket_copy_strategies ADD COLUMN runner_lookback_hours INT NOT NULL DEFAULT 24 AFTER signal_cooldown_seconds",
                     "Column 'runner_lookback_hours' added successfully.",

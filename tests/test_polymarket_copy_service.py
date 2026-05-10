@@ -12,6 +12,7 @@ from app.models.polymarket_copy import (
     PolymarketCopySourcePosition,
     PolymarketCopyStrategy,
 )
+from app.models.risk_control import Account
 from app.schemas.polymarket_copy import PolymarketCopySimulationRequest, PolymarketCopyStrategyCreate
 from app.services.polymarket_copy_service import PolymarketCopyService
 from app.services.polymarket_trader_analytics_service import PolymarketTraderAnalyticsService
@@ -53,6 +54,7 @@ def _build_session_factory():
     Base.metadata.create_all(
         bind=engine,
         tables=[
+            Account.__table__,
             PolymarketCopyStrategy.__table__,
             PolymarketCopySimulationRun.__table__,
             PolymarketCopySourcePosition.__table__,
@@ -60,6 +62,27 @@ def _build_session_factory():
         ],
     )
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+
+def _create_account(session_factory, *, account_id: int = 1, exchange: str = "binance", is_active: bool = True):
+    db = session_factory()
+    try:
+        account = Account(
+            id=account_id,
+            name=f"Test Account {account_id}",
+            exchange=exchange,
+            api_key="key",
+            api_secret="secret",
+            api_passphrase="passphrase" if exchange == "okx" else None,
+            is_active=is_active,
+            settings={},
+        )
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+        return account
+    finally:
+        db.close()
 
 
 def test_create_strategy_persists_defaults():
@@ -79,6 +102,48 @@ def test_create_strategy_persists_defaults():
     assert strategy.copy_mode == "proportional_notional"
     assert strategy.copy_ratio == 0.2
     assert strategy.status == "draft"
+
+
+def test_create_live_strategy_requires_active_execution_account():
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient())
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    _create_account(session_factory, account_id=7, exchange="binance", is_active=True)
+
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="真实策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+            execution_account_id=7,
+            dry_run=False,
+            copy_ratio=0.2,
+        )
+    )
+
+    assert strategy.execution_account_id == 7
+    assert strategy.execution_account_name == "Test Account 7"
+    assert strategy.execution_account_exchange == "binance"
+    assert strategy.dry_run is False
+
+
+def test_create_live_strategy_rejects_missing_execution_account():
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient())
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    try:
+        service.create_strategy(
+            payload=PolymarketCopyStrategyCreate(
+                strategy_name="真实策略",
+                source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+                dry_run=False,
+                copy_ratio=0.2,
+            )
+        )
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert str(exc) == "真实交易模式必须绑定一个有效的交易账户"
 
 
 def test_simulate_strategy_builds_proportional_open_and_close_signals():
@@ -271,6 +336,29 @@ def test_run_cycle_persists_shadow_positions_and_processes_incremental_trades_on
     assert stopped is not None
     assert stopped.status == "stopped"
     assert stopped.last_stopped_at is not None
+
+
+def test_start_live_strategy_is_blocked_without_execution_adapter():
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient())
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    _create_account(session_factory, account_id=9, exchange="binance", is_active=True)
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="真实策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+            execution_account_id=9,
+            dry_run=False,
+            copy_ratio=0.2,
+        )
+    )
+
+    try:
+        service.start_strategy(strategy.id)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert str(exc) == "当前仓库尚未实现 Polymarket 私有下单适配器，暂时不能启动真实交易策略"
 
 
 def test_run_cycle_paginates_incremental_activity_fetch_for_active_wallets():

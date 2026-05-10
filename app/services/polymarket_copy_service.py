@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.core.database import SessionLocal
+from app.models.risk_control import Account
 from app.models.polymarket_copy import (
     PolymarketCopySignalLog,
     PolymarketCopySourcePosition,
@@ -39,9 +40,15 @@ class PolymarketCopyService:
         wallet = self.analytics_service.normalize_wallet(payload.source_wallet)
         db = self.session_factory()
         try:
+            execution_account = self._validate_execution_account(
+                db,
+                payload.execution_account_id,
+                require_for_live=not payload.dry_run,
+            )
             strategy = PolymarketCopyStrategy(
                 strategy_name=payload.strategy_name.strip(),
                 source_wallet=wallet,
+                execution_account_id=execution_account.id if execution_account else None,
                 status="draft",
                 copy_mode=payload.copy_mode,
                 copy_ratio=payload.copy_ratio,
@@ -66,7 +73,7 @@ class PolymarketCopyService:
             db.add(strategy)
             db.commit()
             db.refresh(strategy)
-            return self._to_strategy_read(strategy)
+            return self._to_strategy_read(strategy, execution_account=execution_account)
         except Exception:
             db.rollback()
             raise
@@ -77,7 +84,10 @@ class PolymarketCopyService:
         db = self.session_factory()
         try:
             row = db.query(PolymarketCopyStrategy).filter(PolymarketCopyStrategy.id == strategy_id).first()
-            return self._to_strategy_read(row) if row else None
+            if row is None:
+                return None
+            execution_account = self._load_execution_account(db, row.execution_account_id)
+            return self._to_strategy_read(row, execution_account=execution_account)
         finally:
             db.close()
 
@@ -85,7 +95,9 @@ class PolymarketCopyService:
         db = self.session_factory()
         try:
             rows = db.query(PolymarketCopyStrategy).order_by(PolymarketCopyStrategy.created_at.desc()).all()
-            return [self._to_strategy_read(row) for row in rows]
+            account_ids = {row.execution_account_id for row in rows if row.execution_account_id is not None}
+            accounts = self._load_execution_accounts(db, account_ids)
+            return [self._to_strategy_read(row, execution_account=accounts.get(row.execution_account_id)) for row in rows]
         finally:
             db.close()
 
@@ -115,6 +127,8 @@ class PolymarketCopyService:
             row = db.query(PolymarketCopyStrategy).filter(PolymarketCopyStrategy.id == strategy_id).first()
             if row is None:
                 return None
+            if status == "running":
+                self._validate_startable_strategy(db, row)
             row.status = status
             if status == "running":
                 row.last_started_at = datetime.utcnow()
@@ -123,12 +137,51 @@ class PolymarketCopyService:
                 row.last_stopped_at = datetime.utcnow()
             db.commit()
             db.refresh(row)
-            return self._to_strategy_read(row)
+            execution_account = self._load_execution_account(db, row.execution_account_id)
+            return self._to_strategy_read(row, execution_account=execution_account)
         except Exception:
             db.rollback()
             raise
         finally:
             db.close()
+
+    def _validate_startable_strategy(self, db: Any, row: PolymarketCopyStrategy) -> None:
+        if row.dry_run:
+            return
+        self._validate_execution_account(db, row.execution_account_id, require_for_live=True)
+        raise ValueError("当前仓库尚未实现 Polymarket 私有下单适配器，暂时不能启动真实交易策略")
+
+    def _validate_execution_account(
+        self,
+        db: Any,
+        execution_account_id: Optional[int],
+        *,
+        require_for_live: bool,
+    ) -> Optional[Account]:
+        if execution_account_id is None:
+            if require_for_live:
+                raise ValueError("真实交易模式必须绑定一个有效的交易账户")
+            return None
+
+        account = db.query(Account).filter(Account.id == execution_account_id).first()
+        if account is None:
+            raise ValueError("绑定的交易账户不存在")
+        if not account.is_active:
+            raise ValueError("绑定的交易账户已停用，无法用于真实交易")
+        return account
+
+    @staticmethod
+    def _load_execution_account(db: Any, execution_account_id: Optional[int]) -> Optional[Account]:
+        if execution_account_id is None:
+            return None
+        return db.query(Account).filter(Account.id == execution_account_id).first()
+
+    @staticmethod
+    def _load_execution_accounts(db: Any, account_ids: set[int]) -> Dict[int, Account]:
+        if not account_ids:
+            return {}
+        rows = db.query(Account).filter(Account.id.in_(account_ids)).all()
+        return {row.id: row for row in rows}
 
     async def simulate_strategy(
         self,
@@ -694,10 +747,12 @@ class PolymarketCopyService:
         )
 
     @staticmethod
-    def _to_strategy_read(row: PolymarketCopyStrategy) -> PolymarketCopyStrategyRead:
+    def _to_strategy_read(row: PolymarketCopyStrategy, execution_account: Optional[Account] = None) -> PolymarketCopyStrategyRead:
         return PolymarketCopyStrategyRead.model_validate(
             {
                 **row.to_dict(),
+                "execution_account_name": execution_account.name if execution_account else None,
+                "execution_account_exchange": execution_account.exchange if execution_account else None,
                 "allowed_markets": row.allowed_markets or [],
                 "blocked_markets": row.blocked_markets or [],
             }

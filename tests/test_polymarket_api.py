@@ -252,6 +252,9 @@ def _copy_strategy(strategy_id: int = 1) -> PolymarketCopyStrategyRead:
         id=strategy_id,
         strategy_name="测试同比例跟单",
         source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+        execution_account_id=3,
+        execution_account_name="主账户",
+        execution_account_exchange="binance",
         status="draft",
         copy_mode="proportional_notional",
         copy_ratio=0.25,
@@ -285,6 +288,7 @@ def test_create_polymarket_copy_strategy_endpoint(monkeypatch):
     def fake_create_strategy(payload):
         assert payload.strategy_name == "测试同比例跟单"
         assert payload.copy_ratio == 0.25
+        assert payload.execution_account_id == 3
         return _copy_strategy(3)
 
     monkeypatch.setattr(polymarket_api.polymarket_copy_service, "create_strategy", fake_create_strategy)
@@ -295,6 +299,7 @@ def test_create_polymarket_copy_strategy_endpoint(monkeypatch):
         json={
             "strategy_name": "测试同比例跟单",
             "source_wallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "execution_account_id": 3,
             "copy_ratio": 0.25,
         },
     )
@@ -303,6 +308,7 @@ def test_create_polymarket_copy_strategy_endpoint(monkeypatch):
     payload = response.json()
     assert payload["id"] == 3
     assert payload["copy_mode"] == "proportional_notional"
+    assert payload["execution_account_id"] == 3
 
 
 def test_simulate_polymarket_copy_strategy_endpoint(monkeypatch):
@@ -400,6 +406,19 @@ def test_start_stop_polymarket_copy_strategy_endpoints(monkeypatch):
     assert start_response.json()["status"] == "running"
     assert stop_response.status_code == 200
     assert stop_response.json()["status"] == "stopped"
+
+
+def test_start_polymarket_copy_strategy_endpoint_returns_400_for_live_block(monkeypatch):
+    def fake_start(_strategy_id: int):
+        raise ValueError("当前仓库尚未实现 Polymarket 私有下单适配器，暂时不能启动真实交易策略")
+
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "start_strategy", fake_start)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/polymarket/strategies/7/start")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "当前仓库尚未实现 Polymarket 私有下单适配器，暂时不能启动真实交易策略"
 
 
 def test_list_polymarket_copy_strategy_runs_endpoint(monkeypatch):

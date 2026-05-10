@@ -32,6 +32,33 @@
               <el-input v-model="form.source_wallet" placeholder="0x..." />
             </el-form-item>
 
+            <el-form-item label="执行模式">
+              <el-switch v-model="form.dry_run" active-text="dry-run" inactive-text="真实交易" />
+            </el-form-item>
+
+            <el-form-item label="执行账户">
+              <div class="account-picker-row">
+                <el-select v-model="form.execution_account_id" clearable filterable placeholder="请选择真实交易账户" style="width: 100%">
+                  <el-option
+                    v-for="account in accounts"
+                    :key="account.id"
+                    :label="`${account.name || '未命名账户'} · ${String(account.exchange || '').toUpperCase()}${account.is_active ? '' : ' · 已停用'}`"
+                    :value="account.id"
+                    :disabled="!account.is_active"
+                  />
+                </el-select>
+                <el-button :loading="loadingAccounts" @click="showAddAccountDialog">添加账户</el-button>
+              </div>
+              <div class="field-hint">dry-run 可不绑定账户；切到真实交易模式时必须先绑定一个启用中的账户。</div>
+              <el-alert
+                v-if="!form.dry_run"
+                type="warning"
+                :closable="false"
+                show-icon
+                title="当前仓库尚未接入 Polymarket 私有下单适配器；这里先完成真实账户绑定，启动 live 策略时后端会明确阻断。"
+              />
+            </el-form-item>
+
             <el-row :gutter="12">
               <el-col :span="12">
                 <el-form-item label="copy ratio">
@@ -85,7 +112,6 @@
             </el-row>
 
             <div class="switch-row">
-              <el-switch v-model="form.dry_run" active-text="dry-run" inactive-text="live" />
               <el-switch v-model="form.close_only" active-text="close-only" inactive-text="可开仓" />
             </div>
 
@@ -147,6 +173,14 @@
           <template #default="scope">
             <el-tag :type="scope.row.status === 'running' ? 'success' : 'info'" size="small">{{ scope.row.status }}</el-tag>
           </template>
+        </el-table-column>
+        <el-table-column label="模式" width="100">
+          <template #default="scope">
+            <el-tag :type="scope.row.dry_run ? 'info' : 'danger'" size="small">{{ scope.row.dry_run ? 'dry-run' : 'live' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="执行账户" min-width="180">
+          <template #default="scope">{{ formatExecutionAccount(scope.row) }}</template>
         </el-table-column>
         <el-table-column label="倍率" width="90" align="right">
           <template #default="scope">{{ scope.row.copy_ratio.toFixed(2) }}x</template>
@@ -218,19 +252,58 @@
         </el-card>
       </el-col>
     </el-row>
+
+    <el-dialog
+      v-model="accountDialogVisible"
+      title="添加真实交易账户"
+      width="520px"
+      :close-on-click-modal="false"
+    >
+      <el-form ref="accountFormRef" :model="accountForm" :rules="accountRules" label-position="top">
+        <el-form-item label="账户名称" prop="name">
+          <el-input v-model="accountForm.name" placeholder="例如：主账户 / OKX 量化账户" />
+        </el-form-item>
+        <el-form-item label="交易所" prop="exchange">
+          <el-select v-model="accountForm.exchange" placeholder="请选择交易所" style="width: 100%">
+            <el-option label="Binance" value="binance" />
+            <el-option label="OKX" value="okx" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="API Key" prop="api_key">
+          <el-input v-model="accountForm.api_key" placeholder="请输入 API Key" />
+        </el-form-item>
+        <el-form-item label="API Secret" prop="api_secret">
+          <el-input v-model="accountForm.api_secret" type="password" show-password placeholder="请输入 API Secret" />
+        </el-form-item>
+        <el-form-item v-if="accountRequiresPassphrase" label="Passphrase" prop="api_passphrase">
+          <el-input v-model="accountForm.api_passphrase" type="password" show-password placeholder="请输入 OKX API Passphrase" />
+        </el-form-item>
+        <el-form-item label="初始资金" prop="initial_balance">
+          <el-input-number v-model="accountForm.initial_balance" :min="0" :precision="2" :step="1000" style="width: 100%" />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <div class="form-actions">
+          <el-button @click="accountDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="creatingAccount" @click="createAccount">创建账户</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { polymarket } from '@/api'
+import { polymarket, riskControl } from '@/api'
 import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
 import { formatPolymarketMoney, shortenPolymarketWallet } from '@/utils/polymarket'
 
 const defaultForm = () => ({
   strategy_name: '',
   source_wallet: '',
+  execution_account_id: null,
   copy_ratio: 0.1,
   min_copy_order_usdc: 20,
   max_order_usdc: 200,
@@ -244,28 +317,90 @@ const defaultForm = () => ({
   close_only: false
 })
 
+const defaultAccountForm = () => ({
+  name: '',
+  exchange: 'binance',
+  api_key: '',
+  api_secret: '',
+  api_passphrase: '',
+  initial_balance: 0
+})
+
 export default {
   name: 'PolymarketCopyStrategies',
   setup() {
     const form = reactive(defaultForm())
+    const accountForm = reactive(defaultAccountForm())
     const strategies = ref([])
+    const accounts = ref([])
     const selectedStrategy = ref(null)
     const strategyRuns = ref([])
     const latestSimulation = ref(null)
     const runnerStatus = ref({ running: false, interval_seconds: 0, strategy_count: 0 })
     const loadingStrategies = ref(false)
+    const loadingAccounts = ref(false)
     const loadingRunnerStatus = ref(false)
     const loadingRuns = ref(false)
     const creatingStrategy = ref(false)
+    const creatingAccount = ref(false)
     const actingStrategyId = ref(null)
     const actionType = ref('')
+    const accountDialogVisible = ref(false)
+    const accountFormRef = ref(null)
+
+    const accountRequiresPassphrase = computed(() => accountForm.exchange === 'okx')
+    const accountRules = {
+      name: [{ required: true, message: '请输入账户名称', trigger: 'blur' }],
+      exchange: [{ required: true, message: '请选择交易所', trigger: 'change' }],
+      api_key: [{ required: true, message: '请输入 API Key', trigger: 'blur' }],
+      api_secret: [{ required: true, message: '请输入 API Secret', trigger: 'blur' }],
+      api_passphrase: [{
+        validator: (_rule, value, callback) => {
+          if (accountForm.exchange === 'okx' && !String(value || '').trim()) {
+            callback(new Error('OKX 账户必须填写 Passphrase'))
+            return
+          }
+          callback()
+        },
+        trigger: 'blur'
+      }]
+    }
 
     const formatMoney = value => formatPolymarketMoney(value)
     const shortenWallet = value => shortenPolymarketWallet(value)
     const formatDateTime = value => (value ? formatDisplayDateTime(value) : '-')
+    const formatExecutionAccount = strategy => {
+      if (!strategy?.execution_account_id) {
+        return strategy?.dry_run ? '未绑定（dry-run）' : '未绑定'
+      }
+      if (strategy.execution_account_name && strategy.execution_account_exchange) {
+        return `${strategy.execution_account_name} · ${String(strategy.execution_account_exchange).toUpperCase()}`
+      }
+      const account = accounts.value.find(item => item.id === strategy.execution_account_id)
+      if (!account) {
+        return `账户 #${strategy.execution_account_id}`
+      }
+      return `${account.name || `账户 #${account.id}`} · ${String(account.exchange || '').toUpperCase()}`
+    }
 
     const resetForm = () => {
       Object.assign(form, defaultForm())
+    }
+
+    const resetAccountForm = () => {
+      Object.assign(accountForm, defaultAccountForm())
+    }
+
+    const loadAccounts = async () => {
+      loadingAccounts.value = true
+      try {
+        accounts.value = await riskControl.getAccounts()
+      } catch (error) {
+        console.error('Failed to load accounts:', error)
+        ElMessage.error('加载账户列表失败')
+      } finally {
+        loadingAccounts.value = false
+      }
     }
 
     const loadRuns = async strategy => {
@@ -315,9 +450,46 @@ export default {
       await loadRuns(strategy)
     }
 
+    const showAddAccountDialog = () => {
+      resetAccountForm()
+      accountDialogVisible.value = true
+    }
+
+    const createAccount = async () => {
+      if (!accountFormRef.value) {
+        return
+      }
+      accountFormRef.value.validate(async valid => {
+        if (!valid) {
+          return
+        }
+        creatingAccount.value = true
+        try {
+          const created = await riskControl.createAccount({
+            ...accountForm,
+            api_passphrase: accountForm.api_passphrase || null,
+            settings: {}
+          })
+          await loadAccounts()
+          form.execution_account_id = created.id
+          accountDialogVisible.value = false
+          ElMessage.success('账户已创建并绑定到当前策略表单')
+        } catch (error) {
+          console.error('Failed to create account:', error)
+          ElMessage.error(error?.response?.data?.detail || '创建账户失败')
+        } finally {
+          creatingAccount.value = false
+        }
+      })
+    }
+
     const createStrategy = async () => {
       if (!form.strategy_name || !form.source_wallet) {
         ElMessage.warning('请先填写策略名称和源钱包地址')
+        return
+      }
+      if (!form.dry_run && !form.execution_account_id) {
+        ElMessage.warning('真实交易模式必须先绑定一个执行账户')
         return
       }
       creatingStrategy.value = true
@@ -391,30 +563,43 @@ export default {
     }
 
     onMounted(async () => {
-      await Promise.all([loadStrategies(), loadRunnerStatus()])
+      await Promise.all([loadStrategies(), loadRunnerStatus(), loadAccounts()])
     })
 
     return {
       form,
+      accountForm,
       strategies,
+      accounts,
       selectedStrategy,
       strategyRuns,
       latestSimulation,
       runnerStatus,
       loadingStrategies,
+      loadingAccounts,
       loadingRunnerStatus,
       loadingRuns,
       creatingStrategy,
+      creatingAccount,
       actingStrategyId,
       actionType,
+      accountDialogVisible,
+      accountFormRef,
+      accountRequiresPassphrase,
+      accountRules,
       formatMoney,
       shortenWallet,
       formatDateTime,
+      formatExecutionAccount,
       resetForm,
+      resetAccountForm,
       loadStrategies,
+      loadAccounts,
       loadRunnerStatus,
       loadRuns,
       selectStrategy,
+      showAddAccountDialog,
+      createAccount,
       createStrategy,
       simulateStrategy,
       startStrategy,
@@ -465,10 +650,21 @@ export default {
 .hero-actions,
 .form-actions,
 .table-actions,
-.switch-row {
+.switch-row,
+.account-picker-row {
   display: flex;
   gap: 12px;
   align-items: center;
+}
+
+.account-picker-row {
+  width: 100%;
+}
+
+.field-hint {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  color: #64748b;
 }
 
 .top-grid,

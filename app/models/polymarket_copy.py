@@ -12,6 +12,7 @@ class PolymarketCopyStrategy(Base, BaseMixin):
 
     strategy_name = Column(String(120), nullable=False)
     source_wallet = Column(String(64), nullable=False, index=True)
+    execution_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True, index=True)
     status = Column(String(20), nullable=False, default="draft")
     copy_mode = Column(String(32), nullable=False, default="proportional_notional")
     copy_ratio = Column(Float, nullable=False, default=0.1)

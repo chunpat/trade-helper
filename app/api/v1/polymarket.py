@@ -175,7 +175,10 @@ async def get_polymarket_copy_strategy(strategy_id: int):
 
 @router.post("/strategies/{strategy_id}/start", response_model=PolymarketCopyStrategyRead)
 async def start_polymarket_copy_strategy(strategy_id: int):
-    strategy = polymarket_copy_service.start_strategy(strategy_id)
+    try:
+        strategy = polymarket_copy_service.start_strategy(strategy_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if strategy is None:
         raise HTTPException(status_code=404, detail="strategy not found")
     return strategy

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class PolymarketCopyStrategyCreate(BaseModel):
     strategy_name: str = Field(..., min_length=1, max_length=120)
     source_wallet: str = Field(..., min_length=42, max_length=42)
+    execution_account_id: Optional[int] = Field(None, ge=1)
     copy_mode: str = Field("proportional_notional")
     copy_ratio: float = Field(0.1, gt=0, le=1)
     min_copy_order_usdc: float = Field(20.0, ge=0)
@@ -34,6 +35,9 @@ class PolymarketCopyStrategyRead(BaseModel):
     id: int
     strategy_name: str
     source_wallet: str
+    execution_account_id: Optional[int] = None
+    execution_account_name: Optional[str] = None
+    execution_account_exchange: Optional[str] = None
     status: str
     copy_mode: str
     copy_ratio: float
