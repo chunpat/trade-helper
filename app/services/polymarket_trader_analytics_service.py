@@ -355,19 +355,28 @@ class PolymarketTraderAnalyticsService:
     def _detect_trader_style(
         self,
         *,
+        trade_count_24h: int,
         trade_count_30d: int,
         median_interval_seconds: Optional[float],
+        trades_per_hour_30d: Optional[float],
         top_market_share: Optional[float],
         open_positions_count: int,
     ) -> str:
         if median_interval_seconds is not None and median_interval_seconds < 60:
             return "high_frequency"
-        if trade_count_30d >= 120:
+        if trades_per_hour_30d is not None and trades_per_hour_30d >= 4:
+            return "high_frequency"
+        if trade_count_24h >= 60:
             return "high_frequency"
         if top_market_share is not None and top_market_share >= 0.65:
             return "specialist"
         if open_positions_count >= 8:
             return "broad_portfolio"
+        if trade_count_30d >= 120:
+            return "active_systematic"
+        if median_interval_seconds is not None and median_interval_seconds <= 900:
+            if trades_per_hour_30d is not None and trades_per_hour_30d >= 0.5:
+                return "active_systematic"
         return "discretionary"
 
     def _build_followability(
@@ -568,8 +577,10 @@ class PolymarketTraderAnalyticsService:
         open_positions_value = self._safe_sum(item.current_value for item in open_positions)
         latest_activity_at = max((item.timestamp for item in activities if item.timestamp), default=None)
         trader_style = self._detect_trader_style(
+            trade_count_24h=len(grouped_trades_24h),
             trade_count_30d=len(grouped_trades_30d),
             median_interval_seconds=median_interval_seconds,
+            trades_per_hour_30d=trades_per_hour_30d,
             top_market_share=top_market_share_30d,
             open_positions_count=len(open_positions),
         )
@@ -592,7 +603,9 @@ class PolymarketTraderAnalyticsService:
         if followability.likely_bot:
             notes.append("当前行为更偏程序化，建议先模拟跟单再考虑实盘")
         if trader_style == "high_frequency" and (realized_pnl_30d or 0) > 0:
-            notes.append("该账户偏量化/高频风格，人工复制性一般，但可进一步评估自动化跟单可行性")
+            notes.append("该账户属于秒级或近秒级高频风格，人工复制性较弱，更适合低延迟自动化执行")
+        elif trader_style == "active_systematic":
+            notes.append("该账户偏活跃量化/系统化风格；若成交间隔稳定在数分钟级别且盘口深度足够，自动跟单通常仍可评估")
         if win_rate_30d is None:
             notes.append("近30天平仓样本不足，胜率仅供参考")
         if len(grouped_trades_30d) == 0:

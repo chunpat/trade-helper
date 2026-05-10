@@ -59,6 +59,7 @@ export function formatPolymarketTraderStyle(style) {
   return {
     discretionary: '主观交易',
     high_frequency: '高频风格',
+    active_systematic: '活跃量化',
     specialist: '单题材聚焦',
     broad_portfolio: '广覆盖组合'
   }[style] || style || '未知'
@@ -68,6 +69,7 @@ export function getPolymarketStyleTagType(style) {
   return {
     discretionary: 'success',
     high_frequency: 'warning',
+    active_systematic: 'warning',
     specialist: 'primary',
     broad_portfolio: 'info'
   }[style] || 'info'

@@ -181,6 +181,49 @@ def test_analyze_trader_followability_uses_grouped_trades_for_split_fills():
     assert any("聚合成交口径" in note for note in profile.analysis_notes)
 
 
+def test_analyze_trader_classifies_five_minute_cadence_as_active_systematic():
+    now = datetime.utcnow()
+    activity = []
+    for day_offset in range(10):
+        session_start = now - timedelta(days=day_offset * 3)
+        for trade_index in range(18):
+            activity.append(
+                {
+                    "proxyWallet": "0x7777777777777777777777777777777777777777",
+                    "timestamp": int((session_start - timedelta(minutes=trade_index * 5)).timestamp()),
+                    "type": "TRADE",
+                    "conditionId": f"0xmarket-{trade_index % 4}",
+                    "asset": f"0xasset-{trade_index % 2}",
+                    "side": "BUY" if trade_index % 2 == 0 else "SELL",
+                    "outcome": "Yes" if trade_index % 2 == 0 else "No",
+                    "size": 20,
+                    "usdcSize": 35,
+                    "price": 0.55,
+                    "title": "Five minute cadence trader",
+                }
+            )
+
+    closed_positions = [
+        {
+            "conditionId": "0xmarket-1",
+            "realizedPnl": 120,
+            "timestamp": int((now - timedelta(days=2)).timestamp()),
+            "title": "Profitable closed trade",
+            "outcome": "Yes",
+        }
+    ]
+
+    client = FakePolymarketDataClient(activity=activity, positions=[], closed_positions=closed_positions)
+    service = PolymarketTraderAnalyticsService(client=client)
+
+    profile = asyncio.run(service.analyze_trader("0x7777777777777777777777777777777777777777"))
+
+    assert profile.trader_style == "active_systematic"
+    assert profile.followability.likely_bot is False
+    assert profile.followability.median_trade_interval_seconds == 300.0
+    assert any("数分钟级别" in note for note in profile.analysis_notes)
+
+
 def test_list_traders_expands_candidate_discovery_and_dedupes_wallets():
     wallets = [
         "0x1234567890abcdef1234567890abcdef12345678",
