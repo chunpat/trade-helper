@@ -76,6 +76,7 @@ class PolymarketCopySimulationSignal(BaseModel):
     asset: Optional[str] = None
     outcome: Optional[str] = None
     side: Optional[str] = None
+    source_trade_size: float = 0.0
     source_trade_usdc: float = 0.0
     source_position_before: float = 0.0
     source_position_after: float = 0.0

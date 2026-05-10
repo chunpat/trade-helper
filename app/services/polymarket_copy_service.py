@@ -1,10 +1,11 @@
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.core.database import SessionLocal
 from app.models.polymarket_copy import (
     PolymarketCopySignalLog,
+    PolymarketCopySourcePosition,
     PolymarketCopySimulationRun,
     PolymarketCopyStrategy,
 )
@@ -203,10 +204,38 @@ class PolymarketCopyService:
             lookback_hours=strategy.runner_lookback_hours,
             activity_limit=strategy.runner_activity_limit,
         )
-        result = await self.simulate_strategy(strategy_id, payload)
-        if result is None:
-            return None
-        self._persist_signal_logs(strategy_id, result)
+        raw_trades, grouped_trades = await self._load_incremental_grouped_trades(strategy, payload)
+        source_positions, follower_positions = self._load_shadow_positions(strategy_id)
+
+        summary, signals = self._build_simulation_signals(
+            grouped_trades=grouped_trades,
+            strategy=strategy,
+            source_positions=source_positions,
+            follower_positions=follower_positions,
+            raw_trade_count=len(raw_trades),
+        )
+        notes = [
+            "Runner 模式按最新 source activity watermark 增量抓取成交，并持久化 source/follower 影子仓位。",
+            "无新增 grouped trade 时不会写入新的 simulation run。",
+        ]
+
+        run_id = None
+        if grouped_trades:
+            run_id = self._persist_simulation_run(strategy_id, payload, summary)
+
+        result = PolymarketCopySimulationResult(
+            strategy=strategy,
+            simulation_run_id=run_id,
+            lookback_hours=payload.lookback_hours,
+            activity_limit=payload.activity_limit,
+            summary=summary,
+            signals=signals,
+            notes=notes,
+        )
+
+        if grouped_trades:
+            self._persist_shadow_positions(strategy_id, source_positions, follower_positions)
+            self._persist_signal_logs(strategy_id, result)
         self._mark_strategy_run(strategy_id)
         return result
 
@@ -254,6 +283,7 @@ class PolymarketCopyService:
                         asset=signal.asset,
                         outcome=signal.outcome,
                         side=signal.side,
+                        source_trade_size=signal.source_trade_size,
                         source_trade_usdc=signal.source_trade_usdc,
                         follower_order_usdc=signal.follower_order_usdc,
                         skip_reason=signal.skip_reason,
@@ -276,11 +306,29 @@ class PolymarketCopyService:
         return ":".join(
             [
                 str(strategy_id),
-                signal.signal_type,
                 signal.condition_id or "unknown",
                 signal.asset or "unknown",
                 signal.outcome or "unknown",
                 signal.side or "unknown",
+                f"{signal.source_trade_size:.6f}",
+                f"{signal.source_trade_usdc:.6f}",
+                str(timestamp_bucket),
+            ]
+        )
+
+    def _build_trade_idempotency_key(self, strategy_id: int, trade: PolymarketActivityItem) -> str:
+        trade_size = float(trade.size or 0.0)
+        trade_usdc = float(self.analytics_service._trade_usdc_size(trade) or 0.0)
+        timestamp_bucket = int(trade.timestamp.timestamp())
+        return ":".join(
+            [
+                str(strategy_id),
+                trade.condition_id or "unknown",
+                trade.asset or "unknown",
+                trade.outcome or "unknown",
+                trade.side or "unknown",
+                f"{trade_size:.6f}",
+                f"{trade_usdc:.6f}",
                 str(timestamp_bucket),
             ]
         )
@@ -296,6 +344,215 @@ class PolymarketCopyService:
             return [row[0] for row in rows]
         finally:
             db.close()
+
+    async def _load_incremental_grouped_trades(
+        self,
+        strategy: PolymarketCopyStrategyRead,
+        payload: PolymarketCopySimulationRequest,
+    ) -> Tuple[List[PolymarketActivityItem], List[PolymarketActivityItem]]:
+        wallet = self.analytics_service.normalize_wallet(strategy.source_wallet)
+        cutoff = datetime.utcnow() - timedelta(hours=payload.lookback_hours)
+        latest_signal_at = self._get_latest_processed_timestamp(strategy.id)
+        start_at = cutoff
+        if latest_signal_at is not None:
+            overlap_seconds = max(int(strategy.max_signal_delay_seconds), 1)
+            start_at = max(cutoff, latest_signal_at - timedelta(seconds=overlap_seconds))
+
+        page_size = max(int(payload.activity_limit), 1)
+        rows = await self._fetch_activity_pages(
+            wallet,
+            page_size=page_size,
+            start_at=start_at,
+        )
+        activities = [self.analytics_service._activity_item(row) for row in rows]
+        raw_trades = [item for item in activities if item.activity_type == "TRADE" and item.timestamp >= cutoff]
+        grouped_trades = self.analytics_service._group_trade_activities(raw_trades)
+        grouped_trades = sorted(grouped_trades, key=lambda item: item.timestamp)
+
+        recent_keys = self._list_signal_idempotency_keys(strategy.id, cutoff)
+        incremental_trades = [
+            trade for trade in grouped_trades if self._build_trade_idempotency_key(strategy.id, trade) not in recent_keys
+        ]
+        return raw_trades, incremental_trades
+
+    async def _fetch_activity_pages(
+        self,
+        wallet: str,
+        *,
+        page_size: int,
+        start_at: datetime,
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            page_rows = await self.analytics_service.client.get_activity(
+                wallet,
+                limit=page_size,
+                offset=offset,
+                start=int(start_at.timestamp()),
+            )
+            if not page_rows:
+                break
+            rows.extend(page_rows)
+            if len(page_rows) < page_size:
+                break
+            offset += len(page_rows)
+
+        return rows
+
+    def _build_simulation_signals(
+        self,
+        *,
+        grouped_trades: List[PolymarketActivityItem],
+        strategy: PolymarketCopyStrategyRead,
+        source_positions: Dict[Tuple[str, str, str], Dict[str, Any]],
+        follower_positions: Dict[Tuple[str, str, str], Dict[str, Any]],
+        raw_trade_count: int,
+    ) -> Tuple[PolymarketCopySimulationSummary, List[PolymarketCopySimulationSignal]]:
+        signals: List[PolymarketCopySimulationSignal] = []
+        skip_reason_counts: Counter = Counter()
+        total_source_notional = 0.0
+        total_copied_notional = 0.0
+
+        for index, trade in enumerate(grouped_trades, start=1):
+            signal = self._simulate_trade_signal(
+                signal_index=index,
+                trade=trade,
+                strategy=strategy,
+                source_positions=source_positions,
+                follower_positions=follower_positions,
+            )
+            total_source_notional += signal.source_trade_usdc
+            if signal.status == "executed":
+                total_copied_notional += signal.follower_order_usdc
+            elif signal.skip_reason:
+                skip_reason_counts[signal.skip_reason] += 1
+            signals.append(signal)
+
+        summary = PolymarketCopySimulationSummary(
+            raw_trade_count=raw_trade_count,
+            grouped_trade_count=len(grouped_trades),
+            simulated_signal_count=len(signals),
+            executed_signal_count=len([item for item in signals if item.status == "executed"]),
+            skipped_signal_count=len([item for item in signals if item.status == "skipped"]),
+            total_source_notional_usdc=round(total_source_notional, 4),
+            total_copied_notional_usdc=round(total_copied_notional, 4),
+            skip_reason_counts=dict(skip_reason_counts),
+        )
+        return summary, signals
+
+    def _load_shadow_positions(
+        self,
+        strategy_id: int,
+    ) -> Tuple[Dict[Tuple[str, str, str], Dict[str, Any]], Dict[Tuple[str, str, str], Dict[str, Any]]]:
+        db = self.session_factory()
+        try:
+            rows = (
+                db.query(PolymarketCopySourcePosition)
+                .filter(PolymarketCopySourcePosition.strategy_id == strategy_id)
+                .all()
+            )
+            source_positions: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+            follower_positions: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+            for row in rows:
+                key = (row.condition_id, row.asset, row.outcome)
+                source_positions[key] = {
+                    "size": float(row.estimated_source_size or 0.0),
+                    "notional": float(row.estimated_source_notional_usdc or 0.0),
+                    "last_activity_at": row.last_source_activity_at,
+                    "last_tx_hash": row.last_source_tx_hash,
+                }
+                follower_positions[key] = {
+                    "size": float(row.estimated_follower_size or 0.0),
+                    "notional": float(row.estimated_follower_notional_usdc or 0.0),
+                }
+            return source_positions, follower_positions
+        finally:
+            db.close()
+
+    def _persist_shadow_positions(
+        self,
+        strategy_id: int,
+        source_positions: Dict[Tuple[str, str, str], Dict[str, Any]],
+        follower_positions: Dict[Tuple[str, str, str], Dict[str, Any]],
+    ) -> None:
+        db = self.session_factory()
+        try:
+            existing_rows = {
+                (row.condition_id, row.asset, row.outcome): row
+                for row in db.query(PolymarketCopySourcePosition)
+                .filter(PolymarketCopySourcePosition.strategy_id == strategy_id)
+                .all()
+            }
+            for position_key, source_state in source_positions.items():
+                condition_id, asset, outcome = position_key
+                follower_state = follower_positions.get(position_key, {"size": 0.0, "notional": 0.0})
+                row = existing_rows.get(position_key)
+                if row is None:
+                    row = PolymarketCopySourcePosition(
+                        strategy_id=strategy_id,
+                        condition_id=condition_id,
+                        asset=asset,
+                        outcome=outcome,
+                    )
+                    db.add(row)
+                    existing_rows[position_key] = row
+                row.estimated_source_size = float(source_state.get("size") or 0.0)
+                row.estimated_source_notional_usdc = float(source_state.get("notional") or 0.0)
+                row.estimated_follower_size = float(follower_state.get("size") or 0.0)
+                row.estimated_follower_notional_usdc = float(follower_state.get("notional") or 0.0)
+                row.estimated_source_avg_price = self._estimate_avg_price(
+                    row.estimated_source_notional_usdc,
+                    row.estimated_source_size,
+                )
+                row.last_source_activity_at = source_state.get("last_activity_at")
+                row.last_source_tx_hash = source_state.get("last_tx_hash")
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _get_latest_processed_timestamp(self, strategy_id: int) -> Optional[datetime]:
+        db = self.session_factory()
+        try:
+            signal_row = (
+                db.query(PolymarketCopySignalLog.source_timestamp)
+                .filter(PolymarketCopySignalLog.strategy_id == strategy_id)
+                .order_by(PolymarketCopySignalLog.source_timestamp.desc(), PolymarketCopySignalLog.id.desc())
+                .first()
+            )
+            shadow_row = (
+                db.query(PolymarketCopySourcePosition.last_source_activity_at)
+                .filter(PolymarketCopySourcePosition.strategy_id == strategy_id)
+                .order_by(PolymarketCopySourcePosition.last_source_activity_at.desc(), PolymarketCopySourcePosition.id.desc())
+                .first()
+            )
+            timestamps = [row[0] for row in (signal_row, shadow_row) if row and row[0] is not None]
+            return max(timestamps) if timestamps else None
+        finally:
+            db.close()
+
+    def _list_signal_idempotency_keys(self, strategy_id: int, start_at: datetime) -> set[str]:
+        db = self.session_factory()
+        try:
+            rows = (
+                db.query(PolymarketCopySignalLog.idempotency_key)
+                .filter(PolymarketCopySignalLog.strategy_id == strategy_id)
+                .filter(PolymarketCopySignalLog.source_timestamp >= start_at)
+                .all()
+            )
+            return {row[0] for row in rows}
+        finally:
+            db.close()
+
+    @staticmethod
+    def _estimate_avg_price(notional: float, size: float) -> Optional[float]:
+        if size <= 0:
+            return None
+        return round(notional / size, 8)
 
     def _persist_simulation_run(
         self,
@@ -334,15 +591,18 @@ class PolymarketCopyService:
         signal_index: int,
         trade: PolymarketActivityItem,
         strategy: PolymarketCopyStrategyRead,
-        source_positions: Dict[Tuple[str, str, str], Dict[str, float]],
-        follower_positions: Dict[Tuple[str, str, str], Dict[str, float]],
+        source_positions: Dict[Tuple[str, str, str], Dict[str, Any]],
+        follower_positions: Dict[Tuple[str, str, str], Dict[str, Any]],
     ) -> PolymarketCopySimulationSignal:
         position_key = (
             trade.condition_id or trade.title or "unknown",
             trade.asset or "unknown",
             trade.outcome or "unknown",
         )
-        source_state = source_positions.setdefault(position_key, {"size": 0.0, "notional": 0.0})
+        source_state = source_positions.setdefault(
+            position_key,
+            {"size": 0.0, "notional": 0.0, "last_activity_at": None, "last_tx_hash": None},
+        )
         follower_state = follower_positions.setdefault(position_key, {"size": 0.0, "notional": 0.0})
 
         trade_size = float(trade.size or 0.0)
@@ -405,6 +665,8 @@ class PolymarketCopyService:
             skip_reason = "unsupported_side"
 
         source_state["size"] = source_after
+        source_state["last_activity_at"] = trade.timestamp
+        source_state["last_tx_hash"] = trade.transaction_hash
         if side == "BUY":
             source_state["notional"] = float(source_state["notional"]) + trade_usdc
         elif side == "SELL":
@@ -419,6 +681,7 @@ class PolymarketCopyService:
             asset=trade.asset,
             outcome=trade.outcome,
             side=trade.side,
+            source_trade_size=round(trade_size, 4),
             source_trade_usdc=round(trade_usdc, 4),
             source_position_before=round(source_before, 4),
             source_position_after=round(source_after, 4),
