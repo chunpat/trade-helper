@@ -206,6 +206,91 @@ class PolymarketTraderAnalyticsService:
         return 0.0
 
     @staticmethod
+    def _trade_signature(item: PolymarketActivityItem) -> Tuple[str, str, str, str]:
+        return (
+            item.condition_id or item.title or "unknown",
+            item.asset or "unknown",
+            item.side or "NA",
+            item.outcome or "NA",
+        )
+
+    def _can_merge_trade_group(self, group: Dict[str, object], item: PolymarketActivityItem) -> bool:
+        group_item = group["item"]
+        if not isinstance(group_item, PolymarketActivityItem):
+            return False
+        if self._trade_signature(group_item) != self._trade_signature(item):
+            return False
+
+        group_hash = (group_item.transaction_hash or "").strip()
+        item_hash = (item.transaction_hash or "").strip()
+        if group_hash and item_hash and group_hash == item_hash:
+            return True
+
+        last_timestamp = group.get("last_timestamp")
+        if not isinstance(last_timestamp, datetime) or not item.timestamp:
+            return False
+
+        time_gap_seconds = abs((item.timestamp - last_timestamp).total_seconds())
+        if time_gap_seconds > 8:
+            return False
+
+        group_price = self._to_float(group_item.price)
+        item_price = self._to_float(item.price)
+        if group_price is not None and item_price is not None and abs(group_price - item_price) > 0.01:
+            return False
+
+        return True
+
+    def _group_trade_activities(self, trades: Sequence[PolymarketActivityItem]) -> List[PolymarketActivityItem]:
+        grouped_rows: List[Dict[str, object]] = []
+        latest_group_by_signature: Dict[Tuple[str, str, str, str], Dict[str, object]] = {}
+
+        for item in sorted((trade for trade in trades if trade.timestamp), key=lambda trade: trade.timestamp):
+            signature = self._trade_signature(item)
+            existing_group = latest_group_by_signature.get(signature)
+            if existing_group and self._can_merge_trade_group(existing_group, item):
+                group_item = existing_group["item"]
+                if not isinstance(group_item, PolymarketActivityItem):
+                    continue
+
+                trade_amount = self._trade_usdc_size(item)
+                aggregated_volume = float(existing_group.get("aggregated_volume") or 0.0) + trade_amount
+                weighted_price_sum = float(existing_group.get("weighted_price_sum") or 0.0)
+                weighted_price_base = float(existing_group.get("weighted_price_base") or 0.0)
+                if item.price is not None and trade_amount > 0:
+                    weighted_price_sum += float(item.price) * trade_amount
+                    weighted_price_base += trade_amount
+
+                existing_group["aggregated_volume"] = aggregated_volume
+                existing_group["weighted_price_sum"] = weighted_price_sum
+                existing_group["weighted_price_base"] = weighted_price_base
+                existing_group["last_timestamp"] = max(group_item.timestamp, item.timestamp)
+
+                group_item.usdc_size = round(aggregated_volume, 4) if aggregated_volume > 0 else group_item.usdc_size
+                if weighted_price_base > 0:
+                    group_item.price = round(weighted_price_sum / weighted_price_base, 4)
+                continue
+
+            trade_amount = self._trade_usdc_size(item)
+            weighted_price_sum = float(item.price) * trade_amount if item.price is not None and trade_amount > 0 else 0.0
+            weighted_price_base = trade_amount if item.price is not None and trade_amount > 0 else 0.0
+            grouped_item = item.model_copy(deep=True)
+            if trade_amount > 0:
+                grouped_item.usdc_size = round(trade_amount, 4)
+
+            group = {
+                "item": grouped_item,
+                "last_timestamp": grouped_item.timestamp,
+                "aggregated_volume": trade_amount,
+                "weighted_price_sum": weighted_price_sum,
+                "weighted_price_base": weighted_price_base,
+            }
+            latest_group_by_signature[signature] = group
+            grouped_rows.append(group)
+
+        return [group["item"] for group in grouped_rows if isinstance(group.get("item"), PolymarketActivityItem)]
+
+    @staticmethod
     def _candidate_priority(summary: PolymarketTraderSummary) -> Tuple[int, int, int, float, float, int, float]:
         realized_pnl = float(summary.realized_pnl_30d or 0.0)
         volume_usdc = float(summary.volume_usdc_30d or 0.0)
@@ -453,19 +538,23 @@ class PolymarketTraderAnalyticsService:
         cutoff_7d = now - timedelta(days=7)
         cutoff_30d = now - timedelta(days=30)
 
+        grouped_trade_activities = self._group_trade_activities(trade_activities)
         trades_24h = self._filter_since(trade_activities, "timestamp", cutoff_24h)
         trades_7d = self._filter_since(trade_activities, "timestamp", cutoff_7d)
         trades_30d = self._filter_since(trade_activities, "timestamp", cutoff_30d)
+        grouped_trades_24h = self._filter_since(grouped_trade_activities, "timestamp", cutoff_24h)
+        grouped_trades_7d = self._filter_since(grouped_trade_activities, "timestamp", cutoff_7d)
+        grouped_trades_30d = self._filter_since(grouped_trade_activities, "timestamp", cutoff_30d)
         closed_positions_30d = [item for item in closed_positions if item.timestamp and item.timestamp >= cutoff_30d]
 
         activity_mix = dict(Counter(item.activity_type for item in activities))
-        volume_usdc_7d = self._safe_sum(self._trade_usdc_size(item) for item in trades_7d)
-        volume_usdc_30d = self._safe_sum(self._trade_usdc_size(item) for item in trades_30d)
-        avg_trade_size_usdc_30d = round(volume_usdc_30d / len(trades_30d), 4) if trades_30d else None
-        markets_traded_30d = len({item.condition_id for item in trades_30d if item.condition_id})
-        median_interval_seconds = self._median_trade_interval_seconds(trades_30d)
-        trades_per_hour_30d = self._trades_per_hour(trades_30d)
-        top_market_share_30d = self._top_market_share(trades_30d)
+        volume_usdc_7d = self._safe_sum(self._trade_usdc_size(item) for item in grouped_trades_7d)
+        volume_usdc_30d = self._safe_sum(self._trade_usdc_size(item) for item in grouped_trades_30d)
+        avg_trade_size_usdc_30d = round(volume_usdc_30d / len(grouped_trades_30d), 4) if grouped_trades_30d else None
+        markets_traded_30d = len({item.condition_id for item in grouped_trades_30d if item.condition_id})
+        median_interval_seconds = self._median_trade_interval_seconds(grouped_trades_30d)
+        trades_per_hour_30d = self._trades_per_hour(grouped_trades_30d)
+        top_market_share_30d = self._top_market_share(grouped_trades_30d)
 
         realized_pnl_30d = self._safe_sum(item.realized_pnl for item in closed_positions_30d)
         win_samples = [item for item in closed_positions_30d if item.realized_pnl is not None]
@@ -479,15 +568,15 @@ class PolymarketTraderAnalyticsService:
         open_positions_value = self._safe_sum(item.current_value for item in open_positions)
         latest_activity_at = max((item.timestamp for item in activities if item.timestamp), default=None)
         trader_style = self._detect_trader_style(
-            trade_count_30d=len(trades_30d),
+            trade_count_30d=len(grouped_trades_30d),
             median_interval_seconds=median_interval_seconds,
             top_market_share=top_market_share_30d,
             open_positions_count=len(open_positions),
         )
 
         followability = self._build_followability(
-            trade_count_24h=len(trades_24h),
-            trade_count_30d=len(trades_30d),
+            trade_count_24h=len(grouped_trades_24h),
+            trade_count_30d=len(grouped_trades_30d),
             median_interval_seconds=median_interval_seconds,
             trades_per_hour_30d=trades_per_hour_30d,
             avg_trade_size_usdc_30d=avg_trade_size_usdc_30d,
@@ -506,8 +595,11 @@ class PolymarketTraderAnalyticsService:
             notes.append("该账户偏量化/高频风格，人工复制性一般，但可进一步评估自动化跟单可行性")
         if win_rate_30d is None:
             notes.append("近30天平仓样本不足，胜率仅供参考")
-        if len(trades_30d) == 0:
+        if len(grouped_trades_30d) == 0:
             notes.append("近30天未观察到公开成交，可能不适合作为跟单目标")
+        grouped_trade_delta = len(trades_30d) - len(grouped_trades_30d)
+        if grouped_trade_delta > 0:
+            notes.append(f"检测到 {grouped_trade_delta} 条 fill 级拆单，跟单评估已按聚合成交口径计算")
 
         summary = PolymarketTraderSummary(
             wallet_address=wallet,
@@ -522,9 +614,9 @@ class PolymarketTraderAnalyticsService:
                 category=leaderboard_category,
                 time_period=leaderboard_time_period,
             ),
-            trade_count_7d=len(trades_7d),
-            trade_count_30d=len(trades_30d),
-            trade_count_24h=len(trades_24h),
+            trade_count_7d=len(grouped_trades_7d),
+            trade_count_30d=len(grouped_trades_30d),
+            trade_count_24h=len(grouped_trades_24h),
             volume_usdc_7d=volume_usdc_7d,
             volume_usdc_30d=volume_usdc_30d,
             markets_traded_30d=markets_traded_30d,

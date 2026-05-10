@@ -151,7 +151,7 @@
         </template>
 
         <div v-if="activityFilters.viewMode === 'grouped'" class="aggregation-note">
-          聚合成交视图会优先按 transaction hash 合并同一笔链上成交；缺少 hash 时，再按市场、方向、结果和分钟窗口做兜底聚合。
+          聚合成交视图会优先合并同一 transaction hash；如果同一订单被拆成多笔撮合成交，则会继续按市场、方向、结果、资产、价格和短时间窗口近似聚合。
         </div>
 
         <div class="activity-summary-row">
@@ -301,53 +301,121 @@ export default {
       return activities.value.filter(item => item.activity_type === activityFilters.type)
     })
 
+    const TRADE_GROUP_WINDOW_SECONDS = 8
+    const TRADE_GROUP_PRICE_TOLERANCE = 0.01
+
+    const buildGroupedActivitySeed = item => ({
+      ...item,
+      display_type: item.activity_type === 'TRADE' ? 'TRADE*' : item.activity_type,
+      group_count: 0,
+      time_end: item.timestamp,
+      aggregated_volume: 0,
+      weighted_price_sum: 0,
+      weighted_price_base: 0
+    })
+
+    const mergeActivityIntoGroup = (group, item) => {
+      group.group_count += 1
+
+      const tradeAmount = Number(item.usdc_size || 0)
+      group.aggregated_volume += tradeAmount
+      if (item.price !== null && item.price !== undefined && tradeAmount > 0) {
+        group.weighted_price_sum += Number(item.price) * tradeAmount
+        group.weighted_price_base += tradeAmount
+      }
+
+      if (item.timestamp && (!group.timestamp || new Date(item.timestamp) < new Date(group.timestamp))) {
+        group.timestamp = item.timestamp
+      }
+      if (item.timestamp && (!group.time_end || new Date(item.timestamp) > new Date(group.time_end))) {
+        group.time_end = item.timestamp
+      }
+      if (tradeAmount > 0) {
+        group.usdc_size = Number(group.aggregated_volume.toFixed(2))
+      }
+      if (group.weighted_price_base > 0) {
+        group.price = Number((group.weighted_price_sum / group.weighted_price_base).toFixed(4))
+      }
+    }
+
+    const buildTradeSignature = item => ([
+      item.condition_id || item.title || 'unknown',
+      item.asset || 'unknown',
+      item.side || 'NA',
+      item.outcome || 'NA'
+    ].join('|'))
+
+    const canMergeTradeIntoGroup = (group, item) => {
+      if (group.activity_type !== 'TRADE' || item.activity_type !== 'TRADE') {
+        return false
+      }
+      if (buildTradeSignature(group) !== buildTradeSignature(item)) {
+        return false
+      }
+
+      const groupHash = group.transaction_hash || ''
+      const itemHash = item.transaction_hash || ''
+      if (groupHash && itemHash && groupHash === itemHash) {
+        return true
+      }
+
+      const groupEndTime = group.time_end ? new Date(group.time_end).getTime() : new Date(group.timestamp).getTime()
+      const itemTime = item.timestamp ? new Date(item.timestamp).getTime() : 0
+      if (!groupEndTime || !itemTime) {
+        return false
+      }
+
+      const timeGapSeconds = Math.abs(itemTime - groupEndTime) / 1000
+      if (timeGapSeconds > TRADE_GROUP_WINDOW_SECONDS) {
+        return false
+      }
+
+      const groupPrice = Number(group.price)
+      const itemPrice = Number(item.price)
+      if (Number.isFinite(groupPrice) && Number.isFinite(itemPrice)) {
+        if (Math.abs(groupPrice - itemPrice) > TRADE_GROUP_PRICE_TOLERANCE) {
+          return false
+        }
+      }
+
+      return true
+    }
+
     const groupedActivities = computed(() => {
-      const groups = new Map()
+      const exactGroups = new Map()
+      const latestTradeGroupsBySignature = new Map()
+      const groupedRows = []
 
-      filteredActivities.value.forEach(item => {
-        const timestampValue = item.timestamp ? new Date(item.timestamp).getTime() : 0
-        const minuteBucket = Math.floor(timestampValue / 60000)
-        const groupingKey = item.activity_type === 'TRADE'
-          ? (item.transaction_hash || [item.condition_id || item.title || 'unknown', item.side || 'NA', item.outcome || 'NA', minuteBucket].join('|'))
-          : `${item.activity_type}:${item.transaction_hash || timestampValue}:${item.condition_id || item.title || 'unknown'}`
+      ;[...filteredActivities.value]
+        .sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp))
+        .forEach(item => {
+          if (item.activity_type === 'TRADE') {
+            const signature = buildTradeSignature(item)
+            const existingTradeGroup = latestTradeGroupsBySignature.get(signature)
+            if (existingTradeGroup && canMergeTradeIntoGroup(existingTradeGroup, item)) {
+              mergeActivityIntoGroup(existingTradeGroup, item)
+              return
+            }
 
-        if (!groups.has(groupingKey)) {
-          groups.set(groupingKey, {
-            ...item,
-            display_type: item.activity_type === 'TRADE' ? 'TRADE*' : item.activity_type,
-            group_count: 0,
-            time_end: item.timestamp,
-            aggregated_volume: 0,
-            weighted_price_sum: 0,
-            weighted_price_base: 0
-          })
-        }
+            const tradeGroup = buildGroupedActivitySeed(item)
+            mergeActivityIntoGroup(tradeGroup, item)
+            latestTradeGroupsBySignature.set(signature, tradeGroup)
+            groupedRows.push(tradeGroup)
+            return
+          }
 
-        const group = groups.get(groupingKey)
-        group.group_count += 1
+          const timestampValue = item.timestamp ? new Date(item.timestamp).getTime() : 0
+          const groupingKey = `${item.activity_type}:${item.transaction_hash || timestampValue}:${item.condition_id || item.title || 'unknown'}`
+          if (!exactGroups.has(groupingKey)) {
+            const group = buildGroupedActivitySeed(item)
+            exactGroups.set(groupingKey, group)
+            groupedRows.push(group)
+          }
 
-        const tradeAmount = Number(item.usdc_size || 0)
-        group.aggregated_volume += tradeAmount
-        if (item.price !== null && item.price !== undefined && tradeAmount > 0) {
-          group.weighted_price_sum += Number(item.price) * tradeAmount
-          group.weighted_price_base += tradeAmount
-        }
+          mergeActivityIntoGroup(exactGroups.get(groupingKey), item)
+        })
 
-        if (item.timestamp && (!group.timestamp || new Date(item.timestamp) < new Date(group.timestamp))) {
-          group.timestamp = item.timestamp
-        }
-        if (item.timestamp && (!group.time_end || new Date(item.timestamp) > new Date(group.time_end))) {
-          group.time_end = item.timestamp
-        }
-        if (tradeAmount > 0) {
-          group.usdc_size = Number(group.aggregated_volume.toFixed(2))
-        }
-        if (group.weighted_price_base > 0) {
-          group.price = Number((group.weighted_price_sum / group.weighted_price_base).toFixed(4))
-        }
-      })
-
-      return [...groups.values()].sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp))
+      return groupedRows.sort((left, right) => new Date(right.timestamp) - new Date(left.timestamp))
     })
 
     const displayActivities = computed(() => {

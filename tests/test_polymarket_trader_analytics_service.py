@@ -147,6 +147,40 @@ def test_analyze_trader_flags_likely_bot_when_high_frequency_and_tiny_size():
     assert profile.trade_count_24h == 45
 
 
+def test_analyze_trader_followability_uses_grouped_trades_for_split_fills():
+    now = datetime.utcnow()
+    activity = []
+    for group_index in range(15):
+        base_time = now - timedelta(minutes=group_index * 2)
+        for fill_index in range(3):
+            activity.append(
+                {
+                    "proxyWallet": "0x9999999999999999999999999999999999999999",
+                    "timestamp": int((base_time - timedelta(seconds=fill_index)).timestamp()),
+                    "type": "TRADE",
+                    "conditionId": "0xmarket-split",
+                    "asset": "0xasset-yes",
+                    "side": "BUY",
+                    "outcome": "Yes",
+                    "size": 10,
+                    "usdcSize": 5,
+                    "price": 0.5,
+                    "title": "Will grouped fills be merged?",
+                }
+            )
+
+    client = FakePolymarketDataClient(activity=activity, positions=[], closed_positions=[])
+    service = PolymarketTraderAnalyticsService(client=client)
+
+    profile = asyncio.run(service.analyze_trader("0x9999999999999999999999999999999999999999"))
+
+    assert profile.trade_count_24h == 15
+    assert profile.trade_count_30d == 15
+    assert profile.followability.likely_bot is False
+    assert profile.followability.median_trade_interval_seconds == 120.0
+    assert any("聚合成交口径" in note for note in profile.analysis_notes)
+
+
 def test_list_traders_expands_candidate_discovery_and_dedupes_wallets():
     wallets = [
         "0x1234567890abcdef1234567890abcdef12345678",
