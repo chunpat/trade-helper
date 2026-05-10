@@ -77,6 +77,12 @@ const routes = [
     name: 'PolymarketTraderDetail',
     component: () => import('../views/PolymarketTraderDetail.vue'),
     meta: { requiresAuth: true, activeMenu: '/polymarket-traders' }
+  },
+  {
+    path: '/polymarket-copy-strategies',
+    name: 'PolymarketCopyStrategies',
+    component: () => import('../views/PolymarketCopyStrategies.vue'),
+    meta: { requiresAuth: true }
   }
 ]
 

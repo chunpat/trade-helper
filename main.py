@@ -16,6 +16,7 @@ from app.api.v1 import router as api_router
 from app.core.database import init_db
 from app.services.anomaly_monitor_service import anomaly_monitor_service
 from app.services.market_data import get_poller_from_env
+from app.services.polymarket_copy_runner_service import polymarket_copy_runner_service
 from app.services.polymarket_trader_cache_service import polymarket_trader_cache_service
 from app.services.position_sync import get_position_sync_from_env
 from app.services.ws_broadcast import manager as ws_manager
@@ -71,6 +72,7 @@ async def startup_event():
     app.state.position_sync = None
     app.state.anomaly_monitor = None
     app.state.polymarket_trader_cache = None
+    app.state.polymarket_copy_runner = None
 
     if _read_bool_env("START_MARKET_POLLER", True):
         logging.info("startup: initializing market poller")
@@ -102,6 +104,13 @@ async def startup_event():
     else:
         logging.info("startup: polymarket trader cache disabled")
 
+    if _read_bool_env("START_POLYMARKET_COPY_RUNNER", True):
+        logging.info("startup: initializing polymarket copy runner")
+        app.state.polymarket_copy_runner = polymarket_copy_runner_service
+        app.state.polymarket_copy_runner.start()
+    else:
+        logging.info("startup: polymarket copy runner disabled")
+
     # ensure websocket manager is available on app state (no-op but explicit)
     app.state.ws_manager = ws_manager
 
@@ -123,6 +132,9 @@ async def shutdown_event():
     polymarket_cache = getattr(app.state, "polymarket_trader_cache", None)
     if polymarket_cache:
         polymarket_cache.stop()
+    polymarket_copy_runner = getattr(app.state, "polymarket_copy_runner", None)
+    if polymarket_copy_runner:
+        polymarket_copy_runner.stop()
     # attempt to close any remaining websocket connections
     mgr = getattr(app.state, "ws_manager", None)
     if mgr:

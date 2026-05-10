@@ -6,7 +6,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.models.base import Base
-from app.models.polymarket_copy import PolymarketCopySimulationRun, PolymarketCopySourcePosition, PolymarketCopyStrategy
+from app.models.polymarket_copy import (
+    PolymarketCopySignalLog,
+    PolymarketCopySimulationRun,
+    PolymarketCopySourcePosition,
+    PolymarketCopyStrategy,
+)
 from app.schemas.polymarket_copy import PolymarketCopySimulationRequest, PolymarketCopyStrategyCreate
 from app.services.polymarket_copy_service import PolymarketCopyService
 from app.services.polymarket_trader_analytics_service import PolymarketTraderAnalyticsService
@@ -41,6 +46,7 @@ def _build_session_factory():
             PolymarketCopyStrategy.__table__,
             PolymarketCopySimulationRun.__table__,
             PolymarketCopySourcePosition.__table__,
+            PolymarketCopySignalLog.__table__,
         ],
     )
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -153,3 +159,62 @@ def test_simulate_strategy_builds_proportional_open_and_close_signals():
     assert result.signals[0].follower_order_usdc == 25.0
     assert result.signals[2].source_reduce_ratio == 0.5
     assert result.signals[3].follower_position_after == 0.0
+
+
+def test_start_stop_and_run_cycle_are_idempotent_for_signal_logs():
+    now = datetime.utcnow()
+    activity = [
+        {
+            "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "timestamp": int((now - timedelta(hours=2)).timestamp()),
+            "type": "TRADE",
+            "conditionId": "0xmarket1",
+            "asset": "0xyes",
+            "side": "BUY",
+            "outcome": "Yes",
+            "size": 100,
+            "usdcSize": 40,
+            "price": 0.4,
+            "title": "Will BTC rise?",
+        }
+    ]
+
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient(activity=activity))
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="runner策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+            copy_ratio=0.5,
+            min_copy_order_usdc=10,
+        )
+    )
+
+    started = service.start_strategy(strategy.id)
+    assert started is not None
+    assert started.status == "running"
+    assert started.last_started_at is not None
+
+    first_run = asyncio.run(service.run_strategy_cycle(strategy.id))
+    second_run = asyncio.run(service.run_strategy_cycle(strategy.id))
+
+    assert first_run is not None
+    assert second_run is not None
+
+    runs = service.list_simulation_runs(strategy.id)
+    assert len(runs) == 2
+
+    db = session_factory()
+    try:
+        signal_logs = db.query(PolymarketCopySignalLog).filter(PolymarketCopySignalLog.strategy_id == strategy.id).count()
+    finally:
+        db.close()
+
+    assert signal_logs == 1
+
+    stopped = service.stop_strategy(strategy.id)
+    assert stopped is not None
+    assert stopped.status == "stopped"
+    assert stopped.last_stopped_at is not None

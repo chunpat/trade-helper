@@ -15,9 +15,11 @@ from app.schemas.polymarket import (
     PolymarketTraderSummary,
 )
 from app.schemas.polymarket_copy import (
+    PolymarketCopyRunnerStatus,
     PolymarketCopySimulationRequest,
     PolymarketCopySimulationResult,
     PolymarketCopySimulationSignal,
+    PolymarketCopySimulationRunRead,
     PolymarketCopySimulationSummary,
     PolymarketCopyStrategyRead,
 )
@@ -265,8 +267,14 @@ def _copy_strategy(strategy_id: int = 1) -> PolymarketCopyStrategyRead:
         follow_reduce_only_after_open=True,
         allow_partial_close_sync=True,
         signal_cooldown_seconds=15,
+        runner_lookback_hours=24,
+        runner_activity_limit=120,
         allowed_markets=[],
         blocked_markets=[],
+        last_started_at=None,
+        last_stopped_at=None,
+        last_run_at=None,
+        last_error=None,
         notes=None,
         created_at=now,
         updated_at=now,
@@ -351,3 +359,98 @@ def test_simulate_polymarket_copy_strategy_endpoint(monkeypatch):
     assert payload["simulation_run_id"] == 8
     assert payload["summary"]["executed_signal_count"] == 6
     assert payload["signals"][0]["signal_type"] == "OPEN"
+
+
+def test_list_polymarket_copy_strategies_endpoint(monkeypatch):
+    def fake_list_strategies():
+        return [_copy_strategy(1), _copy_strategy(2)]
+
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "list_strategies", fake_list_strategies)
+
+    client = TestClient(create_test_app())
+    response = client.get("/api/v1/polymarket/strategies")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 2
+    assert payload[0]["copy_mode"] == "proportional_notional"
+
+
+def test_start_stop_polymarket_copy_strategy_endpoints(monkeypatch):
+    def fake_start(strategy_id: int):
+        assert strategy_id == 7
+        strategy = _copy_strategy(7)
+        strategy.status = "running"
+        return strategy
+
+    def fake_stop(strategy_id: int):
+        assert strategy_id == 7
+        strategy = _copy_strategy(7)
+        strategy.status = "stopped"
+        return strategy
+
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "start_strategy", fake_start)
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "stop_strategy", fake_stop)
+
+    client = TestClient(create_test_app())
+    start_response = client.post("/api/v1/polymarket/strategies/7/start")
+    stop_response = client.post("/api/v1/polymarket/strategies/7/stop")
+
+    assert start_response.status_code == 200
+    assert start_response.json()["status"] == "running"
+    assert stop_response.status_code == 200
+    assert stop_response.json()["status"] == "stopped"
+
+
+def test_list_polymarket_copy_strategy_runs_endpoint(monkeypatch):
+    def fake_get_strategy(strategy_id: int):
+        return _copy_strategy(strategy_id)
+
+    def fake_list_runs(strategy_id: int, limit: int = 20):
+        assert strategy_id == 9
+        assert limit == 5
+        now = datetime.utcnow()
+        return [
+            PolymarketCopySimulationRunRead(
+                id=11,
+                strategy_id=9,
+                lookback_hours=72,
+                activity_limit=200,
+                raw_trade_count=20,
+                grouped_trade_count=12,
+                simulated_signal_count=12,
+                executed_signal_count=10,
+                skipped_signal_count=2,
+                total_source_notional_usdc=900.0,
+                total_copied_notional_usdc=225.0,
+                summary={"executed_signal_count": 10},
+                created_at=now,
+                updated_at=now,
+            )
+        ]
+
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "get_strategy", fake_get_strategy)
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "list_simulation_runs", fake_list_runs)
+
+    client = TestClient(create_test_app())
+    response = client.get("/api/v1/polymarket/strategies/9/runs", params={"limit": 5})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["id"] == 11
+    assert payload[0]["executed_signal_count"] == 10
+
+
+def test_get_polymarket_copy_runner_status_endpoint(monkeypatch):
+    def fake_status():
+        return PolymarketCopyRunnerStatus(running=True, interval_seconds=15, strategy_count=2)
+
+    monkeypatch.setattr(polymarket_api.polymarket_copy_runner_service, "get_status", fake_status)
+
+    client = TestClient(create_test_app())
+    response = client.get("/api/v1/polymarket/copy-runner/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["running"] is True
+    assert payload["strategy_count"] == 2

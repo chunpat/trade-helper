@@ -11,11 +11,14 @@ from app.schemas.polymarket import (
     PolymarketTraderSummary,
 )
 from app.schemas.polymarket_copy import (
+    PolymarketCopyRunnerStatus,
     PolymarketCopySimulationRequest,
     PolymarketCopySimulationResult,
+    PolymarketCopySimulationRunRead,
     PolymarketCopyStrategyCreate,
     PolymarketCopyStrategyRead,
 )
+from app.services.polymarket_copy_runner_service import polymarket_copy_runner_service
 from app.services.polymarket_copy_service import polymarket_copy_service
 from app.services.polymarket_data_client import PolymarketAPIError
 from app.services.polymarket_trader_cache_service import polymarket_trader_cache_service
@@ -157,12 +160,44 @@ async def create_polymarket_copy_strategy(payload: PolymarketCopyStrategyCreate)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/strategies", response_model=List[PolymarketCopyStrategyRead])
+async def list_polymarket_copy_strategies():
+    return polymarket_copy_service.list_strategies()
+
+
 @router.get("/strategies/{strategy_id}", response_model=PolymarketCopyStrategyRead)
 async def get_polymarket_copy_strategy(strategy_id: int):
     strategy = polymarket_copy_service.get_strategy(strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="strategy not found")
     return strategy
+
+
+@router.post("/strategies/{strategy_id}/start", response_model=PolymarketCopyStrategyRead)
+async def start_polymarket_copy_strategy(strategy_id: int):
+    strategy = polymarket_copy_service.start_strategy(strategy_id)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    return strategy
+
+
+@router.post("/strategies/{strategy_id}/stop", response_model=PolymarketCopyStrategyRead)
+async def stop_polymarket_copy_strategy(strategy_id: int):
+    strategy = polymarket_copy_service.stop_strategy(strategy_id)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    return strategy
+
+
+@router.get("/strategies/{strategy_id}/runs", response_model=List[PolymarketCopySimulationRunRead])
+async def list_polymarket_copy_strategy_runs(
+    strategy_id: int,
+    limit: int = Query(20, ge=1, le=100, description="返回最近运行次数"),
+):
+    strategy = polymarket_copy_service.get_strategy(strategy_id)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    return polymarket_copy_service.list_simulation_runs(strategy_id, limit=limit)
 
 
 @router.post("/strategies/{strategy_id}/simulate", response_model=PolymarketCopySimulationResult)
@@ -180,3 +215,8 @@ async def simulate_polymarket_copy_strategy(
     if result is None:
         raise HTTPException(status_code=404, detail="strategy not found")
     return result
+
+
+@router.get("/copy-runner/status", response_model=PolymarketCopyRunnerStatus)
+async def get_polymarket_copy_runner_status():
+    return polymarket_copy_runner_service.get_status()

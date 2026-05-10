@@ -21,6 +21,8 @@ class PolymarketCopyStrategyCreate(BaseModel):
     follow_reduce_only_after_open: bool = True
     allow_partial_close_sync: bool = True
     signal_cooldown_seconds: int = Field(15, ge=0, le=3600)
+    runner_lookback_hours: int = Field(24, ge=1, le=720)
+    runner_activity_limit: int = Field(120, ge=1, le=500)
     allowed_markets: List[str] = Field(default_factory=list)
     blocked_markets: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
@@ -47,8 +49,14 @@ class PolymarketCopyStrategyRead(BaseModel):
     follow_reduce_only_after_open: bool
     allow_partial_close_sync: bool
     signal_cooldown_seconds: int
+    runner_lookback_hours: int
+    runner_activity_limit: int
     allowed_markets: List[str] = Field(default_factory=list)
     blocked_markets: List[str] = Field(default_factory=list)
+    last_started_at: Optional[datetime] = None
+    last_stopped_at: Optional[datetime] = None
+    last_run_at: Optional[datetime] = None
+    last_error: Optional[str] = None
     notes: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -98,3 +106,28 @@ class PolymarketCopySimulationResult(BaseModel):
     summary: PolymarketCopySimulationSummary
     signals: List[PolymarketCopySimulationSignal] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
+
+
+class PolymarketCopySimulationRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    strategy_id: int
+    lookback_hours: int
+    activity_limit: int
+    raw_trade_count: int
+    grouped_trade_count: int
+    simulated_signal_count: int
+    executed_signal_count: int
+    skipped_signal_count: int
+    total_source_notional_usdc: float
+    total_copied_notional_usdc: float
+    summary: Dict[str, object] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class PolymarketCopyRunnerStatus(BaseModel):
+    running: bool
+    interval_seconds: int
+    strategy_count: int

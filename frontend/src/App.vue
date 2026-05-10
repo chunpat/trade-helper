@@ -23,6 +23,10 @@
           <el-icon><Opportunity /></el-icon>
           <span>Polymarket</span>
         </el-menu-item>
+        <el-menu-item index="/polymarket-copy-strategies">
+          <el-icon><Tickets /></el-icon>
+          <span>跟单策略</span>
+        </el-menu-item>
         <el-menu-item index="/accounts">
           <el-icon><Wallet /></el-icon>
           <span>账户管理</span>
@@ -83,7 +87,7 @@
 </template>
 
 <script>
-import { DataLine, Wallet, TrendCharts, Histogram, Document, Warning, Setting, CaretBottom, Opportunity } from '@element-plus/icons-vue'
+import { DataLine, Wallet, TrendCharts, Histogram, Document, Warning, Setting, CaretBottom, Opportunity, Tickets } from '@element-plus/icons-vue'
 import { formatCurrentDateTime, getDisplayTimezoneLabel, getDisplayTimezoneOffsetLabel } from '@/utils/datetime'
 
 export default {
@@ -138,7 +142,8 @@ export default {
     Warning,
     Setting,
     CaretBottom,
-    Opportunity
+    Opportunity,
+    Tickets
   }
 }
 </script>

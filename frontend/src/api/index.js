@@ -343,6 +343,30 @@ export const polymarket = {
   },
   refreshTraderCache(params) {
     return api.post('/polymarket/traders/cache/refresh', null, { params })
+  },
+  listCopyStrategies() {
+    return api.get('/polymarket/strategies')
+  },
+  createCopyStrategy(data) {
+    return api.post('/polymarket/strategies', data)
+  },
+  getCopyStrategy(strategyId) {
+    return api.get(`/polymarket/strategies/${strategyId}`)
+  },
+  startCopyStrategy(strategyId) {
+    return api.post(`/polymarket/strategies/${strategyId}/start`)
+  },
+  stopCopyStrategy(strategyId) {
+    return api.post(`/polymarket/strategies/${strategyId}/stop`)
+  },
+  simulateCopyStrategy(strategyId, data) {
+    return api.post(`/polymarket/strategies/${strategyId}/simulate`, data)
+  },
+  getCopyStrategyRuns(strategyId, params) {
+    return api.get(`/polymarket/strategies/${strategyId}/runs`, { params })
+  },
+  getCopyRunnerStatus() {
+    return api.get('/polymarket/copy-runner/status')
   }
 }
 

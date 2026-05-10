@@ -72,6 +72,7 @@ def init_db():
     )
     from app.models.polymarket_cache import PolymarketCacheEntry
     from app.models.polymarket_copy import (
+        PolymarketCopySignalLog,
         PolymarketCopySimulationRun,
         PolymarketCopySourcePosition,
         PolymarketCopyStrategy,

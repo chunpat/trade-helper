@@ -1,13 +1,20 @@
 from collections import Counter
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.core.database import SessionLocal
-from app.models.polymarket_copy import PolymarketCopySimulationRun, PolymarketCopyStrategy
+from app.models.polymarket_copy import (
+    PolymarketCopySignalLog,
+    PolymarketCopySimulationRun,
+    PolymarketCopyStrategy,
+)
 from app.schemas.polymarket import PolymarketActivityItem
 from app.schemas.polymarket_copy import (
+    PolymarketCopyRunnerStatus,
     PolymarketCopySimulationRequest,
     PolymarketCopySimulationResult,
     PolymarketCopySimulationSignal,
+    PolymarketCopySimulationRunRead,
     PolymarketCopySimulationSummary,
     PolymarketCopyStrategyCreate,
     PolymarketCopyStrategyRead,
@@ -49,6 +56,8 @@ class PolymarketCopyService:
                 follow_reduce_only_after_open=payload.follow_reduce_only_after_open,
                 allow_partial_close_sync=payload.allow_partial_close_sync,
                 signal_cooldown_seconds=payload.signal_cooldown_seconds,
+                runner_lookback_hours=payload.runner_lookback_hours,
+                runner_activity_limit=payload.runner_activity_limit,
                 allowed_markets=payload.allowed_markets,
                 blocked_markets=payload.blocked_markets,
                 notes=payload.notes,
@@ -68,6 +77,55 @@ class PolymarketCopyService:
         try:
             row = db.query(PolymarketCopyStrategy).filter(PolymarketCopyStrategy.id == strategy_id).first()
             return self._to_strategy_read(row) if row else None
+        finally:
+            db.close()
+
+    def list_strategies(self) -> List[PolymarketCopyStrategyRead]:
+        db = self.session_factory()
+        try:
+            rows = db.query(PolymarketCopyStrategy).order_by(PolymarketCopyStrategy.created_at.desc()).all()
+            return [self._to_strategy_read(row) for row in rows]
+        finally:
+            db.close()
+
+    def list_simulation_runs(self, strategy_id: int, limit: int = 20) -> List[PolymarketCopySimulationRunRead]:
+        db = self.session_factory()
+        try:
+            rows = (
+                db.query(PolymarketCopySimulationRun)
+                .filter(PolymarketCopySimulationRun.strategy_id == strategy_id)
+                .order_by(PolymarketCopySimulationRun.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [PolymarketCopySimulationRunRead.model_validate({**row.to_dict(), "summary": row.summary or {}}) for row in rows]
+        finally:
+            db.close()
+
+    def start_strategy(self, strategy_id: int) -> Optional[PolymarketCopyStrategyRead]:
+        return self._update_strategy_status(strategy_id, status="running")
+
+    def stop_strategy(self, strategy_id: int) -> Optional[PolymarketCopyStrategyRead]:
+        return self._update_strategy_status(strategy_id, status="stopped")
+
+    def _update_strategy_status(self, strategy_id: int, *, status: str) -> Optional[PolymarketCopyStrategyRead]:
+        db = self.session_factory()
+        try:
+            row = db.query(PolymarketCopyStrategy).filter(PolymarketCopyStrategy.id == strategy_id).first()
+            if row is None:
+                return None
+            row.status = status
+            if status == "running":
+                row.last_started_at = datetime.utcnow()
+                row.last_error = None
+            elif status == "stopped":
+                row.last_stopped_at = datetime.utcnow()
+            db.commit()
+            db.refresh(row)
+            return self._to_strategy_read(row)
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -136,6 +194,108 @@ class PolymarketCopyService:
             signals=signals,
             notes=notes,
         )
+
+    async def run_strategy_cycle(self, strategy_id: int) -> Optional[PolymarketCopySimulationResult]:
+        strategy = self.get_strategy(strategy_id)
+        if strategy is None:
+            return None
+        payload = PolymarketCopySimulationRequest(
+            lookback_hours=strategy.runner_lookback_hours,
+            activity_limit=strategy.runner_activity_limit,
+        )
+        result = await self.simulate_strategy(strategy_id, payload)
+        if result is None:
+            return None
+        self._persist_signal_logs(strategy_id, result)
+        self._mark_strategy_run(strategy_id)
+        return result
+
+    def _mark_strategy_run(self, strategy_id: int, error_message: Optional[str] = None) -> None:
+        db = self.session_factory()
+        try:
+            row = db.query(PolymarketCopyStrategy).filter(PolymarketCopyStrategy.id == strategy_id).first()
+            if row is None:
+                return
+            row.last_run_at = datetime.utcnow()
+            row.last_error = error_message
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def record_strategy_error(self, strategy_id: int, error_message: str) -> None:
+        self._mark_strategy_run(strategy_id, error_message=error_message)
+
+    def _persist_signal_logs(self, strategy_id: int, result: PolymarketCopySimulationResult) -> int:
+        db = self.session_factory()
+        inserted = 0
+        try:
+            existing_keys = {
+                item[0]
+                for item in db.query(PolymarketCopySignalLog.idempotency_key)
+                .filter(PolymarketCopySignalLog.strategy_id == strategy_id)
+                .all()
+            }
+            for signal in result.signals:
+                idempotency_key = self._build_signal_idempotency_key(strategy_id, signal)
+                if idempotency_key in existing_keys:
+                    continue
+                db.add(
+                    PolymarketCopySignalLog(
+                        strategy_id=strategy_id,
+                        simulation_run_id=result.simulation_run_id,
+                        idempotency_key=idempotency_key,
+                        signal_type=signal.signal_type,
+                        signal_status=signal.status,
+                        source_timestamp=signal.source_timestamp,
+                        condition_id=signal.condition_id,
+                        asset=signal.asset,
+                        outcome=signal.outcome,
+                        side=signal.side,
+                        source_trade_usdc=signal.source_trade_usdc,
+                        follower_order_usdc=signal.follower_order_usdc,
+                        skip_reason=signal.skip_reason,
+                        signal_payload=signal.model_dump(mode="json"),
+                    )
+                )
+                existing_keys.add(idempotency_key)
+                inserted += 1
+            db.commit()
+            return inserted
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    @staticmethod
+    def _build_signal_idempotency_key(strategy_id: int, signal: PolymarketCopySimulationSignal) -> str:
+        timestamp_bucket = int(signal.source_timestamp.timestamp())
+        return ":".join(
+            [
+                str(strategy_id),
+                signal.signal_type,
+                signal.condition_id or "unknown",
+                signal.asset or "unknown",
+                signal.outcome or "unknown",
+                signal.side or "unknown",
+                str(timestamp_bucket),
+            ]
+        )
+
+    def list_running_strategy_ids(self) -> List[int]:
+        db = self.session_factory()
+        try:
+            rows = (
+                db.query(PolymarketCopyStrategy.id)
+                .filter(PolymarketCopyStrategy.status == "running")
+                .all()
+            )
+            return [row[0] for row in rows]
+        finally:
+            db.close()
 
     def _persist_simulation_run(
         self,

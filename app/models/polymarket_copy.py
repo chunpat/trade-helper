@@ -27,8 +27,14 @@ class PolymarketCopyStrategy(Base, BaseMixin):
     follow_reduce_only_after_open = Column(Boolean, nullable=False, default=True)
     allow_partial_close_sync = Column(Boolean, nullable=False, default=True)
     signal_cooldown_seconds = Column(Integer, nullable=False, default=15)
+    runner_lookback_hours = Column(Integer, nullable=False, default=24)
+    runner_activity_limit = Column(Integer, nullable=False, default=120)
     allowed_markets = Column(JSON, nullable=True)
     blocked_markets = Column(JSON, nullable=True)
+    last_started_at = Column(DateTime, nullable=True)
+    last_stopped_at = Column(DateTime, nullable=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
 
 
@@ -73,3 +79,26 @@ class PolymarketCopySourcePosition(Base, BaseMixin):
     estimated_source_avg_price = Column(Float, nullable=True)
     last_source_activity_at = Column(DateTime, nullable=True)
     last_source_tx_hash = Column(String(255), nullable=True)
+
+
+class PolymarketCopySignalLog(Base, BaseMixin):
+    __tablename__ = "polymarket_copy_signal_logs"
+    __table_args__ = (
+        UniqueConstraint("strategy_id", "idempotency_key", name="uq_polymarket_copy_signal_strategy_key"),
+        Index("ix_polymarket_copy_signal_strategy_created_id", "strategy_id", "created_at", "id"),
+    )
+
+    strategy_id = Column(Integer, ForeignKey("polymarket_copy_strategies.id"), nullable=False, index=True)
+    simulation_run_id = Column(Integer, ForeignKey("polymarket_copy_simulation_runs.id"), nullable=True, index=True)
+    idempotency_key = Column(String(255), nullable=False)
+    signal_type = Column(String(20), nullable=False)
+    signal_status = Column(String(20), nullable=False)
+    source_timestamp = Column(DateTime, nullable=False)
+    condition_id = Column(String(255), nullable=True)
+    asset = Column(String(255), nullable=True)
+    outcome = Column(String(80), nullable=True)
+    side = Column(String(20), nullable=True)
+    source_trade_usdc = Column(Float, nullable=False, default=0.0)
+    follower_order_usdc = Column(Float, nullable=False, default=0.0)
+    skip_reason = Column(String(120), nullable=True)
+    signal_payload = Column(JSON, nullable=True)
