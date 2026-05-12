@@ -67,12 +67,17 @@ def _build_session_factory():
 def _create_account(session_factory, *, account_id: int = 1, exchange: str = "binance", is_active: bool = True):
     db = session_factory()
     try:
+        api_key = "key"
+        api_secret = "secret"
+        if exchange == "polymarket":
+            api_key = f"0x{account_id:040x}"[-42:]
+            api_secret = "0x" + ("1" * 64)
         account = Account(
             id=account_id,
             name=f"Test Account {account_id}",
             exchange=exchange,
-            api_key="key",
-            api_secret="secret",
+            api_key=api_key,
+            api_secret=api_secret,
             api_passphrase="passphrase" if exchange == "okx" else None,
             is_active=is_active,
             settings={},
@@ -104,12 +109,86 @@ def test_create_strategy_persists_defaults():
     assert strategy.status == "draft"
 
 
+def test_create_strategy_defaults_to_one_to_one_and_unlimited_limits():
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient())
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="默认策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+        )
+    )
+
+    assert strategy.copy_ratio == 1.0
+    assert strategy.min_copy_order_usdc == 0.0
+    assert strategy.max_order_usdc == 0.0
+    assert strategy.max_position_notional_usdc == 0.0
+    assert strategy.max_market_exposure_usdc == 0.0
+
+
+def test_zero_limits_are_treated_as_unlimited_when_simulating():
+    now = datetime.utcnow()
+    activity = [
+        {
+            "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "timestamp": int((now - timedelta(hours=1)).timestamp()),
+            "type": "TRADE",
+            "conditionId": "0xmarket1",
+            "asset": "0xyes",
+            "side": "BUY",
+            "outcome": "Yes",
+            "size": 300,
+            "usdcSize": 150,
+            "price": 0.5,
+            "title": "Will BTC rise?",
+        },
+        {
+            "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "timestamp": int((now - timedelta(minutes=30)).timestamp()),
+            "type": "TRADE",
+            "conditionId": "0xmarket1",
+            "asset": "0xyes",
+            "side": "BUY",
+            "outcome": "Yes",
+            "size": 400,
+            "usdcSize": 200,
+            "price": 0.5,
+            "title": "Will BTC rise?",
+        },
+    ]
+
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient(activity=activity))
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="默认不限策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+        )
+    )
+
+    result = asyncio.run(
+        service.simulate_strategy(
+            strategy.id,
+            payload=PolymarketCopySimulationRequest(lookback_hours=24, activity_limit=50),
+        )
+    )
+
+    assert result is not None
+    assert result.summary.executed_signal_count == 2
+    assert result.summary.skipped_signal_count == 0
+    assert result.summary.total_copied_notional_usdc == 350.0
+
+
 def test_create_live_strategy_requires_active_execution_account():
     session_factory = _build_session_factory()
     analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient())
     service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
 
-    _create_account(session_factory, account_id=7, exchange="binance", is_active=True)
+    _create_account(session_factory, account_id=7, exchange="polymarket", is_active=True)
 
     strategy = service.create_strategy(
         payload=PolymarketCopyStrategyCreate(
@@ -123,8 +202,30 @@ def test_create_live_strategy_requires_active_execution_account():
 
     assert strategy.execution_account_id == 7
     assert strategy.execution_account_name == "Test Account 7"
-    assert strategy.execution_account_exchange == "binance"
+    assert strategy.execution_account_exchange == "polymarket"
     assert strategy.dry_run is False
+
+
+def test_create_strategy_rejects_non_polymarket_execution_account():
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient())
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    _create_account(session_factory, account_id=8, exchange="binance", is_active=True)
+
+    try:
+        service.create_strategy(
+            payload=PolymarketCopyStrategyCreate(
+                strategy_name="真实策略",
+                source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+                execution_account_id=8,
+                dry_run=False,
+                copy_ratio=0.2,
+            )
+        )
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert str(exc) == "Polymarket 跟单策略只能绑定 Polymarket 账户"
 
 
 def test_create_live_strategy_rejects_missing_execution_account():
@@ -338,12 +439,12 @@ def test_run_cycle_persists_shadow_positions_and_processes_incremental_trades_on
     assert stopped.last_stopped_at is not None
 
 
-def test_start_live_strategy_is_blocked_without_execution_adapter():
+def test_start_live_strategy_succeeds_with_polymarket_execution_account():
     session_factory = _build_session_factory()
     analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient())
     service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
 
-    _create_account(session_factory, account_id=9, exchange="binance", is_active=True)
+    _create_account(session_factory, account_id=9, exchange="polymarket", is_active=True)
     strategy = service.create_strategy(
         payload=PolymarketCopyStrategyCreate(
             strategy_name="真实策略",
@@ -354,11 +455,164 @@ def test_start_live_strategy_is_blocked_without_execution_adapter():
         )
     )
 
+    started = service.start_strategy(strategy.id)
+    assert started is not None
+    assert started.status == "running"
+
+    stopped = service.stop_strategy(strategy.id)
+    assert stopped is not None
+    assert stopped.status == "stopped"
+
+
+def test_preflight_live_strategy_runs_adapter_checks_without_persisting_run(monkeypatch):
+    now = datetime.utcnow()
+    activity = [
+        {
+            "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "timestamp": int((now - timedelta(minutes=30)).timestamp()),
+            "type": "TRADE",
+            "conditionId": "0xmarket1",
+            "asset": "123",
+            "side": "BUY",
+            "outcome": "Yes",
+            "size": 100,
+            "usdcSize": 50,
+            "price": 0.5,
+            "title": "Will BTC rise?",
+        }
+    ]
+
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient(activity=activity))
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    _create_account(session_factory, account_id=10, exchange="polymarket", is_active=True)
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="真实策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+            execution_account_id=10,
+            dry_run=False,
+        )
+    )
+
+    class FakeAdapter:
+        async def test_connectivity(self):
+            return {
+                "overall_hint": "ok",
+                "account_mode_note": "EOA",
+                "checks": [
+                    {"scope": "clob_l1", "endpoint": "/auth/api-key", "ok": True, "status_code": 200, "message": "ok", "hint": "ok"}
+                ],
+            }
+
+        async def preflight_orderbook(self, token_id: str, side: str):
+            assert token_id == "123"
+            assert side == "BUY"
+            return {"scope": "orderbook", "endpoint": "/book", "ok": True, "status_code": 200, "message": "book ok", "hint": "ok"}
+
+    monkeypatch.setattr("app.services.polymarket_copy_service.create_adapter_for_account", lambda account: FakeAdapter())
+
+    result = asyncio.run(service.preflight_live_strategy(strategy.id))
+
+    assert result is not None
+    assert result.overall_ok is True
+    assert result.executable_signal_count == 1
+    assert result.sample_signal is not None
+    assert result.sample_signal.asset == "123"
+
+    runs = service.list_simulation_runs(strategy.id)
+    assert runs == []
+
+
+def test_live_run_cycle_places_order_persists_receipt_and_cancels_on_stop(monkeypatch):
+    now = datetime.utcnow()
+    activity = [
+        {
+            "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "timestamp": int((now - timedelta(minutes=15)).timestamp()),
+            "type": "TRADE",
+            "conditionId": "0xmarket2",
+            "asset": "0xyes",
+            "side": "BUY",
+            "outcome": "Yes",
+            "size": 100,
+            "usdcSize": 55,
+            "price": 0.55,
+            "title": "Will ETH rise?",
+        }
+    ]
+
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient(activity=activity))
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    _create_account(session_factory, account_id=11, exchange="polymarket", is_active=True)
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="live runner 策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+            execution_account_id=11,
+            dry_run=False,
+        )
+    )
+
+    calls = {"place": [], "cancel": []}
+
+    class FakeAdapter:
+        def place_order(self, **kwargs):
+            calls["place"].append(kwargs)
+            return {
+                "order_id": "order-123",
+                "status": "live",
+                "response": {"orderID": "order-123", "status": "live"},
+            }
+
+        def cancel_order(self, order_id: str):
+            calls["cancel"].append(order_id)
+            return {
+                "order_id": order_id,
+                "status": "canceled",
+                "response": {"canceled": True},
+            }
+
+    monkeypatch.setattr("app.services.polymarket_copy_service.create_adapter_for_account", lambda account: FakeAdapter())
+
+    started = service.start_strategy(strategy.id)
+    assert started is not None
+    assert started.status == "running"
+
+    result = asyncio.run(service.run_strategy_cycle(strategy.id))
+
+    assert result is not None
+    assert result.summary.executed_signal_count == 1
+    assert len(calls["place"]) == 1
+    assert calls["place"][0]["token_id"] == "0xyes"
+    assert calls["place"][0]["side"] == "BUY"
+
+    db = session_factory()
     try:
-        service.start_strategy(strategy.id)
-        assert False, "expected ValueError"
-    except ValueError as exc:
-        assert str(exc) == "当前仓库尚未实现 Polymarket 私有下单适配器，暂时不能启动真实交易策略"
+        signal_log = db.query(PolymarketCopySignalLog).filter(PolymarketCopySignalLog.strategy_id == strategy.id).one()
+        assert signal_log.live_execution_status == "submitted"
+        assert signal_log.live_order_id == "order-123"
+        assert signal_log.live_order_status == "live"
+        assert signal_log.live_order_response["orderID"] == "order-123"
+    finally:
+        db.close()
+
+    stopped = service.stop_strategy(strategy.id)
+    assert stopped is not None
+    assert stopped.status == "stopped"
+    assert calls["cancel"] == ["order-123"]
+
+    db = session_factory()
+    try:
+        signal_log = db.query(PolymarketCopySignalLog).filter(PolymarketCopySignalLog.strategy_id == strategy.id).one()
+        assert signal_log.live_execution_status == "canceled"
+        assert signal_log.live_canceled_at is not None
+        assert signal_log.live_cancel_response["canceled"] is True
+    finally:
+        db.close()
 
 
 def test_run_cycle_paginates_incremental_activity_fetch_for_active_wallets():

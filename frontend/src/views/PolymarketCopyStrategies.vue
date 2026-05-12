@@ -40,7 +40,7 @@
               <div class="account-picker-row">
                 <el-select v-model="form.execution_account_id" clearable filterable placeholder="请选择真实交易账户" style="width: 100%">
                   <el-option
-                    v-for="account in accounts"
+                    v-for="account in polymarketAccounts"
                     :key="account.id"
                     :label="`${account.name || '未命名账户'} · ${String(account.exchange || '').toUpperCase()}${account.is_active ? '' : ' · 已停用'}`"
                     :value="account.id"
@@ -49,13 +49,13 @@
                 </el-select>
                 <el-button :loading="loadingAccounts" @click="showAddAccountDialog">添加账户</el-button>
               </div>
-              <div class="field-hint">dry-run 可不绑定账户；切到真实交易模式时必须先绑定一个启用中的账户。</div>
+              <div class="field-hint">dry-run 可不绑定账户；切到真实交易模式时必须先绑定一个启用中的 Polymarket 账户。</div>
               <el-alert
                 v-if="!form.dry_run"
                 type="warning"
                 :closable="false"
                 show-icon
-                title="当前仓库尚未接入 Polymarket 私有下单适配器；这里先完成真实账户绑定，启动 live 策略时后端会明确阻断。"
+                title="当前仓库已经接入 Polymarket live 预检、真实下单与回执落库；启动后 runner 会按信号提交订单，停止时会尝试撤销本地记录的未完成订单。"
               />
             </el-form-item>
 
@@ -75,15 +75,16 @@
             <el-row :gutter="12">
               <el-col :span="12">
                 <el-form-item label="单笔上限">
-                  <el-input-number v-model="form.max_order_usdc" :min="1" :step="10" style="width: 100%" />
+                  <el-input-number v-model="form.max_order_usdc" :min="0" :step="10" style="width: 100%" />
                 </el-form-item>
               </el-col>
               <el-col :span="12">
                 <el-form-item label="单市场暴露上限">
-                  <el-input-number v-model="form.max_market_exposure_usdc" :min="1" :step="50" style="width: 100%" />
+                  <el-input-number v-model="form.max_market_exposure_usdc" :min="0" :step="50" style="width: 100%" />
                 </el-form-item>
               </el-col>
             </el-row>
+            <div class="field-hint">copy ratio 默认 1.00 表示按源单金额 1:1 同步；最小跟单额和各类上限填 0 表示不限。</div>
 
             <el-row :gutter="12">
               <el-col :span="12">
@@ -167,7 +168,12 @@
       <el-table :data="strategies" stripe v-loading="loadingStrategies" @row-click="selectStrategy" class="strategy-table">
         <el-table-column prop="strategy_name" label="策略" min-width="220" />
         <el-table-column prop="source_wallet" label="源钱包" min-width="180">
-          <template #default="scope">{{ shortenWallet(scope.row.source_wallet) }}</template>
+          <template #default="scope">
+            <div class="wallet-cell">
+              <span>{{ shortenWallet(scope.row.source_wallet) }}</span>
+              <el-button link type="primary" @click.stop="goToTraderDetail(scope.row.source_wallet)">详情</el-button>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100">
           <template #default="scope">
@@ -186,7 +192,7 @@
           <template #default="scope">{{ scope.row.copy_ratio.toFixed(2) }}x</template>
         </el-table-column>
         <el-table-column label="单笔上限" width="110" align="right">
-          <template #default="scope">{{ formatMoney(scope.row.max_order_usdc) }}</template>
+          <template #default="scope">{{ formatLimitMoney(scope.row.max_order_usdc) }}</template>
         </el-table-column>
         <el-table-column label="最近运行" min-width="160">
           <template #default="scope">{{ formatDateTime(scope.row.last_run_at) }}</template>
@@ -195,6 +201,7 @@
           <template #default="scope">
             <div class="table-actions">
               <el-button link type="primary" :loading="actingStrategyId === scope.row.id && actionType === 'simulate'" @click.stop="simulateStrategy(scope.row)">模拟</el-button>
+              <el-button v-if="!scope.row.dry_run" link type="info" :loading="actingStrategyId === scope.row.id && actionType === 'preflight'" @click.stop="preflightStrategy(scope.row)">预检</el-button>
               <el-button v-if="scope.row.status !== 'running'" link type="success" :loading="actingStrategyId === scope.row.id && actionType === 'start'" @click.stop="startStrategy(scope.row)">启动</el-button>
               <el-button v-else link type="warning" :loading="actingStrategyId === scope.row.id && actionType === 'stop'" @click.stop="stopStrategy(scope.row)">停止</el-button>
               <el-button link @click.stop="loadRuns(scope.row)">运行记录</el-button>
@@ -261,23 +268,31 @@
     >
       <el-form ref="accountFormRef" :model="accountForm" :rules="accountRules" label-position="top">
         <el-form-item label="账户名称" prop="name">
-          <el-input v-model="accountForm.name" placeholder="例如：主账户 / OKX 量化账户" />
+          <el-input v-model="accountForm.name" :placeholder="accountNamePlaceholder" />
         </el-form-item>
         <el-form-item label="交易所" prop="exchange">
           <el-select v-model="accountForm.exchange" placeholder="请选择交易所" style="width: 100%">
             <el-option label="Binance" value="binance" />
             <el-option label="OKX" value="okx" />
+            <el-option label="Polymarket" value="polymarket" />
           </el-select>
         </el-form-item>
-        <el-form-item label="API Key" prop="api_key">
-          <el-input v-model="accountForm.api_key" placeholder="请输入 API Key" />
+        <el-form-item :label="accountKeyLabel" prop="api_key">
+          <el-input v-model="accountForm.api_key" :placeholder="accountKeyPlaceholder" />
         </el-form-item>
-        <el-form-item label="API Secret" prop="api_secret">
-          <el-input v-model="accountForm.api_secret" type="password" show-password placeholder="请输入 API Secret" />
+        <el-form-item :label="accountSecretLabel" prop="api_secret">
+          <el-input v-model="accountForm.api_secret" type="password" show-password :placeholder="accountSecretPlaceholder" />
         </el-form-item>
         <el-form-item v-if="accountRequiresPassphrase" label="Passphrase" prop="api_passphrase">
           <el-input v-model="accountForm.api_passphrase" type="password" show-password placeholder="请输入 OKX API Passphrase" />
         </el-form-item>
+        <el-alert
+          v-if="accountForm.exchange === 'polymarket'"
+          type="info"
+          :closable="false"
+          show-icon
+          title="Polymarket 账户当前先保存钱包地址与私钥占位，用于策略绑定；仓库还没接入私有下单与连通性检测。"
+        />
         <el-form-item label="初始资金" prop="initial_balance">
           <el-input-number v-model="accountForm.initial_balance" :min="0" :precision="2" :step="1000" style="width: 100%" />
         </el-form-item>
@@ -295,7 +310,8 @@
 
 <script>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { polymarket, riskControl } from '@/api'
 import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
 import { formatPolymarketMoney, shortenPolymarketWallet } from '@/utils/polymarket'
@@ -304,11 +320,11 @@ const defaultForm = () => ({
   strategy_name: '',
   source_wallet: '',
   execution_account_id: null,
-  copy_ratio: 0.1,
-  min_copy_order_usdc: 20,
-  max_order_usdc: 200,
-  max_market_exposure_usdc: 500,
-  max_position_notional_usdc: 1000,
+  copy_ratio: 1,
+  min_copy_order_usdc: 0,
+  max_order_usdc: 0,
+  max_market_exposure_usdc: 0,
+  max_position_notional_usdc: 0,
   runner_lookback_hours: 24,
   runner_activity_limit: 120,
   max_signal_delay_seconds: 120,
@@ -319,7 +335,7 @@ const defaultForm = () => ({
 
 const defaultAccountForm = () => ({
   name: '',
-  exchange: 'binance',
+  exchange: 'polymarket',
   api_key: '',
   api_secret: '',
   api_passphrase: '',
@@ -329,6 +345,7 @@ const defaultAccountForm = () => ({
 export default {
   name: 'PolymarketCopyStrategies',
   setup() {
+    const router = useRouter()
     const form = reactive(defaultForm())
     const accountForm = reactive(defaultAccountForm())
     const strategies = ref([])
@@ -349,6 +366,17 @@ export default {
     const accountFormRef = ref(null)
 
     const accountRequiresPassphrase = computed(() => accountForm.exchange === 'okx')
+    const polymarketAccounts = computed(() => accounts.value.filter(account => String(account.exchange || '').toLowerCase() === 'polymarket'))
+    const accountNamePlaceholder = computed(() => {
+      if (accountForm.exchange === 'polymarket') {
+        return '例如：Polymarket 主钱包'
+      }
+      return '例如：主账户 / OKX 量化账户'
+    })
+    const accountKeyLabel = computed(() => (accountForm.exchange === 'polymarket' ? '钱包地址' : 'API Key'))
+    const accountSecretLabel = computed(() => (accountForm.exchange === 'polymarket' ? '私钥' : 'API Secret'))
+    const accountKeyPlaceholder = computed(() => (accountForm.exchange === 'polymarket' ? '请输入 Polymarket 钱包地址' : '请输入 API Key'))
+    const accountSecretPlaceholder = computed(() => (accountForm.exchange === 'polymarket' ? '请输入 Polymarket 私钥' : '请输入 API Secret'))
     const accountRules = {
       name: [{ required: true, message: '请输入账户名称', trigger: 'blur' }],
       exchange: [{ required: true, message: '请选择交易所', trigger: 'change' }],
@@ -367,8 +395,26 @@ export default {
     }
 
     const formatMoney = value => formatPolymarketMoney(value)
+    const formatLimitMoney = value => {
+      if (value === undefined || value === null || Number(value) <= 0) {
+        return '不限'
+      }
+      return formatPolymarketMoney(value)
+    }
+    const escapeHtml = value => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
     const shortenWallet = value => shortenPolymarketWallet(value)
     const formatDateTime = value => (value ? formatDisplayDateTime(value) : '-')
+    const goToTraderDetail = wallet => {
+      if (!wallet) {
+        return
+      }
+      router.push({ name: 'PolymarketTraderDetail', params: { wallet } })
+    }
     const formatExecutionAccount = strategy => {
       if (!strategy?.execution_account_id) {
         return strategy?.dry_run ? '未绑定（dry-run）' : '未绑定'
@@ -528,6 +574,40 @@ export default {
       }
     }
 
+    const buildPreflightDialogHtml = result => {
+      const signal = result.sample_signal
+      const checks = Array.isArray(result.checks) ? result.checks : []
+      return [
+        `<strong>${escapeHtml(result.strategy?.strategy_name || '未命名策略')}</strong>`,
+        escapeHtml(`总体结果: ${result.overall_ok ? '通过' : '未通过'}`),
+        result.overall_hint ? escapeHtml(`结论: ${result.overall_hint}`) : '',
+        escapeHtml(`最近窗口可执行信号: ${result.executable_signal_count || 0}`),
+        signal ? escapeHtml(`样本信号: ${signal.title || '-'} / ${signal.side || '-'} / ${formatMoney(signal.follower_order_usdc)}`) : '',
+        ...checks.map(check => escapeHtml(`${check.ok ? '通过' : '失败'} | ${check.name} | HTTP ${check.status_code}${check.message ? ` | ${check.message}` : ''}${check.hint ? ` | ${check.hint}` : ''}`))
+      ].filter(Boolean).join('<br><br>')
+    }
+
+    const preflightStrategy = async strategy => {
+      actingStrategyId.value = strategy.id
+      actionType.value = 'preflight'
+      try {
+        const result = await polymarket.preflightCopyStrategy(strategy.id, {
+          lookback_hours: strategy.runner_lookback_hours,
+          activity_limit: strategy.runner_activity_limit
+        })
+        await ElMessageBox.alert(buildPreflightDialogHtml(result), 'Live 预检结果', {
+          confirmButtonText: '知道了',
+          dangerouslyUseHTMLString: true
+        })
+      } catch (error) {
+        console.error('Failed to preflight copy strategy:', error)
+        ElMessage.error(error?.response?.data?.detail || '执行 live 预检失败')
+      } finally {
+        actingStrategyId.value = null
+        actionType.value = ''
+      }
+    }
+
     const startStrategy = async strategy => {
       actingStrategyId.value = strategy.id
       actionType.value = 'start'
@@ -571,6 +651,7 @@ export default {
       accountForm,
       strategies,
       accounts,
+      polymarketAccounts,
       selectedStrategy,
       strategyRuns,
       latestSimulation,
@@ -586,10 +667,17 @@ export default {
       accountDialogVisible,
       accountFormRef,
       accountRequiresPassphrase,
+      accountNamePlaceholder,
+      accountKeyLabel,
+      accountSecretLabel,
+      accountKeyPlaceholder,
+      accountSecretPlaceholder,
       accountRules,
       formatMoney,
+      formatLimitMoney,
       shortenWallet,
       formatDateTime,
+      goToTraderDetail,
       formatExecutionAccount,
       resetForm,
       resetAccountForm,
@@ -601,6 +689,7 @@ export default {
       showAddAccountDialog,
       createAccount,
       createStrategy,
+      preflightStrategy,
       simulateStrategy,
       startStrategy,
       stopStrategy
@@ -665,6 +754,12 @@ export default {
   margin: 6px 0 10px;
   font-size: 12px;
   color: #64748b;
+}
+
+.wallet-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .top-grid,

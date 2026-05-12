@@ -94,3 +94,101 @@ def test_account_connectivity_endpoint_returns_actionable_hints(monkeypatch):
     assert payload["futures_account"]["code"] == -2015
     assert "Futures 权限" in payload["overall_hint"]
     assert "统一账户" in payload["account_mode_note"]
+    assert payload["checks"] == []
+
+
+def test_account_connectivity_endpoint_supports_polymarket_checks(monkeypatch):
+    account = SimpleNamespace(
+        id=2,
+        exchange="polymarket",
+        name="polymarket",
+        api_key="wallet",
+        api_secret="private-key",
+    )
+    fake_db = FakeDB(account)
+
+    class FakePolymarketAdapter:
+        async def test_connectivity(self):
+            return {
+                "key_masked": "0x1234...abcd",
+                "overall_hint": "Polymarket 私有认证链路可用。",
+                "account_mode_note": "当前按 EOA 模式初始化。",
+                "checks": [
+                    {
+                        "scope": "clob_l1",
+                        "endpoint": "/auth/api-key",
+                        "ok": True,
+                        "status_code": 200,
+                        "code": None,
+                        "message": "ok",
+                        "hint": "L1 通过",
+                    }
+                ],
+                "spot_account": None,
+                "futures_account": None,
+            }
+
+    monkeypatch.setattr(
+        "app.services.exchange.binance_adapter.create_adapter_for_account",
+        lambda acct: FakePolymarketAdapter(),
+    )
+
+    client = TestClient(create_test_app(fake_db))
+    response = client.get("/api/v1/risk-control/accounts/2/connectivity")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["checks"][0]["scope"] == "clob_l1"
+    assert payload["spot_account"] is None
+    assert payload["futures_account"] is None
+
+
+def test_create_polymarket_account_rejects_poly1271_funder_mismatch():
+    fake_db = SimpleNamespace(add=lambda obj: None, commit=lambda: None, refresh=lambda obj: None)
+    client = TestClient(create_test_app(fake_db))
+
+    response = client.post(
+        "/api/v1/risk-control/accounts/",
+        json={
+            "name": "pm",
+            "exchange": "polymarket",
+            "api_key": "0x6446E5039008f19dc1F10cA60D0830fA459E2329",
+            "api_secret": "0x" + "1" * 64,
+            "initial_balance": 1,
+            "settings": {
+                "polymarket_signature_type": 3,
+                "polymarket_funder_address": "0xe107d231debEc406298f5E6Fb2E5c4Bd4fC3ff7F",
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert "polymarket_funder_address" in response.json()["detail"]
+
+
+def test_update_polymarket_account_rejects_partial_relayer_settings():
+    account = SimpleNamespace(
+        id=3,
+        exchange="polymarket",
+        name="pm",
+        api_key="0x6446E5039008f19dc1F10cA60D0830fA459E2329",
+        api_secret="0x" + "1" * 64,
+        api_passphrase=None,
+        settings={},
+    )
+    fake_db = FakeDB(account)
+    fake_db.commit = lambda: None
+    fake_db.refresh = lambda obj: None
+    client = TestClient(create_test_app(fake_db))
+
+    response = client.put(
+        "/api/v1/risk-control/accounts/3",
+        json={
+            "settings": {
+                "polymarket_relayer_api_key": "019e122f-5aa5-775f-ac4b-f96c304bfbee"
+            }
+        },
+    )
+
+    assert response.status_code == 400
+    assert "polymarket_relayer_api_key_address" in response.json()["detail"]

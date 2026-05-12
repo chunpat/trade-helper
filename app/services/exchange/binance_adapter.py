@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.services.exchange.okx_adapter import OkxAdapter
+from app.services.exchange.polymarket_adapter import PolymarketAdapter
 
 
 class BinanceAdapter:
@@ -437,6 +438,14 @@ def create_adapter_for_account(account):
             account.api_passphrase,
             proxy=proxy,
             use_demo=use_demo,
+        )
+    if exchange == 'polymarket':
+        return PolymarketAdapter(
+            account.api_key,
+            account.api_secret,
+            api_passphrase=getattr(account, 'api_passphrase', None),
+            settings=getattr(account, 'settings', None),
+            proxy=proxy,
         )
 
     return None

@@ -15,6 +15,8 @@ from app.schemas.polymarket import (
     PolymarketTraderSummary,
 )
 from app.schemas.polymarket_copy import (
+    PolymarketLivePreflightCheck,
+    PolymarketLivePreflightResult,
     PolymarketCopyRunnerStatus,
     PolymarketCopySimulationRequest,
     PolymarketCopySimulationResult,
@@ -254,7 +256,7 @@ def _copy_strategy(strategy_id: int = 1) -> PolymarketCopyStrategyRead:
         source_wallet="0x1234567890abcdef1234567890abcdef12345678",
         execution_account_id=3,
         execution_account_name="主账户",
-        execution_account_exchange="binance",
+        execution_account_exchange="polymarket",
         status="draft",
         copy_mode="proportional_notional",
         copy_ratio=0.25,
@@ -408,9 +410,9 @@ def test_start_stop_polymarket_copy_strategy_endpoints(monkeypatch):
     assert stop_response.json()["status"] == "stopped"
 
 
-def test_start_polymarket_copy_strategy_endpoint_returns_400_for_live_block(monkeypatch):
+def test_start_polymarket_copy_strategy_endpoint_returns_400_for_live_start_validation_error(monkeypatch):
     def fake_start(_strategy_id: int):
-        raise ValueError("当前仓库尚未实现 Polymarket 私有下单适配器，暂时不能启动真实交易策略")
+        raise ValueError("Polymarket 执行适配器不可用")
 
     monkeypatch.setattr(polymarket_api.polymarket_copy_service, "start_strategy", fake_start)
 
@@ -418,7 +420,58 @@ def test_start_polymarket_copy_strategy_endpoint_returns_400_for_live_block(monk
     response = client.post("/api/v1/polymarket/strategies/7/start")
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "当前仓库尚未实现 Polymarket 私有下单适配器，暂时不能启动真实交易策略"
+    assert response.json()["detail"] == "Polymarket 执行适配器不可用"
+
+
+def test_preflight_polymarket_copy_strategy_endpoint(monkeypatch):
+    async def fake_preflight(strategy_id: int, payload: PolymarketCopySimulationRequest | None):
+        assert strategy_id == 9
+        assert payload is not None
+        assert payload.lookback_hours == 24
+        return PolymarketLivePreflightResult(
+            strategy=_copy_strategy(9),
+            account_id=3,
+            account_name="主账户",
+            exchange="polymarket",
+            checked_at=datetime.utcnow(),
+            overall_ok=True,
+            overall_hint="预检通过",
+            executable_signal_count=1,
+            sample_signal=PolymarketCopySimulationSignal(
+                signal_index=1,
+                signal_type="OPEN",
+                source_timestamp=datetime.utcnow(),
+                title="Test market",
+                condition_id="0xmarket",
+                asset="123",
+                outcome="Yes",
+                side="BUY",
+                source_trade_usdc=100.0,
+                follower_order_usdc=100.0,
+                status="executed",
+            ),
+            checks=[
+                PolymarketLivePreflightCheck(
+                    name="clob_l1",
+                    endpoint="/auth/api-key",
+                    ok=True,
+                    status_code=200,
+                    message="ok",
+                    hint="L1 通过",
+                )
+            ],
+            notes=["测试"],
+        )
+
+    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "preflight_live_strategy", fake_preflight)
+
+    client = TestClient(create_test_app())
+    response = client.post("/api/v1/polymarket/strategies/9/preflight", json={"lookback_hours": 24, "activity_limit": 120})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overall_ok"] is True
+    assert payload["checks"][0]["name"] == "clob_l1"
 
 
 def test_list_polymarket_copy_strategy_runs_endpoint(monkeypatch):

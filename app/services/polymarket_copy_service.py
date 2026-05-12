@@ -1,4 +1,5 @@
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -12,6 +13,8 @@ from app.models.polymarket_copy import (
 )
 from app.schemas.polymarket import PolymarketActivityItem
 from app.schemas.polymarket_copy import (
+    PolymarketLivePreflightCheck,
+    PolymarketLivePreflightResult,
     PolymarketCopyRunnerStatus,
     PolymarketCopySimulationRequest,
     PolymarketCopySimulationResult,
@@ -21,6 +24,7 @@ from app.schemas.polymarket_copy import (
     PolymarketCopyStrategyCreate,
     PolymarketCopyStrategyRead,
 )
+from app.services.exchange.binance_adapter import create_adapter_for_account
 from app.services.polymarket_trader_analytics_service import (
     PolymarketTraderAnalyticsService,
     polymarket_trader_analytics_service,
@@ -129,15 +133,17 @@ class PolymarketCopyService:
                 return None
             if status == "running":
                 self._validate_startable_strategy(db, row)
+            execution_account = self._load_execution_account(db, row.execution_account_id)
             row.status = status
             if status == "running":
                 row.last_started_at = datetime.utcnow()
                 row.last_error = None
             elif status == "stopped":
+                if row.execution_account_id and not row.dry_run and execution_account is not None:
+                    self._cancel_pending_live_orders(row.id, execution_account)
                 row.last_stopped_at = datetime.utcnow()
             db.commit()
             db.refresh(row)
-            execution_account = self._load_execution_account(db, row.execution_account_id)
             return self._to_strategy_read(row, execution_account=execution_account)
         except Exception:
             db.rollback()
@@ -148,8 +154,27 @@ class PolymarketCopyService:
     def _validate_startable_strategy(self, db: Any, row: PolymarketCopyStrategy) -> None:
         if row.dry_run:
             return
-        self._validate_execution_account(db, row.execution_account_id, require_for_live=True)
-        raise ValueError("当前仓库尚未实现 Polymarket 私有下单适配器，暂时不能启动真实交易策略")
+        account = self._validate_execution_account(db, row.execution_account_id, require_for_live=True)
+        adapter = create_adapter_for_account(account)
+        if adapter is None:
+            raise ValueError("Polymarket 执行适配器不可用")
+        can_place_orders = getattr(adapter, "can_place_orders", None)
+        if callable(can_place_orders):
+            can_place, reason = can_place_orders()
+            if not can_place:
+                raise ValueError(reason or "当前账户不满足 Polymarket live 下单条件")
+
+    @staticmethod
+    def _apply_max_limit(value: float, limit_value: float) -> float:
+        if limit_value <= 0:
+            return value
+        return min(value, limit_value)
+
+    @staticmethod
+    def _is_limit_exceeded(value: float, limit_value: float) -> bool:
+        if limit_value <= 0:
+            return False
+        return value > limit_value
 
     def _validate_execution_account(
         self,
@@ -168,6 +193,8 @@ class PolymarketCopyService:
             raise ValueError("绑定的交易账户不存在")
         if not account.is_active:
             raise ValueError("绑定的交易账户已停用，无法用于真实交易")
+        if str(account.exchange or "").strip().lower() != "polymarket":
+            raise ValueError("Polymarket 跟单策略只能绑定 Polymarket 账户")
         return account
 
     @staticmethod
@@ -192,6 +219,92 @@ class PolymarketCopyService:
         if strategy is None:
             return None
 
+        result = await self._preview_strategy(strategy, payload)
+        run_id = self._persist_simulation_run(strategy_id, payload, result.summary)
+        return PolymarketCopySimulationResult(
+            strategy=result.strategy,
+            simulation_run_id=run_id,
+            lookback_hours=result.lookback_hours,
+            activity_limit=result.activity_limit,
+            summary=result.summary,
+            signals=result.signals,
+            notes=result.notes,
+        )
+
+    async def preflight_live_strategy(
+        self,
+        strategy_id: int,
+        payload: Optional[PolymarketCopySimulationRequest] = None,
+    ) -> Optional[PolymarketLivePreflightResult]:
+        strategy = self.get_strategy(strategy_id)
+        if strategy is None:
+            return None
+        if strategy.dry_run:
+            raise ValueError("dry-run 策略无需做 live 预检")
+
+        request_payload = payload or PolymarketCopySimulationRequest(
+            lookback_hours=strategy.runner_lookback_hours,
+            activity_limit=strategy.runner_activity_limit,
+        )
+
+        db = self.session_factory()
+        try:
+            account = self._validate_execution_account(db, strategy.execution_account_id, require_for_live=True)
+        finally:
+            db.close()
+
+        adapter = create_adapter_for_account(account)
+        if adapter is None:
+            raise ValueError("Polymarket 执行适配器不可用")
+
+        connectivity = await adapter.test_connectivity()
+        checks = self._extract_preflight_checks(connectivity)
+        preview = await self._preview_strategy(strategy, request_payload)
+        executable_signals = [item for item in preview.signals if item.status == "executed"]
+        sample_signal = next((item for item in executable_signals if item.asset), None)
+
+        notes = list(preview.notes)
+        if connectivity.get("account_mode_note"):
+            notes.append(str(connectivity["account_mode_note"]))
+
+        if sample_signal is not None:
+            orderbook_check = await adapter.preflight_orderbook(sample_signal.asset, sample_signal.side or "BUY")
+            checks.append(self._to_preflight_check("sample_orderbook", orderbook_check))
+        else:
+            checks.append(
+                PolymarketLivePreflightCheck(
+                    name="sample_orderbook",
+                    endpoint="/book",
+                    ok=True,
+                    status_code=204,
+                    message="当前窗口内没有可执行信号，未执行盘口检查",
+                    hint="可增大回看窗口，或等源钱包产生新成交后再做一次 live 预检。",
+                )
+            )
+
+        overall_ok = all(check.ok for check in checks if check.status_code != 204)
+        return PolymarketLivePreflightResult(
+            strategy=strategy,
+            account_id=account.id,
+            account_name=account.name,
+            exchange=account.exchange,
+            checked_at=datetime.utcnow(),
+            overall_ok=overall_ok,
+            overall_hint=(
+                connectivity.get("overall_hint")
+                or ("live 预检通过，可以继续进入真实下单执行接线阶段。" if overall_ok else "live 预检未通过，请先处理失败检查项。")
+            ),
+            executable_signal_count=len(executable_signals),
+            sample_signal=sample_signal,
+            checks=checks,
+            notes=notes,
+        )
+
+    async def _preview_strategy(
+        self,
+        strategy: PolymarketCopyStrategyRead,
+        payload: PolymarketCopySimulationRequest,
+    ) -> PolymarketCopySimulationResult:
         activities = await self.analytics_service.get_activity(
             strategy.source_wallet,
             limit=payload.activity_limit,
@@ -201,52 +314,24 @@ class PolymarketCopyService:
         grouped_trades = self.analytics_service._group_trade_activities(raw_trades)
         grouped_trades = sorted(grouped_trades, key=lambda item: item.timestamp)
 
-        signals: List[PolymarketCopySimulationSignal] = []
-        skip_reason_counts: Counter = Counter()
-        source_positions: Dict[Tuple[str, str, str], Dict[str, float]] = {}
-        follower_positions: Dict[Tuple[str, str, str], Dict[str, float]] = {}
-        total_source_notional = 0.0
-        total_copied_notional = 0.0
-
-        for index, trade in enumerate(grouped_trades, start=1):
-            signal = self._simulate_trade_signal(
-                signal_index=index,
-                trade=trade,
-                strategy=strategy,
-                source_positions=source_positions,
-                follower_positions=follower_positions,
-            )
-            total_source_notional += signal.source_trade_usdc
-            if signal.status == "executed":
-                total_copied_notional += signal.follower_order_usdc
-            elif signal.skip_reason:
-                skip_reason_counts[signal.skip_reason] += 1
-            signals.append(signal)
-
-        summary = PolymarketCopySimulationSummary(
+        summary, signals = self._build_simulation_signals(
+            grouped_trades=grouped_trades,
+            strategy=strategy,
+            source_positions={},
+            follower_positions={},
             raw_trade_count=len(raw_trades),
-            grouped_trade_count=len(grouped_trades),
-            simulated_signal_count=len(signals),
-            executed_signal_count=len([item for item in signals if item.status == "executed"]),
-            skipped_signal_count=len([item for item in signals if item.status == "skipped"]),
-            total_source_notional_usdc=round(total_source_notional, 4),
-            total_copied_notional_usdc=round(total_copied_notional, 4),
-            skip_reason_counts=dict(skip_reason_counts),
         )
-        notes = [
-            "V1 模拟按源单名义金额同比例复制开仓/加仓，减仓和平仓按源仓位变化比例同步。",
-            "当前模拟仅基于公开 TRADE 活动，不处理 MERGE、SPLIT、REDEEM。",
-        ]
-
-        run_id = self._persist_simulation_run(strategy_id, payload, summary)
         return PolymarketCopySimulationResult(
             strategy=strategy,
-            simulation_run_id=run_id,
+            simulation_run_id=None,
             lookback_hours=payload.lookback_hours,
             activity_limit=payload.activity_limit,
             summary=summary,
             signals=signals,
-            notes=notes,
+            notes=[
+                "V1 模拟按源单名义金额同比例复制开仓/加仓，减仓和平仓按源仓位变化比例同步。",
+                "当前模拟仅基于公开 TRADE 活动，不处理 MERGE、SPLIT、REDEEM。",
+            ],
         )
 
     async def run_strategy_cycle(self, strategy_id: int) -> Optional[PolymarketCopySimulationResult]:
@@ -259,18 +344,31 @@ class PolymarketCopyService:
         )
         raw_trades, grouped_trades = await self._load_incremental_grouped_trades(strategy, payload)
         source_positions, follower_positions = self._load_shadow_positions(strategy_id)
+        planned_source_positions = deepcopy(source_positions)
+        planned_follower_positions = deepcopy(follower_positions)
 
         summary, signals = self._build_simulation_signals(
             grouped_trades=grouped_trades,
             strategy=strategy,
-            source_positions=source_positions,
-            follower_positions=follower_positions,
+            source_positions=planned_source_positions,
+            follower_positions=planned_follower_positions,
             raw_trade_count=len(raw_trades),
         )
         notes = [
             "Runner 模式按最新 source activity watermark 增量抓取成交，并持久化 source/follower 影子仓位。",
             "无新增 grouped trade 时不会写入新的 simulation run。",
         ]
+        live_execution_results: Dict[str, Dict[str, Any]] = {}
+
+        if grouped_trades and not strategy.dry_run:
+            live_execution_results, follower_positions = self._execute_live_signals(
+                strategy=strategy,
+                signals=signals,
+                follower_positions=follower_positions,
+            )
+            notes.append("live 模式会把可执行信号提交到 Polymarket CLOB，并把订单回执写入 signal log。")
+        else:
+            follower_positions = planned_follower_positions
 
         run_id = None
         if grouped_trades:
@@ -287,8 +385,8 @@ class PolymarketCopyService:
         )
 
         if grouped_trades:
-            self._persist_shadow_positions(strategy_id, source_positions, follower_positions)
-            self._persist_signal_logs(strategy_id, result)
+            self._persist_shadow_positions(strategy_id, planned_source_positions, follower_positions)
+            self._persist_signal_logs(strategy_id, result, execution_results=live_execution_results)
         self._mark_strategy_run(strategy_id)
         return result
 
@@ -310,7 +408,13 @@ class PolymarketCopyService:
     def record_strategy_error(self, strategy_id: int, error_message: str) -> None:
         self._mark_strategy_run(strategy_id, error_message=error_message)
 
-    def _persist_signal_logs(self, strategy_id: int, result: PolymarketCopySimulationResult) -> int:
+    def _persist_signal_logs(
+        self,
+        strategy_id: int,
+        result: PolymarketCopySimulationResult,
+        *,
+        execution_results: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> int:
         db = self.session_factory()
         inserted = 0
         try:
@@ -324,6 +428,14 @@ class PolymarketCopyService:
                 idempotency_key = self._build_signal_idempotency_key(strategy_id, signal)
                 if idempotency_key in existing_keys:
                     continue
+                execution_payload = (execution_results or {}).get(idempotency_key) or {}
+                serializable_execution_payload = {
+                    key: value.isoformat() if isinstance(value, datetime) else value
+                    for key, value in execution_payload.items()
+                }
+                signal_payload = signal.model_dump(mode="json")
+                if serializable_execution_payload:
+                    signal_payload["live_execution"] = serializable_execution_payload
                 db.add(
                     PolymarketCopySignalLog(
                         strategy_id=strategy_id,
@@ -340,7 +452,16 @@ class PolymarketCopyService:
                         source_trade_usdc=signal.source_trade_usdc,
                         follower_order_usdc=signal.follower_order_usdc,
                         skip_reason=signal.skip_reason,
-                        signal_payload=signal.model_dump(mode="json"),
+                        live_execution_status=execution_payload.get("execution_status"),
+                        live_order_id=execution_payload.get("order_id"),
+                        live_order_status=execution_payload.get("order_status"),
+                        live_execution_error=execution_payload.get("execution_error"),
+                        live_order_response=execution_payload.get("order_response"),
+                        live_executed_at=execution_payload.get("executed_at"),
+                        live_canceled_at=execution_payload.get("canceled_at"),
+                        live_cancel_response=execution_payload.get("cancel_response"),
+                        live_cancel_error=execution_payload.get("cancel_error"),
+                        signal_payload=signal_payload,
                     )
                 )
                 existing_keys.add(idempotency_key)
@@ -679,15 +800,15 @@ class PolymarketCopyService:
                 status = "skipped"
                 skip_reason = "close_only"
             else:
-                follower_order_usdc = min(trade_usdc * strategy.copy_ratio, strategy.max_order_usdc)
+                follower_order_usdc = self._apply_max_limit(trade_usdc * strategy.copy_ratio, strategy.max_order_usdc)
                 market_notional_after = float(follower_state["notional"]) + follower_order_usdc
                 if follower_order_usdc < strategy.min_copy_order_usdc:
                     status = "skipped"
                     skip_reason = "below_min_copy_order"
-                elif market_notional_after > strategy.max_market_exposure_usdc:
+                elif self._is_limit_exceeded(market_notional_after, strategy.max_market_exposure_usdc):
                     status = "skipped"
                     skip_reason = "market_exposure_limit"
-                elif market_notional_after > strategy.max_position_notional_usdc:
+                elif self._is_limit_exceeded(market_notional_after, strategy.max_position_notional_usdc):
                     status = "skipped"
                     skip_reason = "position_limit"
                 else:
@@ -745,6 +866,173 @@ class PolymarketCopyService:
             status=status,
             skip_reason=skip_reason,
         )
+
+    def _execute_live_signals(
+        self,
+        *,
+        strategy: PolymarketCopyStrategyRead,
+        signals: List[PolymarketCopySimulationSignal],
+        follower_positions: Dict[Tuple[str, str, str], Dict[str, Any]],
+    ) -> Tuple[Dict[str, Dict[str, Any]], Dict[Tuple[str, str, str], Dict[str, Any]]]:
+        db = self.session_factory()
+        try:
+            account = self._validate_execution_account(db, strategy.execution_account_id, require_for_live=True)
+        finally:
+            db.close()
+
+        adapter = create_adapter_for_account(account)
+        if adapter is None:
+            raise ValueError("Polymarket 执行适配器不可用")
+
+        execution_results: Dict[str, Dict[str, Any]] = {}
+        actual_follower_positions = deepcopy(follower_positions)
+        halt_submission = False
+
+        for signal in signals:
+            idempotency_key = self._build_signal_idempotency_key(strategy.id, signal)
+            if signal.status != "executed":
+                execution_results[idempotency_key] = {"execution_status": "skipped_simulation"}
+                continue
+            if halt_submission:
+                execution_results[idempotency_key] = {
+                    "execution_status": "skipped_after_failure",
+                    "execution_error": "同一轮询周期内前序 live 下单失败，后续信号已停止提交",
+                }
+                continue
+
+            order_request = self._build_live_order_request(signal)
+            if order_request is None:
+                execution_results[idempotency_key] = {
+                    "execution_status": "invalid_order",
+                    "execution_error": "缺少有效价格、数量或 token_id，无法提交 live 订单",
+                }
+                halt_submission = True
+                continue
+
+            try:
+                receipt = adapter.place_order(**order_request)
+                execution_results[idempotency_key] = {
+                    "execution_status": "submitted",
+                    "order_id": receipt.get("order_id"),
+                    "order_status": receipt.get("status"),
+                    "order_response": receipt.get("response") or {},
+                    "executed_at": datetime.utcnow(),
+                }
+                self._apply_live_follower_fill(actual_follower_positions, signal)
+            except Exception as exc:
+                execution_results[idempotency_key] = {
+                    "execution_status": "failed",
+                    "execution_error": str(exc),
+                }
+                halt_submission = True
+
+        return execution_results, actual_follower_positions
+
+    @staticmethod
+    def _build_live_order_request(signal: PolymarketCopySimulationSignal) -> Optional[Dict[str, Any]]:
+        token_id = str(signal.asset or "").strip()
+        side = str(signal.side or "").upper()
+        if not token_id or side not in {"BUY", "SELL"}:
+            return None
+
+        source_size = float(signal.source_trade_size or 0.0)
+        source_notional = float(signal.source_trade_usdc or 0.0)
+        price = source_notional / source_size if source_size > 0 else 0.0
+        if price <= 0:
+            return None
+
+        if side == "BUY":
+            size = float(signal.follower_order_usdc or 0.0) / price
+        else:
+            size = max(float(signal.follower_position_before or 0.0) - float(signal.follower_position_after or 0.0), 0.0)
+
+        if size <= 0:
+            return None
+
+        return {
+            "token_id": token_id,
+            "side": side,
+            "price": round(price, 8),
+            "size": round(size, 8),
+        }
+
+    @staticmethod
+    def _apply_live_follower_fill(
+        follower_positions: Dict[Tuple[str, str, str], Dict[str, Any]],
+        signal: PolymarketCopySimulationSignal,
+    ) -> None:
+        position_key = (
+            signal.condition_id or signal.title or "unknown",
+            signal.asset or "unknown",
+            signal.outcome or "unknown",
+        )
+        state = follower_positions.setdefault(position_key, {"size": 0.0, "notional": 0.0})
+        state["size"] = float(signal.follower_position_after or 0.0)
+        if str(signal.side or "").upper() == "BUY":
+            state["notional"] = max(0.0, float(state.get("notional") or 0.0) + float(signal.follower_order_usdc or 0.0))
+        else:
+            state["notional"] = max(0.0, float(state.get("notional") or 0.0) - float(signal.follower_order_usdc or 0.0))
+
+    def _cancel_pending_live_orders(self, strategy_id: int, account: Account) -> int:
+        adapter = create_adapter_for_account(account)
+        if adapter is None:
+            raise ValueError("Polymarket 执行适配器不可用")
+
+        db = self.session_factory()
+        try:
+            rows = (
+                db.query(PolymarketCopySignalLog)
+                .filter(PolymarketCopySignalLog.strategy_id == strategy_id)
+                .filter(PolymarketCopySignalLog.live_order_id.isnot(None))
+                .filter(PolymarketCopySignalLog.live_execution_status == "submitted")
+                .filter(PolymarketCopySignalLog.live_canceled_at.is_(None))
+                .all()
+            )
+            canceled = 0
+            for row in rows:
+                try:
+                    receipt = adapter.cancel_order(str(row.live_order_id))
+                    row.live_execution_status = "canceled"
+                    row.live_order_status = receipt.get("status")
+                    row.live_canceled_at = datetime.utcnow()
+                    row.live_cancel_response = receipt.get("response") or {}
+                    row.live_cancel_error = None
+                    canceled += 1
+                except Exception as exc:
+                    row.live_cancel_error = str(exc)
+            db.commit()
+            return canceled
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    @staticmethod
+    def _to_preflight_check(name: str, payload: Dict[str, Any]) -> PolymarketLivePreflightCheck:
+        return PolymarketLivePreflightCheck(
+            name=name,
+            endpoint=str(payload.get("endpoint") or ""),
+            ok=bool(payload.get("ok")),
+            status_code=int(payload.get("status_code") or 0),
+            code=payload.get("code"),
+            message=payload.get("message"),
+            hint=payload.get("hint"),
+        )
+
+    def _extract_preflight_checks(self, connectivity: Dict[str, Any]) -> List[PolymarketLivePreflightCheck]:
+        checks_payload = connectivity.get("checks") or []
+        if checks_payload:
+            return [
+                self._to_preflight_check(str(item.get("scope") or f"check_{index}"), item)
+                for index, item in enumerate(checks_payload, start=1)
+            ]
+
+        fallback_checks = []
+        for name, payload in (("spot_account", connectivity.get("spot_account")), ("futures_account", connectivity.get("futures_account"))):
+            if payload:
+                fallback_checks.append(self._to_preflight_check(name, payload))
+        return fallback_checks
 
     @staticmethod
     def _to_strategy_read(row: PolymarketCopyStrategy, execution_account: Optional[Account] = None) -> PolymarketCopyStrategyRead:

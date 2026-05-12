@@ -63,8 +63,9 @@ class AccountConnectivityResult(BaseModel):
     key_masked: str
     overall_hint: Optional[str] = None
     account_mode_note: Optional[str] = None
-    spot_account: AccountConnectivityCheck
-    futures_account: AccountConnectivityCheck
+    checks: List[AccountConnectivityCheck] = Field(default_factory=list)
+    spot_account: Optional[AccountConnectivityCheck] = None
+    futures_account: Optional[AccountConnectivityCheck] = None
 
 class RiskConfigBase(BaseModel):
     max_leverage: float = Field(..., ge=1, description="最大杠杆倍数")

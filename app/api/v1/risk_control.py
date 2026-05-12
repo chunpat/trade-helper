@@ -34,6 +34,7 @@ REVIEW_CASHFLOW_TRANSACTION_TYPES = {
 }
 
 OKX_EXCHANGE_ALIASES = {"okx", "okex"}
+CONNECTIVITY_SUPPORTED_EXCHANGES = {"binance", "okx", "polymarket"}
 ONE_TIME_HISTORY_BACKFILL_DAYS = 90
 SYNC_HISTORY_STATUS_POLL_RUNNING = {"queued", "running"}
 SYNC_HISTORY_JOBS: dict[int, dict] = {}
@@ -498,12 +499,77 @@ def _normalize_account_secret_fields(payload: dict) -> dict:
     if "api_passphrase" in normalized and isinstance(normalized.get("api_passphrase"), str):
         normalized["api_passphrase"] = normalized["api_passphrase"].strip() or None
 
+    if "api_key" in normalized and isinstance(normalized.get("api_key"), str):
+        normalized["api_key"] = normalized["api_key"].strip()
+
+    if "api_secret" in normalized and isinstance(normalized.get("api_secret"), str):
+        normalized["api_secret"] = normalized["api_secret"].strip()
+
+    if "settings" in normalized and isinstance(normalized.get("settings"), dict):
+        settings = dict(normalized["settings"])
+        for field in (
+            "polymarket_funder_address",
+            "polymarket_relayer_api_key",
+            "polymarket_relayer_api_key_address",
+            "polymarket_clob_api_key",
+            "polymarket_clob_api_secret",
+            "polymarket_clob_api_passphrase",
+        ):
+            value = settings.get(field)
+            if isinstance(value, str):
+                trimmed = value.strip()
+                settings[field] = trimmed or None
+        normalized["settings"] = settings
+
     return normalized
 
 
 def _validate_account_exchange_credentials(exchange: Optional[str], api_passphrase: Optional[str]) -> None:
     if exchange == "okx" and not api_passphrase:
         raise HTTPException(status_code=400, detail="OKX account requires api_passphrase")
+
+
+def _validate_polymarket_account_settings(
+    exchange: Optional[str],
+    api_key: Optional[str],
+    settings: Optional[dict],
+) -> None:
+    if exchange != "polymarket":
+        return
+
+    effective_settings = settings or {}
+    if not isinstance(effective_settings, dict):
+        raise HTTPException(status_code=400, detail="Polymarket account settings must be an object")
+
+    try:
+        signature_type = int(effective_settings.get("polymarket_signature_type") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid polymarket_signature_type")
+
+    funder_address = effective_settings.get("polymarket_funder_address")
+    if signature_type == 3 and funder_address and api_key and str(funder_address).lower() != str(api_key).lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Polymarket POLY_1271 account requires polymarket_funder_address to match api_key (deposit wallet address)",
+        )
+
+    relayer_key = effective_settings.get("polymarket_relayer_api_key")
+    relayer_address = effective_settings.get("polymarket_relayer_api_key_address")
+    if bool(relayer_key) ^ bool(relayer_address):
+        raise HTTPException(
+            status_code=400,
+            detail="Polymarket relayer auth requires both polymarket_relayer_api_key and polymarket_relayer_api_key_address",
+        )
+
+    clob_key = effective_settings.get("polymarket_clob_api_key")
+    clob_secret = effective_settings.get("polymarket_clob_api_secret")
+    clob_passphrase = effective_settings.get("polymarket_clob_api_passphrase")
+    clob_fields = [clob_key, clob_secret, clob_passphrase]
+    if 0 < sum(bool(item) for item in clob_fields) < len(clob_fields):
+        raise HTTPException(
+            status_code=400,
+            detail="Polymarket CLOB auth requires polymarket_clob_api_key, polymarket_clob_api_secret, and polymarket_clob_api_passphrase",
+        )
 
 @router.post("/accounts/", response_model=schemas.AccountInDB)
 async def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
@@ -512,6 +578,7 @@ async def create_account(account: schemas.AccountCreate, db: Session = Depends(g
 
     payload = _normalize_account_secret_fields(account.dict())
     _validate_account_exchange_credentials(payload.get("exchange"), payload.get("api_passphrase"))
+    _validate_polymarket_account_settings(payload.get("exchange"), payload.get("api_key"), payload.get("settings"))
 
     db_account = Account(**payload)
     db.add(db_account)
@@ -695,7 +762,10 @@ async def update_account(
     update_data = _normalize_account_secret_fields(account_update.dict(exclude_unset=True))
     effective_exchange = update_data.get("exchange", db_account.exchange)
     effective_api_passphrase = update_data.get("api_passphrase", db_account.api_passphrase)
+    effective_api_key = update_data.get("api_key", db_account.api_key)
+    effective_settings = update_data.get("settings", db_account.settings)
     _validate_account_exchange_credentials(effective_exchange, effective_api_passphrase)
+    _validate_polymarket_account_settings(effective_exchange, effective_api_key, effective_settings)
 
     for field, value in update_data.items():
         setattr(db_account, field, value)
@@ -751,6 +821,10 @@ async def test_account_connectivity(
     acct = db.query(Account).filter(Account.id == account_id).first()
     if not acct:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    normalized_exchange = _normalize_exchange_name(getattr(acct, "exchange", None))
+    if normalized_exchange not in CONNECTIVITY_SUPPORTED_EXCHANGES:
+        raise HTTPException(status_code=400, detail=f"Connectivity test is not supported for exchange: {normalized_exchange}")
 
     adapter = create_adapter_for_account(acct)
     if not adapter:

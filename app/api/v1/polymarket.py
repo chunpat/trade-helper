@@ -12,6 +12,7 @@ from app.schemas.polymarket import (
 )
 from app.schemas.polymarket_copy import (
     PolymarketCopyRunnerStatus,
+    PolymarketLivePreflightResult,
     PolymarketCopySimulationRequest,
     PolymarketCopySimulationResult,
     PolymarketCopySimulationRunRead,
@@ -210,6 +211,23 @@ async def simulate_polymarket_copy_strategy(
 ):
     try:
         result = await polymarket_copy_service.simulate_strategy(strategy_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PolymarketAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="strategy not found")
+    return result
+
+
+@router.post("/strategies/{strategy_id}/preflight", response_model=PolymarketLivePreflightResult)
+async def preflight_polymarket_copy_strategy(
+    strategy_id: int,
+    payload: Optional[PolymarketCopySimulationRequest] = None,
+):
+    try:
+        result = await polymarket_copy_service.preflight_live_strategy(strategy_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PolymarketAPIError as exc:

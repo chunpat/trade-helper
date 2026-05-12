@@ -20,6 +20,7 @@ numpy>=1.21.0
 # API Client
 httpx>=0.23.0
 websockets>=10.0
+py-clob-client-v2>=1.0.1
 
 # Security
 python-jose>=3.3.0

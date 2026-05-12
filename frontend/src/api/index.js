@@ -356,6 +356,9 @@ export const polymarket = {
   startCopyStrategy(strategyId) {
     return api.post(`/polymarket/strategies/${strategyId}/start`)
   },
+  preflightCopyStrategy(strategyId, data) {
+    return api.post(`/polymarket/strategies/${strategyId}/preflight`, data)
+  },
   stopCopyStrategy(strategyId) {
     return api.post(`/polymarket/strategies/${strategyId}/stop`)
   },

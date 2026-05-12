@@ -160,6 +160,69 @@ def update_schema():
                     "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN source_trade_size DOUBLE NOT NULL DEFAULT 0.0 AFTER side",
                     "Column 'source_trade_size' added successfully.",
                 )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_execution_status",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_execution_status VARCHAR(32) NULL AFTER skip_reason",
+                    "Column 'live_execution_status' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_order_id",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_order_id VARCHAR(255) NULL AFTER live_execution_status",
+                    "Column 'live_order_id' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_order_status",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_order_status VARCHAR(64) NULL AFTER live_order_id",
+                    "Column 'live_order_status' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_execution_error",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_execution_error TEXT NULL AFTER live_order_status",
+                    "Column 'live_execution_error' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_order_response",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_order_response JSON NULL AFTER live_execution_error",
+                    "Column 'live_order_response' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_executed_at",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_executed_at DATETIME NULL AFTER live_order_response",
+                    "Column 'live_executed_at' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_canceled_at",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_canceled_at DATETIME NULL AFTER live_executed_at",
+                    "Column 'live_canceled_at' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_cancel_response",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_cancel_response JSON NULL AFTER live_canceled_at",
+                    "Column 'live_cancel_response' added successfully.",
+                )
+                ensure_column(
+                    cursor,
+                    "polymarket_copy_signal_logs",
+                    "live_cancel_error",
+                    "ALTER TABLE polymarket_copy_signal_logs ADD COLUMN live_cancel_error TEXT NULL AFTER live_cancel_response",
+                    "Column 'live_cancel_error' added successfully.",
+                )
             else:
                 print("Table 'polymarket_copy_signal_logs' does not exist yet. It will be created by init_db().")
 

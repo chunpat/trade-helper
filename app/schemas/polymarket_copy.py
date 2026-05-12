@@ -9,11 +9,11 @@ class PolymarketCopyStrategyCreate(BaseModel):
     source_wallet: str = Field(..., min_length=42, max_length=42)
     execution_account_id: Optional[int] = Field(None, ge=1)
     copy_mode: str = Field("proportional_notional")
-    copy_ratio: float = Field(0.1, gt=0, le=1)
-    min_copy_order_usdc: float = Field(20.0, ge=0)
-    max_order_usdc: float = Field(200.0, gt=0)
-    max_position_notional_usdc: float = Field(1000.0, gt=0)
-    max_market_exposure_usdc: float = Field(500.0, gt=0)
+    copy_ratio: float = Field(1.0, gt=0, le=1)
+    min_copy_order_usdc: float = Field(0.0, ge=0)
+    max_order_usdc: float = Field(0.0, ge=0)
+    max_position_notional_usdc: float = Field(0.0, ge=0)
+    max_market_exposure_usdc: float = Field(0.0, ge=0)
     max_signal_delay_seconds: int = Field(120, ge=1, le=3600)
     max_slippage_bps: int = Field(80, ge=0, le=5000)
     close_only: bool = False
@@ -130,6 +130,30 @@ class PolymarketCopySimulationRunRead(BaseModel):
     summary: Dict[str, object] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+
+
+class PolymarketLivePreflightCheck(BaseModel):
+    name: str
+    endpoint: str
+    ok: bool
+    status_code: int
+    code: Optional[int] = None
+    message: Optional[str] = None
+    hint: Optional[str] = None
+
+
+class PolymarketLivePreflightResult(BaseModel):
+    strategy: PolymarketCopyStrategyRead
+    account_id: int
+    account_name: Optional[str] = None
+    exchange: str
+    checked_at: datetime
+    overall_ok: bool
+    overall_hint: Optional[str] = None
+    executable_signal_count: int = 0
+    sample_signal: Optional[PolymarketCopySimulationSignal] = None
+    checks: List[PolymarketLivePreflightCheck] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
 
 
 class PolymarketCopyRunnerStatus(BaseModel):
