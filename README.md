@@ -116,17 +116,23 @@ trade-helper/
 │   │   ├── store/        # Vuex 状态管理
 │   │   ├── views/        # 页面视图
 │   │   └── main.js       # 应用入口
-│   └── package.json
+│   ├── package.json
+│   └── vite.config.js
 ├── scripts/              # 管理脚本
 ├── tests/                # 测试用例
-├── docker-compose.yml    # 本地容器编排
+├── docker-compose.yml    # 公共容器编排，默认不内置 MySQL
+├── docker-compose.dev.yml   # 开发环境覆盖，包含 MySQL 和代码挂载
+├── docker-compose.prod.yml  # 生产环境覆盖，适合接宿主机 MySQL
+├── .env.example          # 后端环境变量示例
 ├── Dockerfile            # 后端镜像定义
 └── requirements.txt      # Python 依赖
 ```
 
 ## 快速开始
 
-### 1. 后端开发
+推荐先按“本地单进程开发”跑通，再根据需要切到“双进程开发”或 Docker Compose。
+
+### 1. 环境准备
 
 1. 创建并激活虚拟环境
 
@@ -147,11 +153,26 @@ Windows:
 pip install -r requirements.txt
 ```
 
+前端依赖:
+
+```bash
+cd frontend
+npm install
+```
+
+回到项目根目录:
+
+```bash
+cd ..
+```
+
 3. 复制环境变量文件
 
 ```bash
 cp .env.example .env
 ```
+
+建议本地开发时让后端监听 `8029`，这样能直接和前端 Vite 默认代理配置对齐。
 
 4. 初始化数据库
 
@@ -159,90 +180,97 @@ cp .env.example .env
 python scripts/init_db.py
 ```
 
-5. 启动后端
+### 2. 端口约定
+
+| 场景 | 默认地址 |
+| --- | --- |
+| 本地后端 API | `http://localhost:8029/api/v1` |
+| 本地后端文档 | `http://localhost:8029/api/docs` |
+| 本地健康检查 | `http://localhost:8029/health` |
+| 本地前端 Vite | `http://localhost:8030` |
+| Docker 前端页面 | `http://localhost:8030` |
+
+说明:
+
+- 直接运行 `python main.py` 时，后端默认读取 `PORT` 环境变量；`.env.example` 里的默认值是 `8000`
+- 本 README 的本地联调示例统一使用 `8029`，避免和前端代理配置不一致
+- Docker 模式下，容器内后端仍监听 `8000`，宿主机映射为 `8029`
+
+### 3. 本地单进程开发
+
+适合快速调试，API、行情轮询、仓位同步和异常扫描都在一个进程里运行。
 
 ```bash
-python main.py
+START_MARKET_POLLER=True \
+START_POSITION_SYNC=True \
+START_ANOMALY_MONITOR=True \
+uvicorn main:app --host 0.0.0.0 --port 8029 --reload
 ```
 
-默认地址:
-
-- API 文档: http://localhost:8000/api/docs
-- 健康检查: http://localhost:8000/health
-- API 基础路径: http://localhost:8000/api/v1
-
-### 2. 前端开发
+启动前端:
 
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
-默认前端开发地址:
+访问地址:
 
-- http://localhost:3000
+- 前端: `http://localhost:8030`
+- API 文档: `http://localhost:8029/api/docs`
+- API 基础路径: `http://localhost:8029/api/v1`
 
-构建生产包:
+### 4. 本地双进程开发
 
-```bash
-npm run build
-```
-
-本地预览构建结果:
-
-```bash
-npm run preview
-```
-
-### 3. 推荐的分离运行模式
-
-如果你希望“信息库更新”和 API 分开跑，建议使用两个进程。
+适合稳定观察“信息库”更新，不让异常扫描影响 API 响应。
 
 API 进程:
 
 ```bash
-START_ANOMALY_MONITOR=False python main.py
+START_MARKET_POLLER=True \
+START_POSITION_SYNC=True \
+START_ANOMALY_MONITOR=False \
+uvicorn main:app --host 0.0.0.0 --port 8029 --reload
 ```
 
-异常扫描 worker:
+Worker 进程:
 
 ```bash
+START_MARKET_POLLER=False \
+START_POSITION_SYNC=False \
+START_ANOMALY_MONITOR=True \
 python scripts/run_anomaly_worker.py
 ```
 
-### 4. Docker Compose
+### 5. Docker Compose
+
+#### 开发环境
+
+适合本地完整联调，使用容器内 MySQL，并为后端启用代码挂载和热重载。
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
-默认服务角色:
+开发环境默认服务:
 
+- `mysql`: MySQL 8.0
+- `redis`: Redis 6
 - `backend`: API、WebSocket、行情轮询、仓位同步
 - `insight-worker`: 异常扫描、新闻抓取、信息库更新
-- `redis`: Redis 6
 - `frontend`: Nginx 承载的前端静态页面
 
-环境文件说明:
+#### 生产环境
 
-- `docker-compose.yml`: 公共基础配置，默认不包含 MySQL，适合生产或接外部数据库
-- `docker-compose.dev.yml`: 开发环境覆盖，提供 MySQL、代码挂载和后端热重载
-- `docker-compose.prod.yml`: 生产环境覆盖，提供容器访问宿主机的能力
+适合接宿主机 MySQL，容器内只启动 Redis、后端角色和前端静态站点。
 
-开发环境启动:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-```
-
-生产环境启动（宿主机 MySQL）:
+首次启动:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d redis backend insight-worker frontend
 ```
 
-生产环境更新（代码有变更，需要重建镜像并重启）:
+代码有变更时重建并更新:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build backend insight-worker frontend
@@ -260,73 +288,34 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build ba
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build frontend
 ```
 
-仅重启容器（代码和镜像都没变）:
+仅重启容器:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml restart backend insight-worker frontend
 ```
 
-查看运行日志:
+查看日志:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f backend insight-worker frontend
 ```
+
+默认容器访问地址:
+
+- API 文档: `http://localhost:8029/api/docs`
+- 前端页面: `http://localhost:8030`
+
+环境文件说明:
+
+- `docker-compose.yml`: 公共基础配置，默认不包含 MySQL，适合生产或接外部数据库
+- `docker-compose.dev.yml`: 开发环境覆盖，提供 MySQL、代码挂载和后端热重载
+- `docker-compose.prod.yml`: 生产环境覆盖，提供容器访问宿主机的能力
 
 前端生产部署建议:
 
 - 推荐先构建前端静态资源，再由 Nginx 提供静态文件服务
 - 浏览器统一访问同域 `/api/v1` 和 `/ws`，由 Nginx 反向代理到后端容器
 - 不建议生产环境让浏览器直接请求 `http://后端主机:8029/api/v1`，这样会引入跨域、端口暴露和代理链路不一致问题
-
-默认容器访问地址:
-
-- API 文档: http://localhost:8029/api/docs
-- 前端页面: http://localhost:8030
-
-## 常见部署场景
-
-### 场景一：本地单进程开发
-
-适合快速调试，所有任务都跑在一个后端进程里。
-
-```bash
-START_MARKET_POLLER=True \
-START_POSITION_SYNC=True \
-START_ANOMALY_MONITOR=True \
-python main.py
-```
-
-### 场景二：本地双进程开发
-
-适合稳定观察“信息库”更新，不让异常扫描影响 API 响应。
-
-API 进程：
-
-```bash
-START_MARKET_POLLER=True \
-START_POSITION_SYNC=True \
-START_ANOMALY_MONITOR=False \
-python main.py
-```
-
-Worker 进程：
-
-```bash
-START_MARKET_POLLER=False \
-START_POSITION_SYNC=False \
-START_ANOMALY_MONITOR=True \
-python scripts/run_anomaly_worker.py
-```
-
-### 场景三：Docker Compose
-
-适合本地完整联调和长期运行。
-
-```bash
-docker compose up -d --build
-```
-
-默认会启动 `backend` 和 `insight-worker` 两个后端角色，不需要再手工拆进程。
 
 ## 关键环境变量
 
@@ -353,7 +342,7 @@ docker compose up -d --build
 新闻归档接口示例:
 
 ```bash
-curl "http://localhost:8000/api/v1/market-insight/news?limit=20&symbol=BTCUSDT&hours=24"
+curl "http://localhost:8029/api/v1/market-insight/news?limit=20&symbol=BTCUSDT&hours=24"
 ```
 
 如果你要启用兼容 OpenAI 的远程分析接口，可以额外配置:
@@ -430,8 +419,9 @@ risk_control:
 
 ### 基础设施
 
-- `docker-compose.yml` 已包含 MySQL、Redis、Backend、Insight Worker、Frontend
-- 本地容器模式已支持 API 与信息库更新分离部署
+- `docker-compose.yml` 提供 Redis、Backend、Insight Worker、Frontend 的公共编排
+- `docker-compose.dev.yml` 额外提供 MySQL 和后端代码挂载，适合本地联调
+- 容器模式已支持 API 与信息库更新分离部署
 
 ## 贡献指南
 
