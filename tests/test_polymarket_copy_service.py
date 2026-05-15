@@ -464,6 +464,35 @@ def test_start_live_strategy_succeeds_with_polymarket_execution_account():
     assert stopped.status == "stopped"
 
 
+def test_start_live_strategy_blocks_when_adapter_cannot_place_orders(monkeypatch):
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient())
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    _create_account(session_factory, account_id=13, exchange="polymarket", is_active=True)
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="受阻真实策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+            execution_account_id=13,
+            dry_run=False,
+        )
+    )
+
+    class FakeAdapter:
+        @staticmethod
+        def can_place_orders():
+            return False, "当前 py-clob-client-v2 / Polymarket deposit wallet(POLY_1271) 真实下单存在已知上游问题"
+
+    monkeypatch.setattr("app.services.polymarket_copy_service.create_adapter_for_account", lambda account: FakeAdapter())
+
+    try:
+        service.start_strategy(strategy.id)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "已知上游问题" in str(exc)
+
+
 def test_preflight_live_strategy_runs_adapter_checks_without_persisting_run(monkeypatch):
     now = datetime.utcnow()
     activity = [
@@ -511,6 +540,10 @@ def test_preflight_live_strategy_runs_adapter_checks_without_persisting_run(monk
             assert side == "BUY"
             return {"scope": "orderbook", "endpoint": "/book", "ok": True, "status_code": 200, "message": "book ok", "hint": "ok"}
 
+        async def preflight_collateral_balance(self, side: str):
+            assert side == "BUY"
+            return {"scope": "collateral_balance", "endpoint": "/balance-allowance", "ok": True, "status_code": 200, "message": "balance ok", "hint": "ok"}
+
     monkeypatch.setattr("app.services.polymarket_copy_service.create_adapter_for_account", lambda account: FakeAdapter())
 
     result = asyncio.run(service.preflight_live_strategy(strategy.id))
@@ -520,9 +553,75 @@ def test_preflight_live_strategy_runs_adapter_checks_without_persisting_run(monk
     assert result.executable_signal_count == 1
     assert result.sample_signal is not None
     assert result.sample_signal.asset == "123"
+    assert any(check.name == "sample_collateral_balance" and check.ok for check in result.checks)
 
     runs = service.list_simulation_runs(strategy.id)
     assert runs == []
+
+
+def test_preflight_live_strategy_blocks_buy_when_collateral_balance_is_zero(monkeypatch):
+    now = datetime.utcnow()
+    activity = [
+        {
+            "proxyWallet": "0x1234567890abcdef1234567890abcdef12345678",
+            "timestamp": int((now - timedelta(minutes=30)).timestamp()),
+            "type": "TRADE",
+            "conditionId": "0xmarket1",
+            "asset": "123",
+            "side": "BUY",
+            "outcome": "Yes",
+            "size": 100,
+            "usdcSize": 50,
+            "price": 0.5,
+            "title": "Will BTC rise?",
+        }
+    ]
+
+    session_factory = _build_session_factory()
+    analytics_service = PolymarketTraderAnalyticsService(client=FakePolymarketDataClient(activity=activity))
+    service = PolymarketCopyService(analytics_service=analytics_service, session_factory=session_factory)
+
+    _create_account(session_factory, account_id=12, exchange="polymarket", is_active=True)
+    strategy = service.create_strategy(
+        payload=PolymarketCopyStrategyCreate(
+            strategy_name="真实策略",
+            source_wallet="0x1234567890abcdef1234567890abcdef12345678",
+            execution_account_id=12,
+            dry_run=False,
+        )
+    )
+
+    class FakeAdapter:
+        async def test_connectivity(self):
+            return {
+                "overall_hint": "ok",
+                "account_mode_note": "EOA",
+                "checks": [
+                    {"scope": "clob_l1", "endpoint": "/auth/api-key", "ok": True, "status_code": 200, "message": "ok", "hint": "ok"}
+                ],
+            }
+
+        async def preflight_orderbook(self, token_id: str, side: str):
+            return {"scope": "orderbook", "endpoint": "/book", "ok": True, "status_code": 200, "message": "book ok", "hint": "ok"}
+
+        async def preflight_collateral_balance(self, side: str):
+            assert side == "BUY"
+            return {
+                "scope": "collateral_balance",
+                "endpoint": "/balance-allowance",
+                "ok": False,
+                "status_code": 409,
+                "message": "当前 collateral 余额为 0",
+                "hint": "请先充值",
+            }
+
+    monkeypatch.setattr("app.services.polymarket_copy_service.create_adapter_for_account", lambda account: FakeAdapter())
+
+    result = asyncio.run(service.preflight_live_strategy(strategy.id))
+
+    assert result is not None
+    assert result.overall_ok is False
+    assert any(check.name == "sample_collateral_balance" and check.ok is False for check in result.checks)
 
 
 def test_live_run_cycle_places_order_persists_receipt_and_cancels_on_stop(monkeypatch):

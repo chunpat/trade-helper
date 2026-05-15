@@ -10,12 +10,14 @@ import httpx
 
 try:
     from py_clob_client_v2.client import ClobClient
-    from py_clob_client_v2.clob_types import ApiCreds, OrderArgsV2, OrderPayload
+    from py_clob_client_v2.clob_types import ApiCreds, AssetType, BalanceAllowanceParams, OrderArgsV2, OrderPayload
     from py_clob_client_v2.endpoints import CANCEL, GET_API_KEYS
     from py_clob_client_v2.signing.hmac import build_hmac_signature
 except Exception as exc:  # pragma: no cover - optional dependency in local dev
     ClobClient = None
     ApiCreds = None
+    AssetType = None
+    BalanceAllowanceParams = None
     OrderArgsV2 = None
     OrderPayload = None
     CANCEL = None
@@ -31,6 +33,12 @@ class PolymarketAdapter:
     DEFAULT_SIGNATURE_TYPE = 0
     DEFAULT_RELAYER_HOST = "https://relayer-v2.polymarket.com"
     RELAYER_API_KEYS_ENDPOINT = "/relayer/api/keys"
+    POLY_1271_ORDER_BLOCK_REASON = (
+        "当前 py-clob-client-v2 / Polymarket deposit wallet(POLY_1271) 真实下单存在已知上游问题："
+        "交易所会拒绝订单并返回 signer address 与 API key 绑定不匹配。"
+        "请先不要启动 live 跟单或手工真实下单，可先通过 relayer wallet batch 转移资金，"
+        "或改用当前已稳定支持的非 POLY_1271 账户。"
+    )
 
     def __init__(
         self,
@@ -126,11 +134,12 @@ class PolymarketAdapter:
     def _funder_ok_for_signature_type(self) -> bool:
         if self.signature_type != 3:
             return True
-        return (self.funder or "").lower() == (self.wallet_address or "").lower()
+        funder = (self.funder or "").lower()
+        return funder.startswith("0x") and len(funder) == 42
 
     def _mode_note(self) -> str:
         if self.signature_type == 3:
-            return "当前按 deposit wallet / POLY_1271 模式初始化；funder 地址必须是 deposit wallet 地址，而 relayer API key address 应该是 owner/signer 地址。Relayer auth 与 CLOB auth 是两套独立系统。"
+            return "当前按 deposit wallet / POLY_1271 模式初始化；wallet 地址用于 signer / POLY_ADDRESS，funder 地址必须是 deposit wallet 地址，而 relayer API key address 应该是 owner/signer 地址。Relayer auth 与 CLOB auth 是两套独立系统。"
         return "当前按 EOA 模式初始化；如果你的 Polymarket 账户已切到 deposit wallet 流程，需要在账户 settings 中补充 polymarket_signature_type=3 和 polymarket_funder_address。仅有 Relayer/API creds 不能代替新订单签名。"
 
     def _build_check(
@@ -187,6 +196,8 @@ class PolymarketAdapter:
             return False, "当前账户的钱包地址格式不正确，无法作为 Polymarket signer 地址。"
         if not self._signer_key_ok():
             return False, "当前账户仅配置了 Relayer/API 凭据或错误的私钥格式，缺少有效的 EVM signer 私钥，无法创建 Polymarket 订单签名。"
+        if self.signature_type == 3:
+            return False, self.POLY_1271_ORDER_BLOCK_REASON
         return True, None
 
     @staticmethod
@@ -233,6 +244,81 @@ class PolymarketAdapter:
     def _build_authed_client(self) -> ClobClient:
         creds = self.create_or_derive_api_creds()
         return self._build_clob_client(creds=creds)
+
+    async def preflight_collateral_balance(self, side: str) -> Dict[str, Any]:
+        side_upper = (side or "BUY").upper()
+        endpoint = "/balance-allowance?asset_type=COLLATERAL"
+
+        if side_upper != "BUY":
+            return self._build_check(
+                scope="collateral_balance",
+                endpoint=endpoint,
+                ok=True,
+                status_code=204,
+                message="样本信号不是 BUY，跳过 collateral 余额强校验",
+                hint="SELL/减仓是否可执行取决于当前 conditional token 持仓，而不是 collateral 余额。",
+            )
+
+        if ClobClient is None or BalanceAllowanceParams is None or AssetType is None:
+            return self._build_check(
+                scope="collateral_balance",
+                endpoint=endpoint,
+                ok=False,
+                status_code=500,
+                message="未安装 py-clob-client-v2，无法读取 collateral 余额",
+                hint="缺少官方 SDK 时，无法在 live 预检里确认 BUY 所需的 collateral 是否充足。",
+            )
+
+        try:
+            client = self._build_authed_client()
+            payload = client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))
+        except Exception as exc:
+            logging.exception("polymarket: collateral balance preflight failed")
+            return self._build_check(
+                scope="collateral_balance",
+                endpoint=endpoint,
+                ok=False,
+                status_code=502,
+                message=str(exc),
+                hint="请检查当前账户是否已完成 CLOB 私有认证，以及环境是否能访问余额接口。",
+            )
+
+        balance_value = None
+        if isinstance(payload, dict):
+            balance_value = payload.get("balance")
+        else:
+            balance_value = getattr(payload, "balance", None)
+
+        try:
+            balance_amount = float(balance_value)
+        except (TypeError, ValueError):
+            return self._build_check(
+                scope="collateral_balance",
+                endpoint=endpoint,
+                ok=False,
+                status_code=502,
+                message=f"无法解析 collateral 余额: {balance_value}",
+                hint="余额接口已返回响应，但 balance 字段格式异常；请先核对 SDK 返回结构。",
+            )
+
+        if balance_amount <= 0:
+            return self._build_check(
+                scope="collateral_balance",
+                endpoint=endpoint,
+                ok=False,
+                status_code=409,
+                message=f"当前 collateral 余额为 {balance_value}",
+                hint="认证与盘口检查已通过，但 BUY 类 live 下单仍会因无可用抵押资产失败；请先向 deposit wallet 充值。",
+            )
+
+        return self._build_check(
+            scope="collateral_balance",
+            endpoint=endpoint,
+            ok=True,
+            status_code=200,
+            message=f"当前 collateral 余额为 {balance_value}",
+            hint="BUY 样本信号所需的基础抵押资产存在，可继续评估价格、滑点与仓位限制。",
+        )
 
     def _build_relayer_headers(self) -> Dict[str, str]:
         api_key = self._load_relayer_api_key()
@@ -431,9 +517,20 @@ class PolymarketAdapter:
                     ok=funder_ok,
                     status_code=200 if funder_ok else 400,
                     message=None if funder_ok else "POLY_1271 模式下 funder 地址不是 deposit wallet 地址",
-                    hint="deposit wallet 模式里，funder 地址必须等于下单钱包地址；owner/signer 地址应单独保存为 relayer API key address。",
+                    hint="deposit wallet 模式里，wallet 地址应保存 owner/signer 地址，funder 地址应单独保存 deposit wallet 地址。",
                 )
             )
+            if signer_ok and funder_ok:
+                checks.append(
+                    self._build_check(
+                        scope="order_submission",
+                        endpoint="/order",
+                        ok=False,
+                        status_code=409,
+                        message="当前账户认证已通过，但真实下单仍会被上游拒绝",
+                        hint=self.POLY_1271_ORDER_BLOCK_REASON,
+                    )
+                )
 
         relayer_api_key = self._load_relayer_api_key()
         relayer_api_key_address = self._load_relayer_api_key_address()
@@ -590,6 +687,8 @@ class PolymarketAdapter:
         return {
             "key_masked": self._mask_wallet(self.wallet_address),
             "overall_hint": (
+                self.POLY_1271_ORDER_BLOCK_REASON
+                if any(check["scope"] == "order_submission" and not check["ok"] for check in checks) else
                 "Polymarket 私有认证链路可用，当前可以继续做 live 下单前检查。"
                 if overall_ok else
                 "Relayer API key 可用，但当前 deposit wallet 配置仍有错误；请先修正 funder 地址和 signer/CLOB 凭据。"

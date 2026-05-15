@@ -270,6 +270,8 @@ class PolymarketCopyService:
         if sample_signal is not None:
             orderbook_check = await adapter.preflight_orderbook(sample_signal.asset, sample_signal.side or "BUY")
             checks.append(self._to_preflight_check("sample_orderbook", orderbook_check))
+            balance_check = await adapter.preflight_collateral_balance(sample_signal.side or "BUY")
+            checks.append(self._to_preflight_check("sample_collateral_balance", balance_check))
         else:
             checks.append(
                 PolymarketLivePreflightCheck(
@@ -279,6 +281,16 @@ class PolymarketCopyService:
                     status_code=204,
                     message="当前窗口内没有可执行信号，未执行盘口检查",
                     hint="可增大回看窗口，或等源钱包产生新成交后再做一次 live 预检。",
+                )
+            )
+            checks.append(
+                PolymarketLivePreflightCheck(
+                    name="sample_collateral_balance",
+                    endpoint="/balance-allowance?asset_type=COLLATERAL",
+                    ok=True,
+                    status_code=204,
+                    message="当前窗口内没有可执行信号，未执行 collateral 余额检查",
+                    hint="只有拿到样本 BUY 信号后，才能判断当前 collateral 是否足够支持 live 开仓。",
                 )
             )
 

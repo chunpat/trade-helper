@@ -171,7 +171,15 @@
 
         <el-table :data="displayActivities" v-loading="loadingActivity" size="small" max-height="360">
           <el-table-column :prop="activityFilters.viewMode === 'grouped' ? 'display_type' : 'activity_type'" label="类型" width="90" />
-          <el-table-column prop="title" label="市场" min-width="220" />
+          <el-table-column label="市场" min-width="320">
+            <template #default="scope">
+              <div class="market-cell">
+                <div class="market-title">{{ scope.row.title || '-' }}</div>
+                <div v-if="scope.row.asset" class="market-meta">Token ID: {{ scope.row.asset }}</div>
+                <div v-if="scope.row.condition_id" class="market-meta">Condition ID: {{ scope.row.condition_id }}</div>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column prop="outcome" label="结果" width="90" />
           <el-table-column prop="side" label="方向" width="80" />
           <el-table-column v-if="activityFilters.viewMode === 'grouped'" label="聚合笔数" width="90" align="right">
@@ -204,7 +212,15 @@
               </div>
             </template>
             <el-table :data="profile.current_positions" size="small" max-height="280">
-              <el-table-column prop="title" label="市场" min-width="200" />
+              <el-table-column label="市场" min-width="300">
+                <template #default="scope">
+                  <div class="market-cell">
+                    <div class="market-title">{{ scope.row.title || '-' }}</div>
+                    <div v-if="scope.row.asset" class="market-meta">Token ID: {{ scope.row.asset }}</div>
+                    <div v-if="scope.row.condition_id" class="market-meta">Condition ID: {{ scope.row.condition_id }}</div>
+                  </div>
+                </template>
+              </el-table-column>
               <el-table-column prop="outcome" label="方向" width="90" />
               <el-table-column label="当前价值" width="110" align="right">
                 <template #default="scope">{{ formatMoney(scope.row.current_value) }}</template>
@@ -225,7 +241,15 @@
               </div>
             </template>
             <el-table :data="profile.recent_closed_positions" size="small" max-height="280">
-              <el-table-column prop="title" label="市场" min-width="200" />
+              <el-table-column label="市场" min-width="300">
+                <template #default="scope">
+                  <div class="market-cell">
+                    <div class="market-title">{{ scope.row.title || '-' }}</div>
+                    <div v-if="scope.row.asset" class="market-meta">Token ID: {{ scope.row.asset }}</div>
+                    <div v-if="scope.row.condition_id" class="market-meta">Condition ID: {{ scope.row.condition_id }}</div>
+                  </div>
+                </template>
+              </el-table-column>
               <el-table-column prop="outcome" label="结果" width="90" />
               <el-table-column label="已实现收益" width="120" align="right">
                 <template #default="scope">
@@ -936,6 +960,24 @@ export default {
   font-size: 12px;
   line-height: 1.6;
   color: #64748b;
+}
+
+.market-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.market-title {
+  color: #0f172a;
+}
+
+.market-meta {
+  word-break: break-all;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #64748b;
+  font-family: Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
 }
 
 .activity-summary-row {
