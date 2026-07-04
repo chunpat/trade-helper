@@ -104,10 +104,17 @@
           <el-input v-model="form.api_secret" type="password" :placeholder="secretPlaceholder" show-password></el-input>
         </el-form-item>
         <el-divider v-if="isPolymarket" content-position="left">CLOB API 凭据</el-divider>
+        <el-alert
+          v-if="isPolymarket"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="这里填写的是 CLOB 交易凭据，不是 polymarket.com 设置页“开发者 / Builder Program”里展示的 API keys。开发者页那组 key 用于 builder/relayer 归因与免 gas 流程，不能直接当普通 CLOB 下单凭据。"
+        />
         <el-form-item v-if="isPolymarket" label="Relayer API Key" prop="polymarket_relayer_api_key">
           <el-input
             v-model="form.polymarket_relayer_api_key"
-            placeholder="用于 relayer-v2 的 RELAYER_API_KEY；不要和 signer 私钥混用"
+            placeholder="仅用于 relayer-v2 的 RELAYER_API_KEY；不要和 signer 私钥或开发者页 Builder keys 混用"
           ></el-input>
         </el-form-item>
         <el-form-item v-if="isPolymarket" label="Relayer Key Address" prop="polymarket_relayer_api_key_address">
@@ -119,14 +126,14 @@
         <el-form-item v-if="isPolymarket" label="CLOB API Key" prop="polymarket_clob_api_key">
           <el-input
             v-model="form.polymarket_clob_api_key"
-            placeholder="请输入 Relayer/CLOB API Key，可与 signer 私钥同时配置"
+            placeholder="请输入通过 CLOB auth/create-or-derive 获得的交易 API Key，不要填开发者页 Builder keys"
           ></el-input>
         </el-form-item>
         <el-form-item v-if="isPolymarket" label="CLOB API Secret" prop="polymarket_clob_api_secret">
           <el-input
             v-model="form.polymarket_clob_api_secret"
             type="password"
-            placeholder="请输入 Relayer/CLOB API Secret"
+            placeholder="请输入与上面 CLOB API Key 同组的交易 API Secret"
             show-password
           ></el-input>
         </el-form-item>
@@ -134,7 +141,7 @@
           <el-input
             v-model="form.polymarket_clob_api_passphrase"
             type="password"
-            placeholder="请输入 Relayer/CLOB API Passphrase"
+            placeholder="请输入与上面 CLOB API Key 同组的交易 Passphrase"
             show-password
           ></el-input>
         </el-form-item>
@@ -163,7 +170,7 @@
           type="info"
           :closable="false"
           show-icon
-          title="Polymarket 有三套容易混淆的凭据：Signer 私钥用于订单签名，CLOB API key/secret/passphrase 用于 CLOB 私有接口，Relayer API key 用于 relayer-v2 的 wallet/deposit 操作。它们不是同一个东西。"
+          title="Polymarket 至少有三套容易混淆的凭据：Signer 私钥用于订单签名，CLOB API key/secret/passphrase 用于 CLOB 私有交易接口，Relayer API key 用于 relayer-v2 的 wallet/deposit 操作。设置页“开发者 / Builder Program”里看到的 builder keys 和 builder code 也不是这组 CLOB 交易凭据。"
         />
         <el-form-item label="初始资金" prop="initial_balance">
           <el-input-number v-model="form.initial_balance" :min="0" :precision="2" :step="1000" style="width: 100%"></el-input-number>

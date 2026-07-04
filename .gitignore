@@ -9,3 +9,4 @@ __pycache__
 node_modules/
 .DS_Store
 dist/
+scripts/polymarket_rust_probe/*

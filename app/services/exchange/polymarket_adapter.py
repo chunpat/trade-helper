@@ -35,7 +35,9 @@ class PolymarketAdapter:
     RELAYER_API_KEYS_ENDPOINT = "/relayer/api/keys"
     POLY_1271_ORDER_BLOCK_REASON = (
         "当前 py-clob-client-v2 / Polymarket deposit wallet(POLY_1271) 真实下单存在已知上游问题："
-        "交易所会拒绝订单并返回 signer address 与 API key 绑定不匹配。"
+        "当前公开 create/derive 出来的 CLOB API key 实测仍绑定 owner/signer EOA，"
+        "EOA 形态下单会被交易所要求改走 deposit wallet flow，"
+        "而切回 deposit wallet 订单形态后又会返回 signer address 与 API key 绑定不匹配。"
         "请先不要启动 live 跟单或手工真实下单，可先通过 relayer wallet batch 转移资金，"
         "或改用当前已稳定支持的非 POLY_1271 账户。"
     )
