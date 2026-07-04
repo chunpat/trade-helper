@@ -102,6 +102,88 @@ class MarketInsightService:
     async def get_top_losers(self, limit: int = 10) -> List[MarketMetrics]:
         """获取合约跌幅榜"""
         return await self._get_top_movers(limit, ascending=True)
+
+    async def get_altcoin_starters(self, limit: int = 10) -> List[MarketMetrics]:
+        """筛选刚开始放量、但24H涨幅尚未透支的山寨币合约。"""
+        cache_key = f"altcoin_starters_{limit}"
+        if self._is_cache_valid(cache_key):
+            return self._cache[cache_key]["data"]
+
+        excluded_bases = {
+            "BTC", "ETH", "USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
+                tickers = response.json()
+                candidates = []
+                for ticker in tickers:
+                    symbol = ticker.get("symbol", "")
+                    change_24h = float(ticker.get("priceChangePercent", 0) or 0)
+                    quote_volume = float(ticker.get("quoteVolume", 0) or 0)
+                    base = symbol[:-4] if symbol.endswith("USDT") else ""
+                    # 只看有基本流动性的山寨，且拒绝已经大幅拉升的24H榜首型标的。
+                    if (
+                        symbol.endswith("USDT")
+                        and base not in excluded_bases
+                        and 0 < change_24h <= 15
+                        and quote_volume >= 5_000_000
+                    ):
+                        candidates.append(ticker)
+
+                # 先按流动性和温和涨幅预筛，避免对全部合约逐一请求K线。
+                candidates.sort(
+                    key=lambda item: float(item.get("quoteVolume", 0) or 0)
+                    * (1 + min(float(item.get("priceChangePercent", 0) or 0), 8) / 8),
+                    reverse=True,
+                )
+
+                async def inspect(ticker: dict) -> Optional[MarketMetrics]:
+                    symbol = ticker["symbol"]
+                    kline_response = await client.get(
+                        f"{self.BINANCE_FAPI}/klines",
+                        params={"symbol": symbol, "interval": "15m", "limit": 13},
+                    )
+                    klines = kline_response.json()
+                    if not isinstance(klines, list) or len(klines) < 10:
+                        return None
+
+                    # 最后一根可能尚未收盘，使用倒数第二根完整K线判断真实放量。
+                    closed = klines[:-1]
+                    latest = closed[-1]
+                    previous = closed[-9:-1]
+                    previous_avg_volume = sum(float(k[5]) for k in previous) / len(previous)
+                    volume_ratio = float(latest[5]) / previous_avg_volume if previous_avg_volume else 0
+                    hour_open = float(closed[-4][1])
+                    latest_close = float(latest[4])
+                    momentum_1h = ((latest_close / hour_open) - 1) * 100 if hour_open else 0
+                    candle_change = ((latest_close / float(latest[1])) - 1) * 100 if float(latest[1]) else 0
+
+                    if volume_ratio < 1.5 or not (0.2 <= momentum_1h <= 6) or candle_change <= 0:
+                        return None
+
+                    change_24h = float(ticker.get("priceChangePercent", 0) or 0)
+                    # 放量和短时转强权重最高；24H涨幅越大，追高惩罚越重。
+                    score = min(volume_ratio, 5) * 14 + min(momentum_1h, 4) * 8 + max(0, 24 - change_24h * 1.6)
+                    metric = self._ticker_to_metrics(ticker)
+                    metric.startup_score = round(min(score, 100), 1)
+                    metric.volume_ratio = round(volume_ratio, 2)
+                    metric.momentum_1h = round(momentum_1h, 2)
+                    metric.startup_reason = f"15分钟量比 {volume_ratio:.1f}x，近1小时 +{momentum_1h:.2f}%"
+                    return metric
+
+                inspected = await asyncio.gather(
+                    *(inspect(ticker) for ticker in candidates[:30]),
+                    return_exceptions=True,
+                )
+                metrics = [item for item in inspected if isinstance(item, MarketMetrics)]
+                metrics.sort(key=lambda item: item.startup_score or 0, reverse=True)
+                result = metrics[:limit]
+                self._update_cache(cache_key, result)
+                return result
+        except Exception as e:
+            logger.error(f"Error fetching altcoin starters: {e}")
+            return []
     
     async def get_top_volume(self, limit: int = 10) -> List[MarketMetrics]:
         """获取合约成交量排行"""
@@ -479,8 +561,7 @@ class MarketInsightService:
         try:
             # 并发获取所有数据
             overview_task = self.get_market_overview()
-            gainers_task = self.get_top_gainers(10)
-            losers_task = self.get_top_losers(10)
+            starters_task = self.get_altcoin_starters(10)
             volume_task = self.get_top_volume(10)
             watchlist_task = self.get_watchlist_metrics(watchlist)
             sentiment_task = self.get_market_sentiment()
@@ -493,8 +574,7 @@ class MarketInsightService:
             
             results = await asyncio.gather(
                 overview_task,
-                gainers_task,
-                losers_task,
+                starters_task,
                 volume_task,
                 watchlist_task,
                 sentiment_task,
@@ -509,17 +589,16 @@ class MarketInsightService:
             
             # 处理结果，如果有异常则使用默认值
             overview = results[0] if not isinstance(results[0], Exception) else MarketOverview(timestamp=datetime.now())
-            gainers = results[1] if not isinstance(results[1], Exception) else []
-            losers = results[2] if not isinstance(results[2], Exception) else []
-            volume = results[3] if not isinstance(results[3], Exception) else []
-            watchlist_metrics = results[4] if not isinstance(results[4], Exception) else []
-            sentiment = results[5] if not isinstance(results[5], Exception) else []
-            fear_greed_data = results[6] if not isinstance(results[6], Exception) else {"current": None, "history": []}
-            rainbow_bands = results[7] if not isinstance(results[7], Exception) else []
-            news = results[8] if not isinstance(results[8], Exception) else []
-            signals = results[9] if not isinstance(results[9], Exception) else []
-            funding_rates = results[10] if not isinstance(results[10], Exception) else {"high": [], "low": []}
-            active_anomalies = results[11] if not isinstance(results[11], Exception) else []
+            starters = results[1] if not isinstance(results[1], Exception) else []
+            volume = results[2] if not isinstance(results[2], Exception) else []
+            watchlist_metrics = results[3] if not isinstance(results[3], Exception) else []
+            sentiment = results[4] if not isinstance(results[4], Exception) else []
+            fear_greed_data = results[5] if not isinstance(results[5], Exception) else {"current": None, "history": []}
+            rainbow_bands = results[6] if not isinstance(results[6], Exception) else []
+            news = results[7] if not isinstance(results[7], Exception) else []
+            signals = results[8] if not isinstance(results[8], Exception) else []
+            funding_rates = results[9] if not isinstance(results[9], Exception) else {"high": [], "low": []}
+            active_anomalies = results[10] if not isinstance(results[10], Exception) else []
             last_anomaly_scan_at = anomaly_monitor_service.get_last_scan_at()
             
             # GPT-5.1 深度分析 (如果启用)
@@ -529,8 +608,7 @@ class MarketInsightService:
             
             return MarketInsightDashboard(
                 overview=overview,
-                top_gainers=gainers,
-                top_losers=losers,
+                altcoin_starters=starters,
                 top_volume=volume,
                 watchlist=watchlist_metrics,
                 funding_rate_high=funding_rates.get("high", []),

@@ -33,8 +33,7 @@ async def get_market_insight_dashboard(
     
     包含：
     - 市场总览
-    - 涨幅榜Top10
-    - 跌幅榜Top10
+    - 山寨币放量启动榜（排除24H过度上涨）
     - 成交量榜Top10
     - 自选币种数据
     - 市场情绪指标
@@ -57,6 +56,14 @@ async def get_top_gainers(
 ):
     """获取涨幅榜"""
     return await market_insight_service.get_top_gainers(limit)
+
+
+@router.get("/altcoin-starters", response_model=List[MarketMetrics])
+async def get_altcoin_starters(
+    limit: int = Query(10, ge=1, le=30, description="返回数量")
+):
+    """获取刚开始放量的山寨币，不按24H总涨幅追高排序。"""
+    return await market_insight_service.get_altcoin_starters(limit)
 
 
 @router.get("/top-losers", response_model=List[MarketMetrics])

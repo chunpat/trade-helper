@@ -54,6 +54,10 @@ class MarketMetrics(BaseModel):
     high_24h: float = Field(..., description="24小时最高价")
     low_24h: float = Field(..., description="24小时最低价")
     market_cap: Optional[float] = Field(None, description="市值")
+    startup_score: Optional[float] = Field(None, description="放量启动评分 0-100")
+    volume_ratio: Optional[float] = Field(None, description="最近完整15分钟成交量相对前序均量倍数")
+    momentum_1h: Optional[float] = Field(None, description="最近1小时涨幅%")
+    startup_reason: Optional[str] = Field(None, description="入选启动榜的原因")
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
@@ -158,6 +162,7 @@ class MarketInsightDashboard(BaseModel):
     overview: MarketOverview
     top_gainers: List[MarketMetrics] = Field(default_factory=list, description="涨幅榜前10")
     top_losers: List[MarketMetrics] = Field(default_factory=list, description="跌幅榜前10")
+    altcoin_starters: List[MarketMetrics] = Field(default_factory=list, description="山寨币放量启动榜")
     top_volume: List[MarketMetrics] = Field(default_factory=list, description="成交量榜前10")
     watchlist: List[MarketMetrics] = Field(default_factory=list, description="自选币种数据")
     funding_rate_high: List[FundingRateRanking] = Field(default_factory=list, description="正费率最高排名")

@@ -444,70 +444,56 @@
 
     <!-- 排行榜 -->
     <el-row :gutter="16" class="rankings">
-      <!-- 涨幅榜 -->
-      <el-col :xs="24" :md="8">
+      <!-- 山寨币放量启动榜 -->
+      <el-col :xs="24" :md="16">
         <el-card shadow="hover">
           <template #header>
-            <span>📈 合约涨幅榜 (24H)</span>
+            <div class="card-header">
+              <span>🚀 山寨币放量启动榜</span>
+              <el-tooltip content="筛选15分钟成交量明显放大、近1小时刚转强且24H涨幅未透支的币；不是24H涨幅排名。" placement="top">
+                <el-tag type="warning" effect="plain" size="small">不追 24H 榜一</el-tag>
+              </el-tooltip>
+            </div>
           </template>
           <el-table 
-            :data="topGainers" 
-            :show-header="false" 
+            :data="altcoinStarters"
             size="small"
             @row-click="selectSymbol"
             row-class-name="clickable-row"
           >
-            <el-table-column width="150">
+            <el-table-column label="币种" min-width="110">
               <template #default="{ row }">
                 <span class="symbol-name">{{ formatSymbol(row.symbol) }}</span>
               </template>
             </el-table-column>
-            <el-table-column align="right">
+            <el-table-column label="现价" min-width="110" align="right">
               <template #default="{ row }">
                 <span class="price">${{ row.last_price.toFixed(row.last_price < 1 ? 4 : 2) }}</span>
               </template>
             </el-table-column>
-            <el-table-column width="100" align="right">
+            <el-table-column label="15m量比" min-width="90" align="right">
               <template #default="{ row }">
-                <el-tag type="success" size="small">
-                  +{{ row.price_change_percent_24h.toFixed(2) }}%
-                </el-tag>
+                <strong class="startup-volume">{{ safeFixed(row.volume_ratio, 1) }}x</strong>
               </template>
             </el-table-column>
-          </el-table>
-        </el-card>
-      </el-col>
-
-      <!-- 跌幅榜 -->
-      <el-col :xs="24" :md="8">
-        <el-card shadow="hover">
-          <template #header>
-            <span>📉 合约跌幅榜 (24H)</span>
-          </template>
-          <el-table 
-            :data="topLosers" 
-            :show-header="false" 
-            size="small"
-            @row-click="selectSymbol"
-            row-class-name="clickable-row"
-          >
-            <el-table-column width="150">
+            <el-table-column label="近1H" min-width="90" align="right">
               <template #default="{ row }">
-                <span class="symbol-name">{{ formatSymbol(row.symbol) }}</span>
+                <el-tag type="success" size="small">+{{ safeFixed(row.momentum_1h, 2) }}%</el-tag>
               </template>
             </el-table-column>
-            <el-table-column align="right">
+            <el-table-column label="24H" min-width="90" align="right">
               <template #default="{ row }">
-                <span class="price">${{ row.last_price.toFixed(row.last_price < 1 ? 4 : 2) }}</span>
+                <span>+{{ safeFixed(row.price_change_percent_24h, 2) }}%</span>
               </template>
             </el-table-column>
-            <el-table-column width="100" align="right">
+            <el-table-column label="启动分" min-width="85" align="right">
               <template #default="{ row }">
-                <el-tag type="danger" size="small">
-                  {{ row.price_change_percent_24h.toFixed(2) }}%
-                </el-tag>
+                <el-tag type="warning" size="small">{{ safeFixed(row.startup_score, 0) }}</el-tag>
               </template>
             </el-table-column>
+            <template #empty>
+              <el-empty description="暂未发现符合条件的早期放量标的" :image-size="60" />
+            </template>
           </el-table>
         </el-card>
       </el-col>
@@ -822,8 +808,7 @@ const loading = ref(false)
 
 // 数据
 const overview = ref({})
-const topGainers = ref([])
-const topLosers = ref([])
+const altcoinStarters = ref([])
 const topVolume = ref([])
 const watchlist = ref([])
 const fundingRateHigh = ref([])
@@ -1295,8 +1280,7 @@ async function loadData(silent = false) {
     const response = await marketInsight.getDashboard({ watchlist: watchlistParam })
     
     overview.value = response.overview
-    topGainers.value = response.top_gainers
-    topLosers.value = response.top_losers
+    altcoinStarters.value = response.altcoin_starters || []
     topVolume.value = response.top_volume
     watchlist.value = response.watchlist
     fundingRateHigh.value = response.funding_rate_high || []

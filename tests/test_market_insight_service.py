@@ -65,6 +65,38 @@ def test_get_market_sentiment_uses_futures_data_ratio_endpoint(monkeypatch):
     assert any("/futures/data/topLongShortAccountRatio" in url for url, _ in calls)
 
 
+def test_altcoin_starters_prefers_early_volume_expansion_and_rejects_chasing(monkeypatch):
+    service = MarketInsightService()
+    ticker_url = f"{service.BINANCE_FAPI}/ticker/24hr"
+    kline_url = f"{service.BINANCE_FAPI}/klines"
+    tickers = [
+        {"symbol": "GOODUSDT", "priceChangePercent": "4", "quoteVolume": "20000000", "lastPrice": "1.04", "priceChange": ".04", "volume": "100", "highPrice": "1.1", "lowPrice": ".9"},
+        {"symbol": "LATEUSDT", "priceChangePercent": "28", "quoteVolume": "90000000", "lastPrice": "2", "priceChange": ".4", "volume": "100", "highPrice": "2.1", "lowPrice": "1.5"},
+        {"symbol": "BTCUSDT", "priceChangePercent": "3", "quoteVolume": "90000000", "lastPrice": "60000", "priceChange": "100", "volume": "100", "highPrice": "61000", "lowPrice": "59000"},
+    ]
+    # 12 complete candles + one live candle: latest complete candle has 3x volume
+    klines = [[0, "1", "1.01", ".99", "1", "100"] for _ in range(13)]
+    klines[-5][1] = "1"
+    klines[-2][1] = "1.02"
+    klines[-2][4] = "1.04"
+    klines[-2][5] = "300"
+    responses = {
+        (ticker_url, ()): FakeResponse(200, tickers),
+        (kline_url, (("interval", "15m"), ("limit", 13), ("symbol", "GOODUSDT"))): FakeResponse(200, klines),
+    }
+    monkeypatch.setattr(
+        "app.services.market_insight_service.httpx.AsyncClient",
+        lambda timeout=10.0: FakeAsyncClient(responses, []),
+    )
+
+    result = asyncio.run(service.get_altcoin_starters())
+
+    assert [item.symbol for item in result] == ["GOODUSDT"]
+    assert result[0].volume_ratio == 3.0
+    assert 0 < result[0].momentum_1h < 6
+    assert result[0].startup_score > 0
+
+
 def test_get_market_sentiment_falls_back_to_global_ratio_when_top_ratio_unavailable(monkeypatch):
     service = MarketInsightService()
     responses = {
