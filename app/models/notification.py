@@ -10,6 +10,7 @@ class NotificationChannelConfig(Base, BaseMixin):
     enabled = Column(Boolean, nullable=False, default=False)
     webhook_url = Column(Text, nullable=True)
     secret = Column(String(255), nullable=True)
+    keyword = Column(String(64), nullable=False, default="TradeHelper")
     notify_market_breakout = Column(Boolean, nullable=False, default=True)
     notify_risk_alert = Column(Boolean, nullable=False, default=True)
     market_min_score = Column(Float, nullable=False, default=60.0)

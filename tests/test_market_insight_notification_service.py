@@ -53,12 +53,22 @@ def test_build_message_contains_signal_details():
     assert "UTC+8" in message
 
 
+def test_build_message_contains_custom_dingtalk_keyword():
+    message = MarketInsightNotificationService._build_message(
+        [{"signal": _signal("AAAUSDT"), "periods": ["5分钟"]}],
+        "行情提醒",
+    )
+
+    assert "行情提醒" in message
+
+
 @pytest.mark.asyncio
 async def test_scan_once_sends_only_non_cooled_symbols(monkeypatch):
     service = MarketInsightNotificationService(interval=60)
     config = MarketNotificationConfig(
         webhook_url="https://oapi.dingtalk.com/robot/send?access_token=test",
         secret=None,
+        keyword="行情提醒",
         min_score=60,
         cooldown_minutes=60,
     )
@@ -92,6 +102,7 @@ async def test_scan_once_sends_only_non_cooled_symbols(monkeypatch):
 
     assert result == ["BBBUSDT"]
     assert recorded == ["BBBUSDT"]
+    assert "行情提醒" in sent["content"]
     assert "BBB/USDT" in sent["content"]
     assert "AAA/USDT" not in sent["content"]
 

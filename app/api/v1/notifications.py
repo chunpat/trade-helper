@@ -24,6 +24,7 @@ def _serialize(config: NotificationChannelConfig | None) -> DingTalkConfigRead:
         enabled=bool(config.enabled) if config else False,
         webhook_configured=bool(config and config.webhook_url),
         secret_configured=bool(config and config.secret),
+        keyword=str(config.keyword or "TradeHelper") if config else "TradeHelper",
         notify_market_breakout=bool(config.notify_market_breakout) if config else True,
         notify_risk_alert=bool(config.notify_risk_alert) if config else True,
         market_min_score=float(config.market_min_score) if config else 60.0,
@@ -64,6 +65,7 @@ def update_dingtalk_config(
         raise HTTPException(status_code=400, detail="启用钉钉通知前请先配置 Webhook")
 
     config.enabled = payload.enabled
+    config.keyword = " ".join(str(payload.keyword or "").split()) or "TradeHelper"
     config.notify_market_breakout = payload.notify_market_breakout
     config.notify_risk_alert = payload.notify_risk_alert
     config.market_min_score = payload.market_min_score
@@ -83,11 +85,12 @@ async def test_dingtalk_config(
         raise HTTPException(status_code=400, detail="请先保存钉钉机器人 Webhook")
     try:
         beijing_now = datetime.now(timezone(timedelta(hours=8)))
+        keyword = str(config.keyword or "TradeHelper")
         await dingtalk_notification_service.send_text(
             webhook_url=config.webhook_url,
             secret=config.secret,
             content=(
-                "【TradeHelper】钉钉监控通知测试成功\n"
+                f"【{keyword}】钉钉监控通知测试成功\n"
                 f"时间：{beijing_now:%Y-%m-%d %H:%M:%S} UTC+8"
             ),
         )

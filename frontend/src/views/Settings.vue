@@ -67,6 +67,15 @@
           />
           <div class="help-text">仅支持钉钉自定义机器人 HTTPS Webhook，保存后不会再次回显。</div>
         </el-form-item>
+        <el-form-item label="自定义关键词">
+          <el-input
+            v-model="dingTalkForm.keyword"
+            maxlength="64"
+            show-word-limit
+            placeholder="例如：行情提醒"
+          />
+          <div class="help-text">必须与钉钉机器人“自定义关键词”中的任意一个完全一致，通知正文会自动携带该关键词。</div>
+        </el-form-item>
         <el-form-item label="加签 Secret">
           <el-input
             v-model="dingTalkForm.secret"
@@ -231,6 +240,7 @@ export default {
       enabled: false,
       webhook_url: '',
       secret: '',
+      keyword: 'TradeHelper',
       notify_market_breakout: true,
       notify_risk_alert: true,
       market_min_score: 60,
@@ -264,6 +274,7 @@ export default {
       try {
         const data = await notificationSettings.getDingTalkConfig()
         dingTalkForm.enabled = Boolean(data.enabled)
+        dingTalkForm.keyword = data.keyword || 'TradeHelper'
         dingTalkForm.notify_market_breakout = Boolean(data.notify_market_breakout)
         dingTalkForm.notify_risk_alert = Boolean(data.notify_risk_alert)
         dingTalkForm.market_min_score = Number(data.market_min_score ?? 60)

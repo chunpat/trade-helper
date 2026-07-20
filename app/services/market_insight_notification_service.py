@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class MarketNotificationConfig:
     webhook_url: str
     secret: Optional[str]
+    keyword: str
     min_score: float
     cooldown_minutes: int
 
@@ -52,6 +53,7 @@ class MarketInsightNotificationService:
             return MarketNotificationConfig(
                 webhook_url=config.webhook_url,
                 secret=config.secret,
+                keyword=str(config.keyword or "TradeHelper"),
                 min_score=float(config.market_min_score or 0),
                 cooldown_minutes=max(int(config.market_cooldown_minutes or 60), 5),
             )
@@ -140,10 +142,15 @@ class MarketInsightNotificationService:
         return f"{value:.8f}".rstrip("0").rstrip(".")
 
     @classmethod
-    def _build_message(cls, candidates: List[Dict[str, Any]]) -> str:
+    def _build_message(
+        cls,
+        candidates: List[Dict[str, Any]],
+        keyword: str = "TradeHelper",
+    ) -> str:
         display_candidates = candidates[:6]
+        normalized_keyword = " ".join(str(keyword or "").split()) or "TradeHelper"
         lines = [
-            "【TradeHelper 市场洞察】",
+            f"【{normalized_keyword} · 市场洞察】",
             f"检测到 {len(candidates)} 个放量有效突破信号",
             "",
         ]
@@ -200,7 +207,7 @@ class MarketInsightNotificationService:
         await dingtalk_notification_service.send_text(
             webhook_url=config.webhook_url,
             secret=config.secret,
-            content=self._build_message(pending),
+            content=self._build_message(pending, config.keyword),
         )
         sent_keys = [item["signal"].symbol for item in pending]
         self._record_deliveries(sent_keys)

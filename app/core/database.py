@@ -86,6 +86,10 @@ def init_db():
         from sqlalchemy import text
         with engine.connect() as conn:
             notification_columns = {
+                "keyword": (
+                    "ALTER TABLE notification_channel_configs "
+                    "ADD COLUMN keyword VARCHAR(64) NOT NULL DEFAULT 'TradeHelper'"
+                ),
                 "market_min_score": (
                     "ALTER TABLE notification_channel_configs "
                     "ADD COLUMN market_min_score DOUBLE NOT NULL DEFAULT 60.0"
