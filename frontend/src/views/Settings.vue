@@ -46,7 +46,7 @@
     <el-card class="notification-card">
       <template #header>
         <div class="display-time-card-header">
-          <span>钉钉监控通知</span>
+          <span>市场洞察 · 钉钉通知</span>
           <el-tag :type="dingTalkForm.enabled && dingTalkMeta.webhook_configured ? 'success' : 'info'">
             {{ dingTalkForm.enabled && dingTalkMeta.webhook_configured ? '已启用' : '未启用' }}
           </el-tag>
@@ -56,6 +56,7 @@
       <el-form label-width="180px" class="risk-form" v-loading="dingTalkLoading">
         <el-form-item label="启用钉钉通知">
           <el-switch v-model="dingTalkForm.enabled" />
+          <div class="help-text">启用后由洞察 worker 后台扫描，关闭页面也会继续运行。</div>
         </el-form-item>
         <el-form-item label="机器人 Webhook">
           <el-input
@@ -73,10 +74,31 @@
             show-password
             :placeholder="dingTalkMeta.secret_configured ? '加签密钥已配置，留空表示不修改' : 'SEC...（机器人开启加签时填写）'"
           />
+          <div class="help-text">推荐机器人开启“加签”；如使用关键词安全设置，请添加关键词 TradeHelper。</div>
         </el-form-item>
         <el-form-item label="通知事件">
-          <el-checkbox v-model="dingTalkForm.notify_market_breakout">量价放量突破</el-checkbox>
-          <el-checkbox v-model="dingTalkForm.notify_risk_alert">账户风险告警</el-checkbox>
+          <el-checkbox v-model="dingTalkForm.notify_market_breakout">
+            短线量价雷达：放量有效突破
+          </el-checkbox>
+        </el-form-item>
+        <el-form-item label="最低信号评分">
+          <el-input-number
+            v-model="dingTalkForm.market_min_score"
+            :min="0"
+            :max="100"
+            :step="5"
+          />
+          <div class="help-text">只推送达到该评分且已突破压力位的信号，建议保持 60 分。</div>
+        </el-form-item>
+        <el-form-item label="同币种冷却时间">
+          <el-input-number
+            v-model="dingTalkForm.market_cooldown_minutes"
+            :min="5"
+            :max="1440"
+            :step="5"
+          />
+          <span class="input-unit">分钟</span>
+          <div class="help-text">同一币种在冷却期内只推送一次，防止重复提醒。</div>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="dingTalkSaving" @click="saveDingTalkConfig">保存钉钉配置</el-button>
@@ -210,7 +232,9 @@ export default {
       webhook_url: '',
       secret: '',
       notify_market_breakout: true,
-      notify_risk_alert: true
+      notify_risk_alert: true,
+      market_min_score: 60,
+      market_cooldown_minutes: 60
     })
     const dingTalkMeta = reactive({
       webhook_configured: false,
@@ -242,6 +266,8 @@ export default {
         dingTalkForm.enabled = Boolean(data.enabled)
         dingTalkForm.notify_market_breakout = Boolean(data.notify_market_breakout)
         dingTalkForm.notify_risk_alert = Boolean(data.notify_risk_alert)
+        dingTalkForm.market_min_score = Number(data.market_min_score ?? 60)
+        dingTalkForm.market_cooldown_minutes = Number(data.market_cooldown_minutes ?? 60)
         dingTalkForm.webhook_url = ''
         dingTalkForm.secret = ''
         dingTalkMeta.webhook_configured = Boolean(data.webhook_configured)
@@ -398,6 +424,11 @@ export default {
 
 .notification-card :deep(.el-input) {
   max-width: 620px;
+}
+
+.input-unit {
+  margin-left: 8px;
+  color: #606266;
 }
 
 .display-time-card-header {

@@ -14,9 +14,12 @@ class DingTalkNotificationService:
         normalized = str(webhook_url or "").strip()
         parsed = urlparse(normalized)
         hostname = (parsed.hostname or "").lower()
-        if parsed.scheme != "https" or not hostname.endswith("dingtalk.com"):
+        is_dingtalk_host = (
+            hostname == "dingtalk.com" or hostname.endswith(".dingtalk.com")
+        )
+        if parsed.scheme != "https" or not is_dingtalk_host:
             raise ValueError("钉钉 Webhook 必须使用 dingtalk.com 的 HTTPS 地址")
-        if "/robot/send" not in parsed.path:
+        if parsed.path.rstrip("/") != "/robot/send":
             raise ValueError("请输入钉钉自定义机器人 Webhook 地址")
         return normalized
 

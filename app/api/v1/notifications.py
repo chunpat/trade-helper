@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -26,6 +26,8 @@ def _serialize(config: NotificationChannelConfig | None) -> DingTalkConfigRead:
         secret_configured=bool(config and config.secret),
         notify_market_breakout=bool(config.notify_market_breakout) if config else True,
         notify_risk_alert=bool(config.notify_risk_alert) if config else True,
+        market_min_score=float(config.market_min_score) if config else 60.0,
+        market_cooldown_minutes=int(config.market_cooldown_minutes) if config else 60,
     )
 
 
@@ -64,6 +66,8 @@ def update_dingtalk_config(
     config.enabled = payload.enabled
     config.notify_market_breakout = payload.notify_market_breakout
     config.notify_risk_alert = payload.notify_risk_alert
+    config.market_min_score = payload.market_min_score
+    config.market_cooldown_minutes = payload.market_cooldown_minutes
     db.commit()
     db.refresh(config)
     return _serialize(config)
@@ -78,10 +82,14 @@ async def test_dingtalk_config(
     if config is None or not config.webhook_url:
         raise HTTPException(status_code=400, detail="请先保存钉钉机器人 Webhook")
     try:
+        beijing_now = datetime.now(timezone(timedelta(hours=8)))
         await dingtalk_notification_service.send_text(
             webhook_url=config.webhook_url,
             secret=config.secret,
-            content=f"【TradeHelper】钉钉监控通知测试成功\n时间：{datetime.now():%Y-%m-%d %H:%M:%S}",
+            content=(
+                "【TradeHelper】钉钉监控通知测试成功\n"
+                f"时间：{beijing_now:%Y-%m-%d %H:%M:%S} UTC+8"
+            ),
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"钉钉通知发送失败：{exc}") from exc

@@ -9,6 +9,8 @@ class DingTalkConfigUpdate(BaseModel):
     secret: Optional[str] = Field(None, max_length=255)
     notify_market_breakout: bool = True
     notify_risk_alert: bool = True
+    market_min_score: float = Field(60.0, ge=0, le=100)
+    market_cooldown_minutes: int = Field(60, ge=5, le=1440)
 
 
 class DingTalkConfigRead(BaseModel):
@@ -17,6 +19,8 @@ class DingTalkConfigRead(BaseModel):
     secret_configured: bool = False
     notify_market_breakout: bool = True
     notify_risk_alert: bool = True
+    market_min_score: float = 60.0
+    market_cooldown_minutes: int = 60
 
 
 class NotificationTestResult(BaseModel):

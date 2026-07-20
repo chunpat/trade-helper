@@ -16,6 +16,7 @@ from app.api.v1 import router as api_router
 from app.core.database import init_db
 from app.services.anomaly_monitor_service import anomaly_monitor_service
 from app.services.market_data import get_poller_from_env
+from app.services.market_insight_notification_service import market_insight_notification_service
 from app.services.polymarket_copy_runner_service import polymarket_copy_runner_service
 from app.services.polymarket_trader_cache_service import polymarket_trader_cache_service
 from app.services.position_sync import get_position_sync_from_env
@@ -84,6 +85,7 @@ async def startup_event():
     app.state.market_poller = None
     app.state.position_sync = None
     app.state.anomaly_monitor = None
+    app.state.market_insight_notifier = None
     app.state.polymarket_trader_cache = None
     app.state.polymarket_copy_runner = None
     app.state.background_start_handles = []
@@ -108,6 +110,16 @@ async def startup_event():
         _schedule_service_start(app.state.anomaly_monitor, "anomaly monitor")
     else:
         logging.info("startup: anomaly monitor disabled")
+
+    if _read_bool_env("START_MARKET_INSIGHT_NOTIFIER", False):
+        logging.info("startup: initializing market insight notifier")
+        app.state.market_insight_notifier = market_insight_notification_service
+        _schedule_service_start(
+            app.state.market_insight_notifier,
+            "market insight notifier",
+        )
+    else:
+        logging.info("startup: market insight notifier disabled")
 
     if _read_bool_env("START_POLYMARKET_TRADER_CACHE", True):
         logging.info("startup: initializing polymarket trader cache")
@@ -143,6 +155,9 @@ async def shutdown_event():
     anomaly_monitor = getattr(app.state, "anomaly_monitor", None)
     if anomaly_monitor:
         anomaly_monitor.stop()
+    market_insight_notifier = getattr(app.state, "market_insight_notifier", None)
+    if market_insight_notifier:
+        market_insight_notifier.stop()
     polymarket_cache = getattr(app.state, "polymarket_trader_cache", None)
     if polymarket_cache:
         polymarket_cache.stop()

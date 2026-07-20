@@ -71,7 +71,7 @@ def init_db():
         NewsArchive,
     )
     from app.models.polymarket_cache import PolymarketCacheEntry
-    from app.models.notification import NotificationChannelConfig
+    from app.models.notification import NotificationChannelConfig, NotificationDeliveryLog
     from app.models.polymarket_copy import (
         PolymarketCopySignalLog,
         PolymarketCopySimulationRun,
@@ -80,6 +80,33 @@ def init_db():
     )
     
     Base.metadata.create_all(bind=engine)
+
+    # create_all 不会给已有表补字段，生产升级时需要显式兼容旧的通知配置表。
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            notification_columns = {
+                "market_min_score": (
+                    "ALTER TABLE notification_channel_configs "
+                    "ADD COLUMN market_min_score DOUBLE NOT NULL DEFAULT 60.0"
+                ),
+                "market_cooldown_minutes": (
+                    "ALTER TABLE notification_channel_configs "
+                    "ADD COLUMN market_cooldown_minutes INT NOT NULL DEFAULT 60"
+                ),
+            }
+            for column_name, alter_sql in notification_columns.items():
+                res = conn.execute(
+                    text(
+                        "SHOW COLUMNS FROM notification_channel_configs "
+                        f"LIKE '{column_name}'"
+                    )
+                )
+                if res.first() is None:
+                    conn.execute(text(alter_sql))
+    except Exception:
+        import logging
+        logging.exception("init_db: failed to update notification config columns (ignored)")
 
     # Ensure new column position_side exists for positions table (safe alter for development)
     try:

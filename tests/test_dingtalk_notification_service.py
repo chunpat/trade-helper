@@ -10,6 +10,16 @@ def test_validate_dingtalk_webhook_rejects_non_dingtalk_url():
         DingTalkNotificationService.validate_webhook_url(
             "https://example.com/robot/send?access_token=secret"
         )
+    with pytest.raises(ValueError):
+        DingTalkNotificationService.validate_webhook_url(
+            "https://fake-dingtalk.com/robot/send?access_token=secret"
+        )
+
+
+def test_validate_dingtalk_webhook_accepts_official_robot_url():
+    url = "https://oapi.dingtalk.com/robot/send?access_token=secret"
+
+    assert DingTalkNotificationService.validate_webhook_url(url) == url
 
 
 def test_signed_url_keeps_token_and_adds_signature(monkeypatch):
