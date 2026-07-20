@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Float, Index, Integer, String, Text
+from sqlalchemy import Boolean, Column, Float, Index, Integer, JSON, String, Text
 
 from .base import Base, BaseMixin
 
@@ -13,6 +13,8 @@ class NotificationChannelConfig(Base, BaseMixin):
     keyword = Column(String(64), nullable=False, default="TradeHelper")
     notify_market_breakout = Column(Boolean, nullable=False, default=True)
     notify_risk_alert = Column(Boolean, nullable=False, default=True)
+    market_alert_preset = Column(String(32), nullable=False, default="balanced")
+    market_news_analysis_enabled = Column(Boolean, nullable=False, default=True)
     market_min_score = Column(Float, nullable=False, default=60.0)
     market_cooldown_minutes = Column(Integer, nullable=False, default=60)
 
@@ -34,3 +36,4 @@ class NotificationDeliveryLog(Base, BaseMixin):
     channel = Column(String(32), nullable=False)
     event_type = Column(String(64), nullable=False)
     dedupe_key = Column(String(255), nullable=False)
+    context_payload = Column(JSON)

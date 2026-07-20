@@ -83,31 +83,39 @@
             show-password
             :placeholder="dingTalkMeta.secret_configured ? '加签密钥已配置，留空表示不修改' : 'SEC...（机器人开启加签时填写）'"
           />
-          <div class="help-text">推荐机器人开启“加签”；如使用关键词安全设置，请添加关键词 TradeHelper。</div>
+          <div class="help-text">推荐机器人开启“加签”；如同时启用关键词安全设置，请确保与上方自定义关键词一致。</div>
         </el-form-item>
         <el-form-item label="通知事件">
           <el-checkbox v-model="dingTalkForm.notify_market_breakout">
             短线量价雷达：放量有效突破
           </el-checkbox>
         </el-form-item>
-        <el-form-item label="最低信号评分">
-          <el-input-number
-            v-model="dingTalkForm.market_min_score"
-            :min="0"
-            :max="100"
-            :step="5"
-          />
-          <div class="help-text">只推送达到该评分且已突破压力位的信号，建议保持 60 分。</div>
+        <el-form-item label="告警组合阈值">
+          <div class="preset-config">
+            <el-radio-group v-model="dingTalkForm.market_alert_preset">
+              <el-radio-button
+                v-for="preset in dingTalkPresetOptions"
+                :key="preset.key"
+                :label="preset.key"
+              >
+                {{ preset.label }}
+              </el-radio-button>
+            </el-radio-group>
+            <div class="preset-description">{{ activeDingTalkPreset.description }}</div>
+            <div class="preset-metrics">
+              <span>最小量比 {{ activeDingTalkPreset.radarSettings.volume_ratio_min }}x</span>
+              <span>压力位 {{ activeDingTalkPreset.radarSettings.resistance_hours }}H</span>
+              <span>最低评分 {{ activeDingTalkPreset.minScore }}</span>
+              <span>同币冷却 {{ activeDingTalkPreset.cooldownMinutes }} 分钟</span>
+            </div>
+          </div>
         </el-form-item>
-        <el-form-item label="同币种冷却时间">
-          <el-input-number
-            v-model="dingTalkForm.market_cooldown_minutes"
-            :min="5"
-            :max="1440"
-            :step="5"
-          />
-          <span class="input-unit">分钟</span>
-          <div class="help-text">同一币种在冷却期内只推送一次，防止重复提醒。</div>
+        <el-form-item label="新闻与 LLM 关联">
+          <el-switch v-model="dingTalkForm.market_news_analysis_enabled" />
+          <div class="help-text">
+            触发后关联历史新闻库、补抓该币种最新资讯，再由当前配置的 LLM 生成信息面摘要。
+            需启用 ANOMALY_LLM_PROVIDER；模型不可用时自动回退到规则分析。
+          </div>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="dingTalkSaving" @click="saveDingTalkConfig">保存钉钉配置</el-button>
@@ -187,6 +195,10 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useStore } from 'vuex'
 import { notificationSettings, riskControl } from '@/api'
+import {
+  MARKET_ALERT_PRESETS,
+  MARKET_ALERT_PRESET_OPTIONS,
+} from '@/constants/marketAlertPresets'
 import { ElMessage } from 'element-plus'
 import {
   DISPLAY_TIMEZONE_OPTIONS,
@@ -243,9 +255,16 @@ export default {
       keyword: 'TradeHelper',
       notify_market_breakout: true,
       notify_risk_alert: true,
+      market_alert_preset: 'balanced',
+      market_news_analysis_enabled: true,
       market_min_score: 60,
       market_cooldown_minutes: 60
     })
+    const dingTalkPresetOptions = MARKET_ALERT_PRESET_OPTIONS
+    const activeDingTalkPreset = computed(() => (
+      MARKET_ALERT_PRESETS[dingTalkForm.market_alert_preset]
+      || MARKET_ALERT_PRESETS.balanced
+    ))
     const dingTalkMeta = reactive({
       webhook_configured: false,
       secret_configured: false
@@ -277,6 +296,8 @@ export default {
         dingTalkForm.keyword = data.keyword || 'TradeHelper'
         dingTalkForm.notify_market_breakout = Boolean(data.notify_market_breakout)
         dingTalkForm.notify_risk_alert = Boolean(data.notify_risk_alert)
+        dingTalkForm.market_alert_preset = data.market_alert_preset || 'balanced'
+        dingTalkForm.market_news_analysis_enabled = data.market_news_analysis_enabled !== false
         dingTalkForm.market_min_score = Number(data.market_min_score ?? 60)
         dingTalkForm.market_cooldown_minutes = Number(data.market_cooldown_minutes ?? 60)
         dingTalkForm.webhook_url = ''
@@ -385,6 +406,8 @@ export default {
       displayTimezoneOptions,
       loading,
       dingTalkForm,
+      dingTalkPresetOptions,
+      activeDingTalkPreset,
       dingTalkLoading,
       dingTalkMeta,
       dingTalkSaving,
@@ -437,9 +460,29 @@ export default {
   max-width: 620px;
 }
 
-.input-unit {
-  margin-left: 8px;
+.preset-config {
+  width: 100%;
+}
+
+.preset-description {
+  margin-top: 10px;
   color: #606266;
+  line-height: 1.5;
+}
+
+.preset-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.preset-metrics span {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #f2f6fc;
+  color: #606266;
+  font-size: 12px;
 }
 
 .display-time-card-header {

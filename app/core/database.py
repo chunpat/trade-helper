@@ -90,6 +90,14 @@ def init_db():
                     "ALTER TABLE notification_channel_configs "
                     "ADD COLUMN keyword VARCHAR(64) NOT NULL DEFAULT 'TradeHelper'"
                 ),
+                "market_alert_preset": (
+                    "ALTER TABLE notification_channel_configs "
+                    "ADD COLUMN market_alert_preset VARCHAR(32) NOT NULL DEFAULT 'balanced'"
+                ),
+                "market_news_analysis_enabled": (
+                    "ALTER TABLE notification_channel_configs "
+                    "ADD COLUMN market_news_analysis_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+                ),
                 "market_min_score": (
                     "ALTER TABLE notification_channel_configs "
                     "ADD COLUMN market_min_score DOUBLE NOT NULL DEFAULT 60.0"
@@ -108,6 +116,20 @@ def init_db():
                 )
                 if res.first() is None:
                     conn.execute(text(alter_sql))
+
+            res = conn.execute(
+                text(
+                    "SHOW COLUMNS FROM notification_delivery_logs "
+                    "LIKE 'context_payload'"
+                )
+            )
+            if res.first() is None:
+                conn.execute(
+                    text(
+                        "ALTER TABLE notification_delivery_logs "
+                        "ADD COLUMN context_payload JSON DEFAULT NULL"
+                    )
+                )
     except Exception:
         import logging
         logging.exception("init_db: failed to update notification config columns (ignored)")

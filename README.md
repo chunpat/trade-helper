@@ -326,6 +326,9 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f backend 
 | `START_MARKET_POLLER` | 控制当前进程是否启动行情轮询 |
 | `START_POSITION_SYNC` | 控制当前进程是否启动仓位同步 |
 | `START_ANOMALY_MONITOR` | 控制当前进程是否启动异常扫描和新闻入库 |
+| `START_MARKET_INSIGHT_NOTIFIER` | 控制当前进程是否启动市场洞察钉钉告警 |
+| `MARKET_INSIGHT_NOTIFY_SCAN_INTERVAL` | 市场洞察后台扫描间隔，默认 60 秒 |
+| `MARKET_INSIGHT_NEWS_ANALYSIS_CONCURRENCY` | 新闻关联和 LLM 分析并发数，默认 2 |
 | `SECRET_KEY` | JWT 签名密钥，生产环境必须替换 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token 有效期，建议保持短效，例如 `15` 到 `30` 分钟 |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | Refresh token 有效期，建议 `7` 到 `30` 天 |

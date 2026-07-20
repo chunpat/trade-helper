@@ -8,6 +8,7 @@ from app.core.deps import get_current_user
 from app.models.notification import NotificationChannelConfig
 from app.schemas.notification import DingTalkConfigRead, DingTalkConfigUpdate, NotificationTestResult
 from app.services.dingtalk_notification_service import dingtalk_notification_service
+from app.services.market_alert_presets import get_market_alert_preset
 
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -20,6 +21,8 @@ def _get_config(db: Session) -> NotificationChannelConfig | None:
 
 
 def _serialize(config: NotificationChannelConfig | None) -> DingTalkConfigRead:
+    preset_key = str(config.market_alert_preset or "balanced") if config else "balanced"
+    preset = get_market_alert_preset(preset_key)
     return DingTalkConfigRead(
         enabled=bool(config.enabled) if config else False,
         webhook_configured=bool(config and config.webhook_url),
@@ -27,8 +30,12 @@ def _serialize(config: NotificationChannelConfig | None) -> DingTalkConfigRead:
         keyword=str(config.keyword or "TradeHelper") if config else "TradeHelper",
         notify_market_breakout=bool(config.notify_market_breakout) if config else True,
         notify_risk_alert=bool(config.notify_risk_alert) if config else True,
-        market_min_score=float(config.market_min_score) if config else 60.0,
-        market_cooldown_minutes=int(config.market_cooldown_minutes) if config else 60,
+        market_alert_preset=preset.key,
+        market_news_analysis_enabled=(
+            bool(config.market_news_analysis_enabled) if config else True
+        ),
+        market_min_score=preset.min_score,
+        market_cooldown_minutes=preset.cooldown_minutes,
     )
 
 
@@ -68,8 +75,12 @@ def update_dingtalk_config(
     config.keyword = " ".join(str(payload.keyword or "").split()) or "TradeHelper"
     config.notify_market_breakout = payload.notify_market_breakout
     config.notify_risk_alert = payload.notify_risk_alert
-    config.market_min_score = payload.market_min_score
-    config.market_cooldown_minutes = payload.market_cooldown_minutes
+    preset = get_market_alert_preset(payload.market_alert_preset)
+    config.market_alert_preset = preset.key
+    config.market_news_analysis_enabled = payload.market_news_analysis_enabled
+    # 保留旧字段，便于已有部署和旧接口平滑升级。
+    config.market_min_score = preset.min_score
+    config.market_cooldown_minutes = preset.cooldown_minutes
     db.commit()
     db.refresh(config)
     return _serialize(config)

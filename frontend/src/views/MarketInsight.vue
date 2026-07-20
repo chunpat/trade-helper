@@ -40,6 +40,23 @@
         </template>
       </el-alert>
 
+      <div class="radar-presets">
+        <span class="preset-label">组合阈值预设</span>
+        <el-radio-group :model-value="activeRadarPreset" @change="applyRadarPreset">
+          <el-radio-button
+            v-for="preset in radarPresetOptions"
+            :key="preset.key"
+            :label="preset.key"
+          >
+            {{ preset.label }}
+          </el-radio-button>
+        </el-radio-group>
+        <span class="preset-hint">
+          {{ activeRadarPresetConfig?.description || '当前参数为自定义组合' }}
+        </span>
+        <span class="preset-scope">本页预设仅影响当前浏览器；钉钉后台告警请在“风控配置”中选择并保存。</span>
+      </div>
+
       <el-form :inline="true" label-position="top" class="settings-form">
         <el-form-item label="最小量比">
           <el-input-number v-model="radarSettings.volume_ratio_min" :min="1" :max="5" :step="0.1" :precision="1" />
@@ -159,6 +176,10 @@ import { ElEmpty, ElMessage, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useStore } from 'vuex'
 import { marketInsight } from '@/api'
+import {
+  MARKET_ALERT_PRESETS,
+  MARKET_ALERT_PRESET_OPTIONS,
+} from '@/constants/marketAlertPresets'
 import { parseBackendDateTime, resolveDisplayTimezone } from '@/utils/datetime'
 
 const store = useStore()
@@ -172,14 +193,9 @@ const marketCapItems = ref([])
 const marketCapLimit = ref(30)
 const marketCapUpdatedAt = ref('')
 const RADAR_SETTINGS_KEY = 'market-insight-radar-settings'
+const radarPresetOptions = MARKET_ALERT_PRESET_OPTIONS
 const defaultRadarSettings = {
-  volume_ratio_min: 1.3,
-  resistance_hours: 48,
-  exclude_recent_hours: 3,
-  volatility_days: 7,
-  noise_multiplier: 0.35,
-  min_breakout_percent: 0.08,
-  max_24h_change: 15
+  ...MARKET_ALERT_PRESETS.balanced.radarSettings
 }
 
 const loadSavedRadarSettings = () => {
@@ -197,6 +213,17 @@ let marketCapTimer = null
 
 const visibleMarketCapItems = computed(() => marketCapItems.value.slice(0, marketCapLimit.value))
 const displayTimezone = computed(() => store.getters.displayTimezone)
+const activeRadarPreset = computed(() => {
+  const matched = radarPresetOptions.find((preset) => (
+    Object.entries(preset.radarSettings).every(
+      ([key, value]) => Number(radarSettings.value[key]) === Number(value)
+    )
+  ))
+  return matched?.key || ''
+})
+const activeRadarPresetConfig = computed(() => (
+  MARKET_ALERT_PRESETS[activeRadarPreset.value] || null
+))
 
 const formatSymbol = (symbol) => String(symbol || '').replace(/USDT$/, '/USDT')
 
@@ -347,6 +374,14 @@ function applySettings() {
   loadRadar(false)
 }
 
+function applyRadarPreset(presetKey) {
+  const preset = MARKET_ALERT_PRESETS[presetKey]
+  if (!preset) return
+  radarSettings.value = { ...preset.radarSettings }
+  window.localStorage.setItem(RADAR_SETTINGS_KEY, JSON.stringify(radarSettings.value))
+  loadRadar(false)
+}
+
 function resetSettings() {
   radarSettings.value = { ...defaultRadarSettings }
   window.localStorage.setItem(RADAR_SETTINGS_KEY, JSON.stringify(radarSettings.value))
@@ -403,6 +438,23 @@ onUnmounted(() => {
 .risk-alert { margin-top: 2px; }
 .settings-actions { display: flex; gap: 8px; }
 .formula-alert { margin-bottom: 14px; }
+.radar-presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.preset-label { color: #344054; font-size: 13px; font-weight: 600; }
+.preset-hint { color: #667085; font-size: 12px; }
+.preset-scope {
+  flex-basis: 100%;
+  color: #98a2b3;
+  font-size: 12px;
+}
 .settings-form :deep(.el-form-item) { margin-right: 18px; margin-bottom: 8px; }
 .settings-form :deep(.el-input-number) { width: 155px; }
 .market-cap-card { border-radius: 12px; margin-bottom: 18px; }
