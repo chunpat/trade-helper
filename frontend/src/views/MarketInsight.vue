@@ -118,45 +118,102 @@
       <template #header>
         <div class="card-header">
           <div>
-            <strong>🌐 市值头部币种波动率</strong>
-            <p>按全球市值排序，使用最近7天小时价格计算实现波动率</p>
+            <strong>🌐 市场资产波动率</strong>
+            <p>加密币榜已排除稳定币；股票类来自币安股票永续、ETF 永续与 bStocks</p>
           </div>
-          <el-select v-model="marketCapLimit" size="small" class="rank-select">
+          <el-select
+            v-if="assetVolatilityTab === 'crypto'"
+            v-model="marketCapLimit"
+            size="small"
+            class="rank-select"
+          >
             <el-option label="市值 Top 20" :value="20" />
             <el-option label="市值 Top 30" :value="30" />
           </el-select>
         </div>
       </template>
-      <el-table v-loading="marketCapLoading" :data="visibleMarketCapItems" stripe size="small">
-        <el-table-column prop="rank" label="排名" width="70" />
-        <el-table-column label="币种" min-width="150">
-          <template #default="{ row }">
-            <strong class="symbol">{{ row.symbol }}</strong>
-            <span class="coin-name">{{ row.name }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="现价" min-width="120" align="right">
-          <template #default="{ row }">${{ formatPrice(row.last_price) }}</template>
-        </el-table-column>
-        <el-table-column label="市值" min-width="130" align="right">
-          <template #default="{ row }">{{ formatVolume(row.market_cap) }}</template>
-        </el-table-column>
-        <el-table-column label="24H涨幅" min-width="110" align="right">
-          <template #default="{ row }">
-            <el-tag :type="row.price_change_percent_24h >= 0 ? 'success' : 'danger'" size="small">
-              {{ row.price_change_percent_24h >= 0 ? '+' : '' }}{{ Number(row.price_change_percent_24h).toFixed(2) }}%
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="7日波动率" min-width="120" align="right">
-          <template #default="{ row }">
-            <strong :class="volatilityClass(row.volatility_7d)">{{ Number(row.volatility_7d).toFixed(2) }}%</strong>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="市值波动率数据暂不可用" :image-size="64" />
-        </template>
-      </el-table>
+
+      <el-tabs v-model="assetVolatilityTab" class="asset-tabs">
+        <el-tab-pane label="加密币（无稳定币）" name="crypto">
+          <el-table v-loading="marketCapLoading" :data="visibleMarketCapItems" stripe size="small">
+            <el-table-column prop="rank" label="排名" width="70" />
+            <el-table-column label="币种" min-width="150">
+              <template #default="{ row }">
+                <strong class="symbol">{{ row.symbol }}</strong>
+                <span class="coin-name">{{ row.name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="现价" min-width="120" align="right">
+              <template #default="{ row }">${{ formatPrice(row.last_price) }}</template>
+            </el-table-column>
+            <el-table-column label="市值" min-width="130" align="right">
+              <template #default="{ row }">{{ formatVolume(row.market_cap) }}</template>
+            </el-table-column>
+            <el-table-column label="24H涨幅" min-width="110" align="right">
+              <template #default="{ row }">
+                <el-tag :type="row.price_change_percent_24h >= 0 ? 'success' : 'danger'" size="small">
+                  {{ row.price_change_percent_24h >= 0 ? '+' : '' }}{{ Number(row.price_change_percent_24h).toFixed(2) }}%
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="7日波动率" min-width="120" align="right">
+              <template #default="{ row }">
+                <strong :class="volatilityClass(row.volatility_7d)">{{ Number(row.volatility_7d).toFixed(2) }}%</strong>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="市值波动率数据暂不可用" :image-size="64" />
+            </template>
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane :label="`币安股票类 (${binanceEquities.length})`" name="equities">
+          <el-table v-loading="marketCapLoading" :data="binanceEquities" stripe size="small">
+            <el-table-column label="标的" min-width="170">
+              <template #default="{ row }">
+                <strong class="symbol">{{ row.underlying_symbol }}</strong>
+                <span class="coin-name">{{ row.name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="币安产品" min-width="150">
+              <template #default="{ row }">
+                <div>{{ row.symbol }}</div>
+                <el-tag :type="equityProductTagType(row.product_type)" size="small" effect="plain">
+                  {{ row.product_type_label }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="现价" min-width="120" align="right">
+              <template #default="{ row }">${{ formatPrice(row.last_price) }}</template>
+            </el-table-column>
+            <el-table-column label="24H涨幅" min-width="110" align="right">
+              <template #default="{ row }">
+                <el-tag :type="row.price_change_percent_24h >= 0 ? 'success' : 'danger'" size="small">
+                  {{ row.price_change_percent_24h >= 0 ? '+' : '' }}{{ Number(row.price_change_percent_24h).toFixed(2) }}%
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="24H成交额" min-width="120" align="right">
+              <template #default="{ row }">{{ formatVolume(row.quote_volume_24h) }}</template>
+            </el-table-column>
+            <el-table-column label="7日波动率" min-width="120" align="right">
+              <template #default="{ row }">
+                <strong :class="volatilityClass(row.volatility_7d)">{{ Number(row.volatility_7d).toFixed(2) }}%</strong>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="当前地区或币安接口暂未返回股票类产品" :image-size="64" />
+            </template>
+          </el-table>
+          <el-alert
+            type="warning"
+            :closable="false"
+            show-icon
+            class="equity-risk-note"
+            title="股票永续和 ETF 永续是衍生品，不代表持有股票；bStocks 是代币化证券，是否可用取决于所在地区。"
+          />
+        </el-tab-pane>
+      </el-tabs>
       <div class="cap-updated">更新时间：{{ formatTime(marketCapUpdatedAt) }} · 每5分钟刷新</div>
     </el-card>
 
@@ -190,8 +247,10 @@ const scannedCount = ref(0)
 const updatedAt = ref('')
 const marketCapLoading = ref(false)
 const marketCapItems = ref([])
+const binanceEquities = ref([])
 const marketCapLimit = ref(30)
 const marketCapUpdatedAt = ref('')
+const assetVolatilityTab = ref('crypto')
 const RADAR_SETTINGS_KEY = 'market-insight-radar-settings'
 const radarPresetOptions = MARKET_ALERT_PRESET_OPTIONS
 const defaultRadarSettings = {
@@ -266,6 +325,12 @@ const volatilityClass = (value) => {
   if (volatility >= 25) return 'volatility-high'
   if (volatility >= 12) return 'volatility-medium'
   return 'volatility-low'
+}
+
+const equityProductTagType = (productType) => {
+  if (productType === 'tokenized_stock') return 'success'
+  if (productType === 'etf_perpetual') return 'warning'
+  return 'danger'
 }
 
 const SignalTable = defineComponent({
@@ -355,6 +420,7 @@ async function loadMarketCap(silent = true) {
   try {
     const data = await marketInsight.getMarketCapVolatility({ limit: 30 })
     marketCapItems.value = data.items || []
+    binanceEquities.value = data.binance_equities || []
     marketCapUpdatedAt.value = data.timestamp || ''
   } catch (error) {
     console.error('Failed to load market cap volatility:', error)
@@ -458,6 +524,8 @@ onUnmounted(() => {
 .settings-form :deep(.el-form-item) { margin-right: 18px; margin-bottom: 8px; }
 .settings-form :deep(.el-input-number) { width: 155px; }
 .market-cap-card { border-radius: 12px; margin-bottom: 18px; }
+.asset-tabs { margin-top: -4px; }
+.equity-risk-note { margin-top: 14px; }
 .rank-select { width: 140px; }
 .coin-name { margin-left: 8px; color: #667085; font-size: 12px; }
 .cap-updated { margin-top: 12px; color: #98a2b3; font-size: 12px; text-align: right; }

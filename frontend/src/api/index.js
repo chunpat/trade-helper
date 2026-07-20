@@ -309,7 +309,7 @@ export const marketInsight = {
     return api.get('/market-insight/momentum-radar', { params, timeout: 8000 })
   },
   getMarketCapVolatility(params) {
-    return api.get('/market-insight/market-cap-volatility', { params, timeout: 12000 })
+    return api.get('/market-insight/market-cap-volatility', { params, timeout: 20000 })
   },
   getDashboard(params) {
     return api.get('/market-insight/dashboard', { params })

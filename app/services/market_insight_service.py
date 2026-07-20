@@ -10,6 +10,7 @@ import httpx
 
 from app.schemas.market_insight import (
     AnomalyEventSummary,
+    BinanceEquityVolatility,
     MarketCapVolatility,
     MarketCapVolatilityResponse,
     MarketInsightDashboard,
@@ -54,6 +55,45 @@ class MarketInsightService:
         "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT",
         "ADAUSDT", "DOGEUSDT", "MATICUSDT", "DOTUSDT", "AVAXUSDT"
     ]
+
+    STABLECOIN_SYMBOLS = {
+        "BUSD", "CRVUSD", "DAI", "EURC", "EURS", "EURT", "FDUSD", "FRAX",
+        "GHO", "LUSD", "PYUSD", "RLUSD", "SUSD", "TUSD", "USD1", "USDC",
+        "USDD", "USDE", "USDG", "USDP", "USDS", "USDT", "USDTB", "USDX",
+    }
+    STABLECOIN_IDS = {
+        "binance-usd", "crvusd", "dai", "ethena-usde", "first-digital-usd",
+        "frax", "gho", "global-dollar", "liquity-usd", "paypal-usd",
+        "ripple-usd", "true-usd", "usd1", "usdd", "usds", "usdtb",
+        "usd-coin", "usdx-money-usdx",
+    }
+    BINANCE_EQUITY_NAMES = {
+        "AAPL": "Apple",
+        "AMZN": "Amazon",
+        "AVGO": "Broadcom",
+        "BABA": "Alibaba",
+        "COIN": "Coinbase",
+        "CRCL": "Circle",
+        "GOOGL": "Alphabet",
+        "HOOD": "Robinhood",
+        "INTC": "Intel",
+        "META": "Meta Platforms",
+        "MSFT": "Microsoft",
+        "MSTR": "Strategy",
+        "MU": "Micron Technology",
+        "NVDA": "NVIDIA",
+        "PAYP": "PayPay",
+        "PLTR": "Palantir",
+        "SNDK": "SanDisk",
+        "TSLA": "Tesla",
+        "TSM": "TSMC",
+    }
+    BINANCE_EQUITY_ETFS = {
+        "EWJ": "iShares MSCI Japan ETF",
+        "EWY": "iShares MSCI South Korea ETF",
+        "QQQ": "Invesco QQQ Trust",
+        "SPY": "SPDR S&P 500 ETF",
+    }
     
     def __init__(self):
         self._cache: Dict[str, Any] = {}
@@ -114,9 +154,7 @@ class MarketInsightService:
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]["data"]
 
-        excluded_bases = {
-            "BTC", "ETH", "USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD",
-        }
+        excluded_bases = {"BTC", "ETH", *self.STABLECOIN_SYMBOLS}
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
@@ -210,9 +248,7 @@ class MarketInsightService:
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]["data"]
 
-        excluded_bases = {
-            "BTC", "ETH", "USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD",
-        }
+        excluded_bases = {"BTC", "ETH", *self.STABLECOIN_SYMBOLS}
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
                 response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
@@ -394,7 +430,7 @@ class MarketInsightService:
             return MomentumRadarResponse(timestamp=datetime.now())
 
     async def get_market_cap_volatility(self, limit: int = 30) -> MarketCapVolatilityResponse:
-        """获取市值排名及基于CoinGecko 7天小时价格的实现波动率。"""
+        """获取非稳定币市值榜，以及币安股票类产品的7日实现波动率。"""
         normalized_limit = 20 if limit <= 20 else 30
         cache_key = f"market_cap_volatility_{normalized_limit}"
         if self._is_cache_valid(cache_key):
@@ -402,44 +438,46 @@ class MarketInsightService:
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.COINGECKO_API}/coins/markets",
-                    params={
-                        "vs_currency": "usd",
-                        "order": "market_cap_desc",
-                        "per_page": normalized_limit,
-                        "page": 1,
-                        "sparkline": "true",
-                        "price_change_percentage": "24h",
-                    },
+                crypto_response, binance_equities = await asyncio.gather(
+                    client.get(
+                        f"{self.COINGECKO_API}/coins/markets",
+                        params={
+                            "vs_currency": "usd",
+                            "order": "market_cap_desc",
+                            "per_page": min(normalized_limit + 25, 100),
+                            "page": 1,
+                            "sparkline": "true",
+                            "price_change_percentage": "24h",
+                        },
+                    ),
+                    self._fetch_binance_equity_volatility(client),
                 )
-                rows = response.json()
+                rows = crypto_response.json()
                 items = []
-                for fallback_rank, row in enumerate(rows if isinstance(rows, list) else [], start=1):
+                crypto_rows = [
+                    row for row in (rows if isinstance(rows, list) else [])
+                    if not self._is_stablecoin_market_row(row)
+                ][:normalized_limit]
+                for display_rank, row in enumerate(crypto_rows, start=1):
                     prices = [
                         float(value) for value in (row.get("sparkline_in_7d") or {}).get("price", [])
                         if value is not None and float(value) > 0
                     ]
-                    returns = [
-                        math.log(prices[index] / prices[index - 1])
-                        for index in range(1, len(prices))
-                        if prices[index - 1] > 0
-                    ]
-                    volatility = (
-                        statistics.pstdev(returns) * math.sqrt(len(returns)) * 100
-                        if len(returns) >= 2 else 0
-                    )
                     items.append(MarketCapVolatility(
-                        rank=int(row.get("market_cap_rank") or fallback_rank),
+                        rank=display_rank,
                         symbol=str(row.get("symbol") or "").upper(),
                         name=str(row.get("name") or ""),
                         last_price=float(row.get("current_price") or 0),
                         market_cap=float(row.get("market_cap") or 0),
                         price_change_percent_24h=round(float(row.get("price_change_percentage_24h") or 0), 2),
-                        volatility_7d=round(volatility, 2),
+                        volatility_7d=self._calculate_realized_volatility(prices),
                     ))
 
-                result = MarketCapVolatilityResponse(items=items, timestamp=datetime.now())
+                result = MarketCapVolatilityResponse(
+                    items=items,
+                    binance_equities=binance_equities,
+                    timestamp=datetime.now(),
+                )
                 self._cache[cache_key] = {
                     "data": result,
                     "timestamp": datetime.now(),
@@ -449,6 +487,200 @@ class MarketInsightService:
         except Exception as e:
             logger.error(f"Error fetching market cap volatility: {e}")
             return MarketCapVolatilityResponse(timestamp=datetime.now())
+
+    @classmethod
+    def _is_stablecoin_market_row(cls, row: Dict[str, Any]) -> bool:
+        symbol = str(row.get("symbol") or "").upper().replace("-", "")
+        coin_id = str(row.get("id") or "").lower()
+        name = str(row.get("name") or "").lower()
+        return (
+            symbol in cls.STABLECOIN_SYMBOLS
+            or coin_id in cls.STABLECOIN_IDS
+            or "stablecoin" in name
+        )
+
+    @staticmethod
+    def _calculate_realized_volatility(prices: List[float]) -> float:
+        returns = [
+            math.log(prices[index] / prices[index - 1])
+            for index in range(1, len(prices))
+            if prices[index - 1] > 0 and prices[index] > 0
+        ]
+        volatility = (
+            statistics.pstdev(returns) * math.sqrt(len(returns)) * 100
+            if len(returns) >= 2 else 0
+        )
+        return round(volatility, 2)
+
+    @classmethod
+    def _classify_binance_equity_contract(
+        cls,
+        contract: Dict[str, Any],
+    ) -> Optional[str]:
+        base_asset = str(contract.get("baseAsset") or "").upper()
+        raw_subtypes = contract.get("underlyingSubType") or []
+        subtypes = [raw_subtypes] if isinstance(raw_subtypes, str) else raw_subtypes
+        classification = " ".join(
+            [
+                str(contract.get("underlyingType") or ""),
+                *[str(value) for value in subtypes],
+            ]
+        ).upper()
+        if base_asset in cls.BINANCE_EQUITY_ETFS or "ETF" in classification:
+            return "etf_perpetual"
+        if (
+            base_asset in cls.BINANCE_EQUITY_NAMES
+            or "STOCK" in classification
+            or "EQUITY" in classification
+        ):
+            return "stock_perpetual"
+        return None
+
+    async def _fetch_binance_equity_volatility(
+        self,
+        client: httpx.AsyncClient,
+    ) -> List[BinanceEquityVolatility]:
+        try:
+            futures_exchange_task = client.get(f"{self.BINANCE_FAPI}/exchangeInfo")
+            futures_ticker_task = client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
+            spot_exchange_task = client.get(f"{self.BINANCE_API}/exchangeInfo")
+            futures_exchange_response, futures_ticker_response, spot_exchange_response = (
+                await asyncio.gather(
+                    futures_exchange_task,
+                    futures_ticker_task,
+                    spot_exchange_task,
+                )
+            )
+            futures_exchange = futures_exchange_response.json()
+            futures_tickers = futures_ticker_response.json()
+            spot_exchange = spot_exchange_response.json()
+
+            ticker_map = {
+                str(item.get("symbol") or ""): item
+                for item in (futures_tickers if isinstance(futures_tickers, list) else [])
+            }
+            futures_products = []
+            for contract in futures_exchange.get("symbols", []) if isinstance(futures_exchange, dict) else []:
+                product_type = self._classify_binance_equity_contract(contract)
+                if (
+                    product_type
+                    and contract.get("status") == "TRADING"
+                    and contract.get("contractType") == "PERPETUAL"
+                    and contract.get("quoteAsset") == "USDT"
+                ):
+                    futures_products.append(
+                        {
+                            "symbol": contract.get("symbol"),
+                            "underlying_symbol": contract.get("baseAsset"),
+                            "product_type": product_type,
+                            "ticker": ticker_map.get(contract.get("symbol"), {}),
+                            "market": "futures",
+                        }
+                    )
+
+            supported_stock_symbols = set(self.BINANCE_EQUITY_NAMES) | {
+                str(product["underlying_symbol"])
+                for product in futures_products
+                if product["product_type"] == "stock_perpetual"
+            }
+            quote_priority = {"USDT": 0, "USDC": 1, "FDUSD": 2, "USD1": 3}
+            spot_by_underlying: Dict[str, Dict[str, Any]] = {}
+            for market in spot_exchange.get("symbols", []) if isinstance(spot_exchange, dict) else []:
+                base_asset = str(market.get("baseAsset") or "").upper()
+                quote_asset = str(market.get("quoteAsset") or "").upper()
+                if (
+                    market.get("status") != "TRADING"
+                    or not base_asset.endswith("B")
+                    or quote_asset not in quote_priority
+                ):
+                    continue
+                underlying_symbol = base_asset[:-1]
+                if underlying_symbol not in supported_stock_symbols:
+                    continue
+                existing = spot_by_underlying.get(underlying_symbol)
+                if (
+                    existing is None
+                    or quote_priority[quote_asset] < quote_priority[existing["quote_asset"]]
+                ):
+                    spot_by_underlying[underlying_symbol] = {
+                        "symbol": market.get("symbol"),
+                        "underlying_symbol": underlying_symbol,
+                        "product_type": "tokenized_stock",
+                        "market": "spot",
+                        "quote_asset": quote_asset,
+                    }
+
+            products = futures_products + list(spot_by_underlying.values())
+
+            async def inspect(product: Dict[str, Any]) -> Optional[BinanceEquityVolatility]:
+                symbol = str(product.get("symbol") or "")
+                if not symbol:
+                    return None
+                api_base = self.BINANCE_FAPI if product["market"] == "futures" else self.BINANCE_API
+                kline_task = client.get(
+                    f"{api_base}/klines",
+                    params={"symbol": symbol, "interval": "1h", "limit": 169},
+                )
+                ticker = product.get("ticker") or {}
+                if product["market"] == "spot":
+                    ticker_response, kline_response = await asyncio.gather(
+                        client.get(
+                            f"{self.BINANCE_API}/ticker/24hr",
+                            params={"symbol": symbol},
+                        ),
+                        kline_task,
+                    )
+                    ticker = ticker_response.json()
+                else:
+                    kline_response = await kline_task
+                klines = kline_response.json()
+                prices = [
+                    float(row[4])
+                    for row in (klines if isinstance(klines, list) else [])
+                    if isinstance(row, list) and len(row) > 4 and float(row[4]) > 0
+                ]
+                underlying = str(product["underlying_symbol"])
+                product_type = str(product["product_type"])
+                names = {**self.BINANCE_EQUITY_NAMES, **self.BINANCE_EQUITY_ETFS}
+                labels = {
+                    "stock_perpetual": "股票永续",
+                    "etf_perpetual": "ETF 永续",
+                    "tokenized_stock": "bStock 股票代币",
+                }
+                return BinanceEquityVolatility(
+                    symbol=symbol,
+                    underlying_symbol=underlying,
+                    name=names.get(underlying, underlying),
+                    product_type=product_type,
+                    product_type_label=labels[product_type],
+                    last_price=float(ticker.get("lastPrice") or 0),
+                    price_change_percent_24h=round(
+                        float(ticker.get("priceChangePercent") or 0),
+                        2,
+                    ),
+                    quote_volume_24h=float(ticker.get("quoteVolume") or 0),
+                    volatility_7d=self._calculate_realized_volatility(prices),
+                )
+
+            inspected = await asyncio.gather(
+                *(inspect(product) for product in products),
+                return_exceptions=True,
+            )
+            items = [
+                item for item in inspected
+                if isinstance(item, BinanceEquityVolatility)
+            ]
+            return sorted(
+                items,
+                key=lambda item: (
+                    item.product_type == "tokenized_stock",
+                    item.quote_volume_24h,
+                ),
+                reverse=True,
+            )
+        except Exception as exc:
+            logger.warning("market-insight: failed to fetch Binance equities: %s", exc)
+            return []
     
     async def get_top_volume(self, limit: int = 10) -> List[MarketMetrics]:
         """获取合约成交量排行"""

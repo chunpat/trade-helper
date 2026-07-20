@@ -98,8 +98,21 @@ class MarketCapVolatility(BaseModel):
     volatility_7d: float = Field(..., description="基于7天小时价格计算的实现波动率%")
 
 
+class BinanceEquityVolatility(BaseModel):
+    symbol: str = Field(..., description="币安交易代码")
+    underlying_symbol: str = Field(..., description="对应股票或 ETF 代码")
+    name: str
+    product_type: str = Field(..., description="stock_perpetual、etf_perpetual 或 tokenized_stock")
+    product_type_label: str
+    last_price: float
+    price_change_percent_24h: float
+    quote_volume_24h: float
+    volatility_7d: float = Field(..., description="基于币安最近7天小时价格计算的实现波动率%")
+
+
 class MarketCapVolatilityResponse(BaseModel):
     items: List[MarketCapVolatility] = Field(default_factory=list)
+    binance_equities: List[BinanceEquityVolatility] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
