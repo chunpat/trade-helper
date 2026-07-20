@@ -61,6 +61,48 @@ class MarketMetrics(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
+class MomentumSignal(BaseModel):
+    """5/15分钟短线量价启动信号。"""
+    symbol: str
+    last_price: float
+    change_5m: float
+    change_15m: float
+    volume_ratio_5m: float
+    volume_ratio_15m: float
+    quote_volume_24h: float
+    price_change_percent_24h: float
+    score: float
+    reason: str
+    volatility_7d: float = Field(0, description="基于1小时收益率计算的7日实现波动率%")
+    resistance: Optional[float] = Field(None, description="前48小时压力位")
+    support: Optional[float] = Field(None, description="前48小时支撑位")
+    breakout_percent: float = Field(0, description="突破压力位幅度%")
+    breakout_threshold: float = Field(0, description="依据币种波动率计算的最小有效突破幅度%")
+    breakout_confirmed: bool = Field(False, description="是否完成放量有效突破")
+
+
+class MomentumRadarResponse(BaseModel):
+    five_minute: List[MomentumSignal] = Field(default_factory=list)
+    fifteen_minute: List[MomentumSignal] = Field(default_factory=list)
+    scanned_count: int = 0
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+
+class MarketCapVolatility(BaseModel):
+    rank: int
+    symbol: str
+    name: str
+    last_price: float
+    market_cap: float
+    price_change_percent_24h: float
+    volatility_7d: float = Field(..., description="基于7天小时价格计算的实现波动率%")
+
+
+class MarketCapVolatilityResponse(BaseModel):
+    items: List[MarketCapVolatility] = Field(default_factory=list)
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+
 class AnomalyTradingAdvice(BaseModel):
     """异常事件的交易建议"""
     bias: str = Field(..., description="交易偏向: long, short, neutral")

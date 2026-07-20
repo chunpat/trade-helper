@@ -9,8 +9,10 @@ from app.models.market_anomaly import NarrativeEvent
 from app.schemas.market_insight import (
     AnomalyEventDetail,
     AnomalyEventSummary,
+    MarketCapVolatilityResponse,
     MarketInsightDashboard,
     MarketMetrics,
+    MomentumRadarResponse,
     MarketSentiment,
     MarketNews,
     NarrativeEventSummary,
@@ -64,6 +66,38 @@ async def get_altcoin_starters(
 ):
     """获取刚开始放量的山寨币，不按24H总涨幅追高排序。"""
     return await market_insight_service.get_altcoin_starters(limit)
+
+
+@router.get("/momentum-radar", response_model=MomentumRadarResponse)
+async def get_momentum_radar(
+    limit: int = Query(15, ge=1, le=30, description="每个周期返回数量"),
+    volume_ratio_min: float = Query(1.3, ge=1.0, le=5.0, description="最小成交量比"),
+    resistance_hours: int = Query(48, ge=12, le=168, description="压力支撑回看小时"),
+    exclude_recent_hours: int = Query(3, ge=1, le=12, description="计算压力位时排除最近小时"),
+    volatility_days: int = Query(7, ge=3, le=14, description="实现波动率计算天数"),
+    noise_multiplier: float = Query(0.35, ge=0.1, le=1.5, description="波动噪声倍数"),
+    min_breakout_percent: float = Query(0.08, ge=0.01, le=2.0, description="最小突破幅度%"),
+    max_24h_change: float = Query(15, ge=3, le=30, description="允许的24H最大涨幅%"),
+):
+    """获取5分钟、15分钟短线量价启动信号。"""
+    return await market_insight_service.get_momentum_radar(
+        limit=limit,
+        volume_ratio_min=volume_ratio_min,
+        resistance_hours=resistance_hours,
+        exclude_recent_hours=exclude_recent_hours,
+        volatility_days=volatility_days,
+        noise_multiplier=noise_multiplier,
+        min_breakout_percent=min_breakout_percent,
+        max_24h_change=max_24h_change,
+    )
+
+
+@router.get("/market-cap-volatility", response_model=MarketCapVolatilityResponse)
+async def get_market_cap_volatility(
+    limit: int = Query(30, ge=20, le=30, description="市值排名数量，仅支持20或30")
+):
+    """获取市值Top20/30币种及对应7日实现波动率。"""
+    return await market_insight_service.get_market_cap_volatility(limit)
 
 
 @router.get("/top-losers", response_model=List[MarketMetrics])

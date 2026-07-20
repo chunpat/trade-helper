@@ -40,6 +40,19 @@ def _read_bool_env(key: str, default: bool) -> bool:
         return default
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
+
+def _schedule_service_start(service, name: str) -> None:
+    """Start pollers after ASGI startup has completed and the port is listening."""
+    def start_service() -> None:
+        try:
+            service.start()
+            logging.info("startup: %s background task started", name)
+        except Exception:
+            logging.exception("startup: failed to start %s background task", name)
+
+    handle = asyncio.get_running_loop().call_later(0.5, start_service)
+    app.state.background_start_handles.append(handle)
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -73,41 +86,40 @@ async def startup_event():
     app.state.anomaly_monitor = None
     app.state.polymarket_trader_cache = None
     app.state.polymarket_copy_runner = None
+    app.state.background_start_handles = []
 
     if _read_bool_env("START_MARKET_POLLER", True):
         logging.info("startup: initializing market poller")
         app.state.market_poller = get_poller_from_env()
-        app.state.market_poller.start()
-        poller = app.state.market_poller
-        logging.info("startup: poller task=%s running=%s", getattr(poller, '_task', None), getattr(poller, '_running', None))
+        _schedule_service_start(app.state.market_poller, "market poller")
     else:
         logging.info("startup: market poller disabled")
 
     if _read_bool_env("START_POSITION_SYNC", True):
         logging.info("startup: initializing position sync")
         app.state.position_sync = get_position_sync_from_env()
-        app.state.position_sync.start()
+        _schedule_service_start(app.state.position_sync, "position sync")
     else:
         logging.info("startup: position sync disabled")
 
     if _read_bool_env("START_ANOMALY_MONITOR", True):
         logging.info("startup: initializing anomaly monitor")
         app.state.anomaly_monitor = anomaly_monitor_service
-        app.state.anomaly_monitor.start()
+        _schedule_service_start(app.state.anomaly_monitor, "anomaly monitor")
     else:
         logging.info("startup: anomaly monitor disabled")
 
     if _read_bool_env("START_POLYMARKET_TRADER_CACHE", True):
         logging.info("startup: initializing polymarket trader cache")
         app.state.polymarket_trader_cache = polymarket_trader_cache_service
-        app.state.polymarket_trader_cache.start()
+        _schedule_service_start(app.state.polymarket_trader_cache, "polymarket trader cache")
     else:
         logging.info("startup: polymarket trader cache disabled")
 
     if _read_bool_env("START_POLYMARKET_COPY_RUNNER", True):
         logging.info("startup: initializing polymarket copy runner")
         app.state.polymarket_copy_runner = polymarket_copy_runner_service
-        app.state.polymarket_copy_runner.start()
+        _schedule_service_start(app.state.polymarket_copy_runner, "polymarket copy runner")
     else:
         logging.info("startup: polymarket copy runner disabled")
 
@@ -118,6 +130,8 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
+    for handle in getattr(app.state, "background_start_handles", []):
+        handle.cancel()
     # stop market-data poller if running
     poller = getattr(app.state, "market_poller", None)
     if poller:

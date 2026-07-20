@@ -245,6 +245,9 @@ export const riskControl = {
   getCompletedTradeReviewBundle(params) {
     return api.get('/risk-control/history/completed-trades/review', { params })
   },
+  getCompletedTradeDetail(tradeId, params) {
+    return api.get(`/risk-control/history/completed-trades/${encodeURIComponent(tradeId)}`, { params })
+  },
   getOpenTrades(params) {
     return api.get('/risk-control/history/open-trades', { params })
   },
@@ -302,6 +305,12 @@ export const riskControl = {
 }
 
 export const marketInsight = {
+  getMomentumRadar(params) {
+    return api.get('/market-insight/momentum-radar', { params, timeout: 8000 })
+  },
+  getMarketCapVolatility(params) {
+    return api.get('/market-insight/market-cap-volatility', { params, timeout: 12000 })
+  },
   getDashboard(params) {
     return api.get('/market-insight/dashboard', { params })
   },
@@ -322,6 +331,18 @@ export const marketInsight = {
   },
   scanPatterns(params) {
     return api.get('/market-insight/patterns/scan', { params })
+  }
+}
+
+export const notificationSettings = {
+  getDingTalkConfig() {
+    return api.get('/notifications/dingtalk')
+  },
+  updateDingTalkConfig(data) {
+    return api.put('/notifications/dingtalk', data)
+  },
+  testDingTalk() {
+    return api.post('/notifications/dingtalk/test')
   }
 }
 
@@ -395,5 +416,6 @@ export default {
   riskControl,
   dashboard,
   marketInsight,
-  polymarket
+  polymarket,
+  notificationSettings
 }

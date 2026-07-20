@@ -98,6 +98,8 @@ services:
       START_MARKET_POLLER: "True"
       START_POSITION_SYNC: "True"
       START_ANOMALY_MONITOR: "False"
+      START_POLYMARKET_TRADER_CACHE: "False"
+      START_POLYMARKET_COPY_RUNNER: "True"
     depends_on:
       redis:
         condition: service_healthy
@@ -120,6 +122,32 @@ services:
       START_MARKET_POLLER: "False"
       START_POSITION_SYNC: "False"
       START_ANOMALY_MONITOR: "True"
+      START_POLYMARKET_TRADER_CACHE: "False"
+      START_POLYMARKET_COPY_RUNNER: "False"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  polymarket-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    networks:
+      - backend-network
+      - shared-network
+    restart: always
+    environment:
+      <<: *backend-env
+      START_MARKET_POLLER: "False"
+      START_POSITION_SYNC: "False"
+      START_ANOMALY_MONITOR: "False"
+      START_POLYMARKET_TRADER_CACHE: "True"
+      START_POLYMARKET_COPY_RUNNER: "False"
     depends_on:
       redis:
         condition: service_healthy

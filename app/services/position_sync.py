@@ -152,6 +152,11 @@ class PositionSyncService:
                     try:
                         symbol = r.get('symbol')
                         amt = float(r.get('positionAmt', 0) or 0)
+                        # Binance returns every listed contract, including hundreds of
+                        # zero-size rows. Do not issue a DB query/commit for each one;
+                        # stale active positions are handled by the deactivation pass.
+                        if abs(amt) <= 1e-12:
+                            continue
                         pside = self.normalize_position_side(r.get('positionSide'), amt)
                         entry_price = float(r.get('entryPrice', 0)) if r.get('entryPrice') else None
                         mark_price = float(r.get('markPrice', 0)) if r.get('markPrice') else None
@@ -369,11 +374,21 @@ class PositionSyncService:
             inserted_count = 0
             updated_count = 0
             if income_history:
+                income_ids = {
+                    str(item.get('tranId'))
+                    for item in income_history
+                    if item.get('tranId')
+                }
+                existing_income_ids = {
+                    row[0]
+                    for row in db.query(TransactionHistory.transaction_id)
+                    .filter(TransactionHistory.transaction_id.in_(income_ids))
+                    .all()
+                } if income_ids else set()
                 for item in income_history:
                     tran_id = item.get('tranId')
                     if not tran_id: continue
-                    exists = db.query(TransactionHistory).filter(TransactionHistory.transaction_id == str(tran_id)).first()
-                    if not exists:
+                    if str(tran_id) not in existing_income_ids:
                         db_item = TransactionHistory(
                             account_id=account.id,
                             symbol=item.get('symbol'),
@@ -417,9 +432,17 @@ class PositionSyncService:
                         item['leverage'] = item['leverage'] or float(trade.get('leverage', 0) or 0)
                         item['time'] = max(item['time'], trade.get('time'))
 
+                global_ids = [f"ORDER_{oid}" for oid in aggregated_trades]
+                existing_trade_rows = {
+                    row.transaction_id: row
+                    for row in db.query(TransactionHistory)
+                    .filter(TransactionHistory.transaction_id.in_(global_ids))
+                    .all()
+                } if global_ids else {}
+
                 for oid, data in aggregated_trades.items():
                     global_id = f"ORDER_{oid}"
-                    exists = db.query(TransactionHistory).filter(TransactionHistory.transaction_id == global_id).first()
+                    exists = existing_trade_rows.get(global_id)
                     
                     avg_price = data['price_sum'] / data['qty'] if data['qty'] > 0 else 0
                     

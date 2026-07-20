@@ -1018,7 +1018,7 @@ async def resolve_alert(
 
 
 @router.get("/history/transactions/summary", response_model=schemas.TransactionReviewSummary)
-async def get_transaction_review_summary(
+def get_transaction_review_summary(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
     transaction_type: Optional[str] = Query(None, alias="type"),
@@ -1130,7 +1130,7 @@ async def get_transaction_review_summary(
 
 
 @router.get("/history/transactions/timeline", response_model=schemas.TransactionHistoryTimeline)
-async def get_transaction_review_timeline(
+def get_transaction_review_timeline(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
     transaction_type: Optional[str] = Query(None, alias="type"),
@@ -1206,7 +1206,7 @@ async def get_transaction_review_timeline(
 
 
 @router.get("/history/completed-trades", response_model=schemas.CompletedTradeReviewList)
-async def get_completed_trade_history(
+def get_completed_trade_history(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
     start_time: Optional[datetime] = None,
@@ -1231,7 +1231,7 @@ async def get_completed_trade_history(
 
 
 @router.get("/history/completed-trades/review", response_model=schemas.CompletedTradeReviewBundle)
-async def get_completed_trade_review_bundle(
+def get_completed_trade_review_bundle(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
     start_time: Optional[datetime] = None,
@@ -1241,7 +1241,7 @@ async def get_completed_trade_review_bundle(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    """一次返回完整交易列表、概览和时间序列，避免重复重建完整交易。"""
+    """一次返回轻量列表、概览和时间序列；行情曲线由详情接口按需计算。"""
     start_time, end_time = _normalize_time_range(start_time, end_time)
     service = TradeReviewService(db)
     result = service.build_completed_trade_review_bundle(
@@ -1256,7 +1256,7 @@ async def get_completed_trade_review_bundle(
 
 
 @router.get("/history/open-trades", response_model=schemas.OpenTradeReviewList)
-async def get_open_trade_history(
+def get_open_trade_history(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
     start_time: Optional[datetime] = None,
@@ -1281,7 +1281,7 @@ async def get_open_trade_history(
 
 
 @router.get("/history/completed-trades/summary", response_model=schemas.CompletedTradeReviewSummary)
-async def get_completed_trade_summary(
+def get_completed_trade_summary(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
     start_time: Optional[datetime] = None,
@@ -1302,7 +1302,7 @@ async def get_completed_trade_summary(
 
 
 @router.get("/history/completed-trades/timeline", response_model=schemas.TransactionHistoryTimeline)
-async def get_completed_trade_timeline(
+def get_completed_trade_timeline(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
     start_time: Optional[datetime] = None,
@@ -1320,6 +1320,30 @@ async def get_completed_trade_timeline(
         end_time=end_time,
     )
     return schemas.TransactionHistoryTimeline(**result)
+
+
+@router.get("/history/completed-trades/{trade_id}", response_model=schemas.CompletedTradeReview)
+def get_completed_trade_detail(
+    trade_id: str,
+    account_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """按需计算单笔完整交易的行情和账户权益曲线。"""
+    start_time, end_time = _normalize_time_range(start_time, end_time)
+    result = TradeReviewService(db).get_completed_trade_detail(
+        trade_id=trade_id,
+        account_id=account_id,
+        symbol=symbol,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Completed trade not found")
+    return schemas.CompletedTradeReview(**result)
 
 
 @router.get("/history/daily-reviews", response_model=schemas.DailyTradeReviewInDB)
@@ -1421,7 +1445,7 @@ async def list_recent_daily_trade_reviews(
     return [_serialize_daily_trade_review(note) for note in notes]
 
 @router.get("/history/transactions", response_model=List[schemas.TransactionHistoryInDB])
-async def get_transaction_history(
+def get_transaction_history(
     account_id: Optional[int] = None,
     symbol: Optional[str] = None,
     transaction_type: Optional[str] = Query(None, alias="type"),

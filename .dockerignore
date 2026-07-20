@@ -1,0 +1,13 @@
+.git
+.gitignore
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+venv
+.venv
+node_modules
+frontend/node_modules
+frontend/dist
+scripts/polymarket_rust_probe
+*.log
+.DS_Store

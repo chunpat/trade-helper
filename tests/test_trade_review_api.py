@@ -756,6 +756,32 @@ def test_completed_trade_detail_includes_holding_curve_metrics(review_client):
     assert item['account_equity_curve'][-1]['total_equity'] == 21900.0
 
 
+def test_completed_trade_bundle_defers_curve_until_detail_request(review_client):
+    client, session_factory = review_client
+    account_id = seed_completed_round_trip_history(session_factory)
+
+    bundle_response = client.get(
+        '/api/v1/risk-control/history/completed-trades/review',
+        params={'account_id': account_id, 'symbol': 'BTCUSDT'},
+    )
+
+    assert bundle_response.status_code == 200
+    lightweight_item = bundle_response.json()['items'][0]
+    assert lightweight_item['price_sample_count'] == 0
+    assert lightweight_item['holding_curve'] == []
+
+    detail_response = client.get(
+        f"/api/v1/risk-control/history/completed-trades/{lightweight_item['id']}",
+        params={'account_id': account_id, 'symbol': 'BTCUSDT'},
+    )
+
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail['price_sample_count'] == 3
+    assert detail['holding_curve_point_count'] == 6
+    assert detail['account_equity_point_count'] == 5
+
+
 def test_open_trades_endpoint_returns_active_positions(review_client):
     client, session_factory = review_client
     account_id = seed_completed_round_trip_history(session_factory)

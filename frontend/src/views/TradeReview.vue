@@ -584,14 +584,9 @@
             <span :class="pnlClass(row.net_pnl)">{{ formatSignedCurrency(row.net_pnl) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="max_floating_profit" label="最大浮盈" width="140">
+        <el-table-column label="行情分析" width="140">
           <template #default="{ row }">
-            <span :class="pnlClass(row.max_floating_profit)">{{ formatSignedCurrency(row.max_floating_profit) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="max_drawdown" label="最大回撤" width="140">
-          <template #default="{ row }">
-            <span class="pnl-negative">-{{ formatCurrency(row.max_drawdown) }}</span>
+            <el-tag type="info" effect="plain">点击查看曲线</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="holding_minutes" label="持仓时长" width="140">
@@ -750,7 +745,7 @@
       </template>
     </el-card>
 
-    <el-drawer v-model="completedTradeDrawerVisible" title="完整交易详情" size="46%">
+    <el-drawer v-model="completedTradeDrawerVisible" v-loading="loading.completedTradeDetail" title="完整交易详情" size="46%">
       <template v-if="selectedCompletedTrade">
         <div class="drawer-summary">
           <div>
@@ -1040,7 +1035,7 @@ const createRecentDateRange = (days) => {
   return [start, end]
 }
 
-const createDefaultDateRange = () => createRecentDateRange(30)
+const createDefaultDateRange = () => createRecentDateRange(7)
 
 const loadHoldingCurveMode = () => {
   if (typeof window === 'undefined') {
@@ -1164,6 +1159,7 @@ export default {
       completedSummary: false,
       completedTimeline: false,
       completedTrades: false,
+      completedTradeDetail: false,
       rawSummary: false,
       rawHistory: false,
       positionAnalysis: false
@@ -2344,9 +2340,24 @@ export default {
       }
     }
 
-    const openCompletedTradeDrawer = (row) => {
+    const openCompletedTradeDrawer = async (row) => {
       selectedCompletedTrade.value = row
       completedTradeDrawerVisible.value = true
+      loading.completedTradeDetail = true
+      const requestedTradeId = row.id
+      try {
+        const detail = await riskControl.getCompletedTradeDetail(row.id, buildBaseParams())
+        if (selectedCompletedTrade.value?.id === requestedTradeId) {
+          selectedCompletedTrade.value = detail
+        }
+      } catch (error) {
+        console.error('Failed to fetch completed trade detail:', error)
+        ElMessage.error('获取交易行情曲线失败')
+      } finally {
+        if (selectedCompletedTrade.value?.id === requestedTradeId) {
+          loading.completedTradeDetail = false
+        }
+      }
     }
 
     watch(

@@ -43,6 +43,48 @@
       </div>
     </el-card>
 
+    <el-card class="notification-card">
+      <template #header>
+        <div class="display-time-card-header">
+          <span>钉钉监控通知</span>
+          <el-tag :type="dingTalkForm.enabled && dingTalkMeta.webhook_configured ? 'success' : 'info'">
+            {{ dingTalkForm.enabled && dingTalkMeta.webhook_configured ? '已启用' : '未启用' }}
+          </el-tag>
+        </div>
+      </template>
+
+      <el-form label-width="180px" class="risk-form" v-loading="dingTalkLoading">
+        <el-form-item label="启用钉钉通知">
+          <el-switch v-model="dingTalkForm.enabled" />
+        </el-form-item>
+        <el-form-item label="机器人 Webhook">
+          <el-input
+            v-model="dingTalkForm.webhook_url"
+            type="password"
+            show-password
+            :placeholder="dingTalkMeta.webhook_configured ? 'Webhook 已配置，留空表示不修改' : 'https://oapi.dingtalk.com/robot/send?access_token=...'"
+          />
+          <div class="help-text">仅支持钉钉自定义机器人 HTTPS Webhook，保存后不会再次回显。</div>
+        </el-form-item>
+        <el-form-item label="加签 Secret">
+          <el-input
+            v-model="dingTalkForm.secret"
+            type="password"
+            show-password
+            :placeholder="dingTalkMeta.secret_configured ? '加签密钥已配置，留空表示不修改' : 'SEC...（机器人开启加签时填写）'"
+          />
+        </el-form-item>
+        <el-form-item label="通知事件">
+          <el-checkbox v-model="dingTalkForm.notify_market_breakout">量价放量突破</el-checkbox>
+          <el-checkbox v-model="dingTalkForm.notify_risk_alert">账户风险告警</el-checkbox>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="dingTalkSaving" @click="saveDingTalkConfig">保存钉钉配置</el-button>
+          <el-button :loading="dingTalkTesting" :disabled="!dingTalkMeta.webhook_configured" @click="testDingTalk">发送测试通知</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
     <div class="page-content" v-loading="loading">
       <el-empty v-if="!selectedAccountId" description="请先选择一个账户进行配置" />
       
@@ -113,7 +155,7 @@
 <script>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useStore } from 'vuex'
-import { riskControl } from '@/api'
+import { notificationSettings, riskControl } from '@/api'
 import { ElMessage } from 'element-plus'
 import {
   DISPLAY_TIMEZONE_OPTIONS,
@@ -133,6 +175,9 @@ export default {
     const selectedAccountId = ref(null)
     const formRef = ref(null)
     const currentTimeTick = ref(Date.now())
+    const dingTalkLoading = ref(false)
+    const dingTalkSaving = ref(false)
+    const dingTalkTesting = ref(false)
     let currentTimeTimer = null
 
     const displayTimezoneOptions = DISPLAY_TIMEZONE_OPTIONS
@@ -160,6 +205,18 @@ export default {
       is_active: true
     })
 
+    const dingTalkForm = reactive({
+      enabled: false,
+      webhook_url: '',
+      secret: '',
+      notify_market_breakout: true,
+      notify_risk_alert: true
+    })
+    const dingTalkMeta = reactive({
+      webhook_configured: false,
+      secret_configured: false
+    })
+
     const rules = {
       max_leverage: [{ required: true, message: '请输入最大杠杆', trigger: 'blur' }],
       max_position_value: [{ required: true, message: '请输入最大持仓价值', trigger: 'blur' }],
@@ -175,6 +232,52 @@ export default {
         }
       } catch (error) {
         ElMessage.error('获取账户列表失败')
+      }
+    }
+
+    const fetchDingTalkConfig = async () => {
+      dingTalkLoading.value = true
+      try {
+        const data = await notificationSettings.getDingTalkConfig()
+        dingTalkForm.enabled = Boolean(data.enabled)
+        dingTalkForm.notify_market_breakout = Boolean(data.notify_market_breakout)
+        dingTalkForm.notify_risk_alert = Boolean(data.notify_risk_alert)
+        dingTalkForm.webhook_url = ''
+        dingTalkForm.secret = ''
+        dingTalkMeta.webhook_configured = Boolean(data.webhook_configured)
+        dingTalkMeta.secret_configured = Boolean(data.secret_configured)
+      } catch (error) {
+        ElMessage.error('获取钉钉配置失败')
+      } finally {
+        dingTalkLoading.value = false
+      }
+    }
+
+    const saveDingTalkConfig = async () => {
+      dingTalkSaving.value = true
+      try {
+        const data = await notificationSettings.updateDingTalkConfig({ ...dingTalkForm })
+        dingTalkMeta.webhook_configured = Boolean(data.webhook_configured)
+        dingTalkMeta.secret_configured = Boolean(data.secret_configured)
+        dingTalkForm.webhook_url = ''
+        dingTalkForm.secret = ''
+        ElMessage.success('钉钉通知配置已保存')
+      } catch (error) {
+        ElMessage.error(error.response?.data?.detail || '保存钉钉配置失败')
+      } finally {
+        dingTalkSaving.value = false
+      }
+    }
+
+    const testDingTalk = async () => {
+      dingTalkTesting.value = true
+      try {
+        await notificationSettings.testDingTalk()
+        ElMessage.success('钉钉测试通知已发送')
+      } catch (error) {
+        ElMessage.error(error.response?.data?.detail || '钉钉测试通知发送失败')
+      } finally {
+        dingTalkTesting.value = false
       }
     }
 
@@ -226,6 +329,7 @@ export default {
         currentTimeTick.value = Date.now()
       }, 1000)
       fetchAccounts()
+      fetchDingTalkConfig()
     })
 
     onBeforeUnmount(() => {
@@ -243,6 +347,11 @@ export default {
       displayTimezoneOffsetLabel,
       displayTimezoneOptions,
       loading,
+      dingTalkForm,
+      dingTalkLoading,
+      dingTalkMeta,
+      dingTalkSaving,
+      dingTalkTesting,
       submitting,
       accounts,
       selectedAccountId,
@@ -250,6 +359,8 @@ export default {
       rules,
       formRef,
       fetchConfig,
+      saveDingTalkConfig,
+      testDingTalk,
       handleDisplayTimezoneChange,
       submitForm,
       resetForm
@@ -279,6 +390,14 @@ export default {
 
 .display-time-card {
   margin-bottom: 20px;
+}
+
+.notification-card {
+  margin-bottom: 20px;
+}
+
+.notification-card :deep(.el-input) {
+  max-width: 620px;
 }
 
 .display-time-card-header {

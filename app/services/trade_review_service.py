@@ -40,7 +40,6 @@ class TradeReviewService:
         )
         total = len(completed_trades)
         items = completed_trades[skip:skip + limit]
-        self._attach_trade_analytics(items)
         return {
             'total': total,
             'items': items,
@@ -102,15 +101,36 @@ class TradeReviewService:
         skip: int = 0,
         limit: int = 100,
     ) -> Dict:
-        bundle = self.build_completed_trade_review_bundle(
+        completed_trades = self._build_completed_trades(
             account_id=account_id,
             symbol=symbol,
             start_time=start_time,
             end_time=end_time,
-            skip=skip,
-            limit=limit,
         )
-        return {'total': bundle['total'], 'items': bundle['items']}
+        items = completed_trades[skip:skip + limit]
+        # 保留旧接口的完整响应兼容性；新复盘页使用轻量 bundle + 按需详情接口。
+        self._attach_trade_analytics(items)
+        return {'total': len(completed_trades), 'items': items}
+
+    def get_completed_trade_detail(
+        self,
+        trade_id: str,
+        account_id: Optional[int] = None,
+        symbol: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> Optional[Dict]:
+        completed_trades = self._build_completed_trades(
+            account_id=account_id,
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        trade = next((item for item in completed_trades if item['id'] == trade_id), None)
+        if trade is None:
+            return None
+        self._attach_trade_analytics([trade])
+        return trade
 
     def summarize_completed_trades(
         self,

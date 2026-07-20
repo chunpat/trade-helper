@@ -3,14 +3,19 @@ import asyncio
 import logging
 import os
 import math
+import statistics
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 import httpx
 
 from app.schemas.market_insight import (
     AnomalyEventSummary,
+    MarketCapVolatility,
+    MarketCapVolatilityResponse,
     MarketInsightDashboard,
     MarketMetrics,
+    MomentumRadarResponse,
+    MomentumSignal,
     MarketSentiment,
     MarketNews,
     TradingSignal,
@@ -184,6 +189,266 @@ class MarketInsightService:
         except Exception as e:
             logger.error(f"Error fetching altcoin starters: {e}")
             return []
+
+    async def get_momentum_radar(
+        self,
+        limit: int = 15,
+        volume_ratio_min: float = 1.3,
+        resistance_hours: int = 48,
+        exclude_recent_hours: int = 3,
+        volatility_days: int = 7,
+        noise_multiplier: float = 0.35,
+        min_breakout_percent: float = 0.08,
+        max_24h_change: float = 15,
+    ) -> MomentumRadarResponse:
+        """一次请求返回5分钟和15分钟的山寨币放量启动信号。"""
+        cache_key = (
+            f"momentum_radar_{limit}_{volume_ratio_min}_{resistance_hours}_"
+            f"{exclude_recent_hours}_{volatility_days}_{noise_multiplier}_"
+            f"{min_breakout_percent}_{max_24h_change}"
+        )
+        if self._is_cache_valid(cache_key):
+            return self._cache[cache_key]["data"]
+
+        excluded_bases = {
+            "BTC", "ETH", "USDC", "FDUSD", "TUSD", "USDP", "DAI", "BUSD",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.get(f"{self.BINANCE_FAPI}/ticker/24hr")
+                tickers = response.json()
+                candidates = []
+                for ticker in tickers if isinstance(tickers, list) else []:
+                    symbol = ticker.get("symbol", "")
+                    base = symbol[:-4] if symbol.endswith("USDT") else ""
+                    change_24h = float(ticker.get("priceChangePercent", 0) or 0)
+                    quote_volume = float(ticker.get("quoteVolume", 0) or 0)
+                    if (
+                        symbol.endswith("USDT")
+                        and base not in excluded_bases
+                        and -5 <= change_24h <= max_24h_change
+                        and quote_volume >= 5_000_000
+                    ):
+                        candidates.append(ticker)
+
+                candidates.sort(
+                    key=lambda item: float(item.get("quoteVolume", 0) or 0),
+                    reverse=True,
+                )
+
+                async def inspect(ticker: dict) -> Optional[MomentumSignal]:
+                    kline_response = await client.get(
+                        f"{self.BINANCE_FAPI}/klines",
+                        params={"symbol": ticker["symbol"], "interval": "5m", "limit": 17},
+                    )
+                    klines = kline_response.json()
+                    if not isinstance(klines, list) or len(klines) < 17:
+                        return None
+
+                    closed = klines[:-1]
+                    latest = closed[-1]
+                    previous_12 = closed[-13:-1]
+                    previous_avg_5m = sum(float(item[5]) for item in previous_12) / 12
+                    volume_ratio_5m = float(latest[5]) / previous_avg_5m if previous_avg_5m else 0
+
+                    latest_15m = closed[-3:]
+                    previous_15m_blocks = [closed[index:index + 3] for index in range(len(closed) - 15, len(closed) - 3, 3)]
+                    latest_15m_volume = sum(float(item[5]) for item in latest_15m)
+                    previous_avg_15m = (
+                        sum(sum(float(item[5]) for item in block) for block in previous_15m_blocks)
+                        / len(previous_15m_blocks)
+                        if previous_15m_blocks else 0
+                    )
+                    volume_ratio_15m = latest_15m_volume / previous_avg_15m if previous_avg_15m else 0
+
+                    close_price = float(latest[4])
+                    open_5m = float(latest[1])
+                    open_15m = float(latest_15m[0][1])
+                    change_5m = ((close_price / open_5m) - 1) * 100 if open_5m else 0
+                    change_15m = ((close_price / open_15m) - 1) * 100 if open_15m else 0
+                    change_24h = float(ticker.get("priceChangePercent", 0) or 0)
+
+                    score = (
+                        min(max(volume_ratio_5m - 1, 0), 4) * 12
+                        + min(max(volume_ratio_15m - 1, 0), 4) * 10
+                        + min(max(change_5m, 0), 3) * 8
+                        + min(max(change_15m, 0), 6) * 5
+                        + max(0, 18 - max(change_24h, 0) * 1.2)
+                    )
+                    return MomentumSignal(
+                        symbol=ticker["symbol"],
+                        last_price=close_price,
+                        change_5m=round(change_5m, 2),
+                        change_15m=round(change_15m, 2),
+                        volume_ratio_5m=round(volume_ratio_5m, 2),
+                        volume_ratio_15m=round(volume_ratio_15m, 2),
+                        quote_volume_24h=float(ticker.get("quoteVolume", 0) or 0),
+                        price_change_percent_24h=round(change_24h, 2),
+                        score=round(min(score, 100), 1),
+                        reason=f"5m量比 {volume_ratio_5m:.1f}x / 15m量比 {volume_ratio_15m:.1f}x",
+                    )
+
+                inspected = await asyncio.gather(
+                    *(inspect(ticker) for ticker in candidates[:20]),
+                    return_exceptions=True,
+                )
+                signals = [item for item in inspected if isinstance(item, MomentumSignal)]
+
+                preliminary = [
+                    item for item in signals
+                    if (
+                        (0.15 <= item.change_5m <= 3 and item.volume_ratio_5m >= volume_ratio_min)
+                        or (0.3 <= item.change_15m <= 6 and item.volume_ratio_15m >= volume_ratio_min)
+                    )
+                ]
+
+                async def enrich_breakout(signal: MomentumSignal) -> MomentumSignal:
+                    history_limit = max(
+                        volatility_days * 24,
+                        resistance_hours + exclude_recent_hours,
+                    ) + 1
+                    history_response = await client.get(
+                        f"{self.BINANCE_FAPI}/klines",
+                        params={"symbol": signal.symbol, "interval": "1h", "limit": history_limit},
+                    )
+                    history = history_response.json()
+                    minimum_history = resistance_hours + exclude_recent_hours + 1
+                    if not isinstance(history, list) or len(history) < minimum_history:
+                        return signal
+
+                    closed_hours = history[:-1]
+                    volatility_hours = closed_hours[-(volatility_days * 24):]
+                    closes = [float(item[4]) for item in volatility_hours if float(item[4]) > 0]
+                    hourly_returns = [
+                        math.log(closes[index] / closes[index - 1])
+                        for index in range(1, len(closes))
+                        if closes[index - 1] > 0
+                    ]
+                    volatility_7d = (
+                        statistics.pstdev(hourly_returns) * math.sqrt(volatility_days * 24) * 100
+                        if len(hourly_returns) >= 2 else 0
+                    )
+
+                    # 排除最近若干小时，避免把正在发生的突破本身算进压力位。
+                    level_end = -exclude_recent_hours if exclude_recent_hours else None
+                    level_start = -(resistance_hours + exclude_recent_hours)
+                    level_window = closed_hours[level_start:level_end]
+                    resistance = max(float(item[2]) for item in level_window)
+                    support = min(float(item[3]) for item in level_window)
+                    breakout_percent = (
+                        ((signal.last_price / resistance) - 1) * 100 if resistance > 0 else 0
+                    )
+
+                    # 将7日实现波动率折算成5分钟噪声，波动越大的币要求突破越深。
+                    expected_5m_move = (
+                        volatility_7d / math.sqrt(volatility_days * 24 * 12)
+                        if volatility_7d else 0
+                    )
+                    breakout_threshold = max(min_breakout_percent, expected_5m_move * noise_multiplier)
+                    relevant_volume_ratio = max(signal.volume_ratio_5m, signal.volume_ratio_15m)
+                    signal.volatility_7d = round(volatility_7d, 2)
+                    signal.resistance = resistance
+                    signal.support = support
+                    signal.breakout_percent = round(breakout_percent, 2)
+                    signal.breakout_threshold = round(breakout_threshold, 2)
+                    signal.breakout_confirmed = (
+                        breakout_percent >= breakout_threshold
+                        and relevant_volume_ratio >= volume_ratio_min
+                    )
+                    if signal.breakout_confirmed:
+                        signal.score = round(min(signal.score + min(breakout_percent, 3) * 10, 100), 1)
+                        signal.reason = (
+                            f"放量突破48H压力位 {breakout_percent:.2f}%，"
+                            f"7日波动率 {volatility_7d:.1f}%"
+                        )
+                    return signal
+
+                enriched = await asyncio.gather(
+                    *(enrich_breakout(signal) for signal in preliminary),
+                    return_exceptions=True,
+                )
+                confirmed = [
+                    item for item in enriched
+                    if isinstance(item, MomentumSignal) and item.breakout_confirmed
+                ]
+                five_minute = sorted(
+                    [item for item in confirmed if 0.15 <= item.change_5m <= 3 and item.volume_ratio_5m >= volume_ratio_min],
+                    key=lambda item: item.score,
+                    reverse=True,
+                )[:limit]
+                fifteen_minute = sorted(
+                    [item for item in confirmed if 0.3 <= item.change_15m <= 6 and item.volume_ratio_15m >= volume_ratio_min],
+                    key=lambda item: item.score,
+                    reverse=True,
+                )[:limit]
+                result = MomentumRadarResponse(
+                    five_minute=five_minute,
+                    fifteen_minute=fifteen_minute,
+                    scanned_count=len(signals),
+                    timestamp=datetime.now(),
+                )
+                self._update_cache(cache_key, result)
+                return result
+        except Exception as e:
+            logger.error(f"Error fetching momentum radar: {e}")
+            return MomentumRadarResponse(timestamp=datetime.now())
+
+    async def get_market_cap_volatility(self, limit: int = 30) -> MarketCapVolatilityResponse:
+        """获取市值排名及基于CoinGecko 7天小时价格的实现波动率。"""
+        normalized_limit = 20 if limit <= 20 else 30
+        cache_key = f"market_cap_volatility_{normalized_limit}"
+        if self._is_cache_valid(cache_key):
+            return self._cache[cache_key]["data"]
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{self.COINGECKO_API}/coins/markets",
+                    params={
+                        "vs_currency": "usd",
+                        "order": "market_cap_desc",
+                        "per_page": normalized_limit,
+                        "page": 1,
+                        "sparkline": "true",
+                        "price_change_percentage": "24h",
+                    },
+                )
+                rows = response.json()
+                items = []
+                for fallback_rank, row in enumerate(rows if isinstance(rows, list) else [], start=1):
+                    prices = [
+                        float(value) for value in (row.get("sparkline_in_7d") or {}).get("price", [])
+                        if value is not None and float(value) > 0
+                    ]
+                    returns = [
+                        math.log(prices[index] / prices[index - 1])
+                        for index in range(1, len(prices))
+                        if prices[index - 1] > 0
+                    ]
+                    volatility = (
+                        statistics.pstdev(returns) * math.sqrt(len(returns)) * 100
+                        if len(returns) >= 2 else 0
+                    )
+                    items.append(MarketCapVolatility(
+                        rank=int(row.get("market_cap_rank") or fallback_rank),
+                        symbol=str(row.get("symbol") or "").upper(),
+                        name=str(row.get("name") or ""),
+                        last_price=float(row.get("current_price") or 0),
+                        market_cap=float(row.get("market_cap") or 0),
+                        price_change_percent_24h=round(float(row.get("price_change_percentage_24h") or 0), 2),
+                        volatility_7d=round(volatility, 2),
+                    ))
+
+                result = MarketCapVolatilityResponse(items=items, timestamp=datetime.now())
+                self._cache[cache_key] = {
+                    "data": result,
+                    "timestamp": datetime.now(),
+                    "ttl": 300,
+                }
+                return result
+        except Exception as e:
+            logger.error(f"Error fetching market cap volatility: {e}")
+            return MarketCapVolatilityResponse(timestamp=datetime.now())
     
     async def get_top_volume(self, limit: int = 10) -> List[MarketMetrics]:
         """获取合约成交量排行"""
@@ -852,7 +1117,8 @@ class MarketInsightService:
         if key not in self._cache:
             return False
         cache_time = self._cache[key]["timestamp"]
-        return (datetime.now() - cache_time).total_seconds() < self._cache_ttl
+        cache_ttl = self._cache[key].get("ttl", self._cache_ttl)
+        return (datetime.now() - cache_time).total_seconds() < cache_ttl
     
     def _update_cache(self, key: str, data: Any):
         """更新缓存"""

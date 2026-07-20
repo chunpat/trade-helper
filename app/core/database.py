@@ -71,6 +71,7 @@ def init_db():
         NewsArchive,
     )
     from app.models.polymarket_cache import PolymarketCacheEntry
+    from app.models.notification import NotificationChannelConfig
     from app.models.polymarket_copy import (
         PolymarketCopySignalLog,
         PolymarketCopySimulationRun,
