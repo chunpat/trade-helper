@@ -48,26 +48,6 @@ def test_filter_relevant_news_keeps_crypto_match_and_drops_false_positive():
     assert filtered[0].title.startswith("TRUMP meme coin")
 
 
-def test_to_market_news_from_brave_uses_hostname_and_description():
-    service = NewsService()
-
-    news = service._to_market_news_from_brave(
-        {
-            "title": "TRUMP token jumps after derivatives volume spikes",
-            "description": "Brave result summary about TRUMP token trading activity.",
-            "url": "https://www.reuters.com/markets/currencies/example-story",
-            "meta_url": {"hostname": "www.reuters.com"},
-            "page_age": "2026-03-12T16:28:44Z",
-        },
-        asset_symbol="TRUMP",
-    )
-
-    assert news.source == "www.reuters.com"
-    assert news.source_domain == "reuters.com"
-    assert news.summary == "Brave result summary about TRUMP token trading activity."
-    assert news.symbols == ["TRUMP"]
-
-
 def test_to_market_news_from_binance_article_extracts_symbols_and_source():
     service = NewsService()
 
@@ -131,7 +111,7 @@ def test_fetch_primary_news_pool_combines_rss_and_binance_sources(monkeypatch):
     assert items[1].source_domain == "coindesk.com"
 
 
-def test_fetch_symbol_news_uses_brave_when_primary_provider_has_no_results(monkeypatch):
+def test_fetch_symbol_news_uses_cryptopanic_when_primary_pool_has_no_results(monkeypatch):
     monkeypatch.setenv("NEWS_PROVIDER", "auto")
     service = NewsService()
 
@@ -139,23 +119,20 @@ def test_fetch_symbol_news_uses_brave_when_primary_provider_has_no_results(monke
         return []
 
     async def fake_cryptopanic(asset_symbol=None, limit=10):
-        return []
-
-    async def fake_brave(asset_symbol=None, limit=10):
         assert asset_symbol == "TRUMP"
         return [
             {
                 "title": "TRUMP token rallies as futures open interest surges",
                 "description": "TRUMP crypto traders are reacting to a sharp rise in derivatives activity.",
                 "url": "https://www.coindesk.com/markets/2026/03/12/trump-token-rallies",
-                "meta_url": {"hostname": "www.coindesk.com"},
-                "page_age": "2026-03-12T16:28:44Z",
+                "source": {"title": "CoinDesk"},
+                "published_at": "2026-03-12T16:28:44Z",
+                "currencies": [{"code": "TRUMP"}],
             }
         ]
 
     service._get_global_news_pool = fake_pool
     service._request_cryptopanic_news = fake_cryptopanic
-    service._request_brave_news = fake_brave
 
     news_items = asyncio.run(service.fetch_symbol_news("TRUMPUSDT", limit=3))
 
@@ -164,7 +141,7 @@ def test_fetch_symbol_news_uses_brave_when_primary_provider_has_no_results(monke
     assert news_items[0].title.startswith("TRUMP token rallies")
 
 
-def test_fetch_symbol_news_prefers_global_rss_pool_before_brave(monkeypatch):
+def test_fetch_symbol_news_prefers_global_rss_pool_before_fallback_provider(monkeypatch):
     monkeypatch.setenv("NEWS_PROVIDER", "auto")
     service = NewsService()
 
@@ -182,12 +159,11 @@ def test_fetch_symbol_news_prefers_global_rss_pool_before_brave(monkeypatch):
             )
         ]
 
-    async def fail_brave(*args, **kwargs):
-        raise AssertionError("brave fallback should not be called when rss pool already matches")
+    async def fail_fallback(*args, **kwargs):
+        raise AssertionError("fallback provider should not be called when rss pool already matches")
 
     service._get_global_news_pool = fake_pool
-    service._request_brave_news = fail_brave
-    service._request_cryptopanic_news = fail_brave
+    service._request_cryptopanic_news = fail_fallback
 
     news_items = asyncio.run(service.fetch_symbol_news("TRUMPUSDT", limit=3))
 
@@ -198,36 +174,42 @@ def test_fetch_symbol_news_prefers_global_rss_pool_before_brave(monkeypatch):
 def test_fetch_symbol_news_caches_fallback_search_results(monkeypatch):
     monkeypatch.setenv("NEWS_PROVIDER", "auto")
     service = NewsService()
-    brave_calls = {"count": 0}
+    cryptopanic_calls = {"count": 0}
 
     async def fake_pool(limit):
         return []
 
     async def fake_cryptopanic(asset_symbol=None, limit=10):
-        return []
-
-    async def fake_brave(asset_symbol=None, limit=10):
-        brave_calls["count"] += 1
+        cryptopanic_calls["count"] += 1
         return [
             {
                 "title": "TRUMP token rallies as derivatives positions build",
                 "description": "TRUMP crypto traders are reacting to a sharp rise in futures demand.",
                 "url": "https://www.coindesk.com/markets/2026/03/12/trump-token-rallies",
-                "meta_url": {"hostname": "www.coindesk.com"},
-                "page_age": "2026-03-12T16:28:44Z",
+                "source": {"title": "CoinDesk"},
+                "published_at": "2026-03-12T16:28:44Z",
+                "currencies": [{"code": "TRUMP"}],
             }
         ]
 
     service._get_global_news_pool = fake_pool
     service._request_cryptopanic_news = fake_cryptopanic
-    service._request_brave_news = fake_brave
 
     first_items = asyncio.run(service.fetch_symbol_news("TRUMPUSDT", limit=3))
     second_items = asyncio.run(service.fetch_symbol_news("TRUMPUSDT", limit=3))
 
-    assert brave_calls["count"] == 1
+    assert cryptopanic_calls["count"] == 1
     assert len(first_items) == 1
     assert len(second_items) == 1
+
+
+def test_legacy_brave_provider_value_falls_back_without_brave_requests(monkeypatch):
+    monkeypatch.setenv("NEWS_PROVIDER", "brave")
+
+    service = NewsService()
+
+    assert service.provider == service.PROVIDER_AUTO
+    assert service._get_provider_order() == [service.PROVIDER_CRYPTOPANIC]
 
 
 def test_default_rss_feeds_include_panewslab(monkeypatch):
@@ -306,6 +288,7 @@ def test_parse_okx_announcements_page_extracts_recent_items():
 
 def test_parse_bybit_announcements_page_keeps_relevant_categories_only():
     service = NewsService()
+    recent_timestamp = int(datetime.utcnow().timestamp())
     html_text = """
     <script id="__NEXT_DATA__" type="application/json">
     {
@@ -331,9 +314,10 @@ def test_parse_bybit_announcements_page_keeps_relevant_categories_only():
           }
         }
       }
-    }
-    </script>
-    """
+        }
+        </script>
+        """
+    html_text = html_text.replace("1773366336", str(recent_timestamp))
 
     news_items = service._parse_bybit_announcements_page(html_text, "https://announcements.bybit.com/en-US/")
 

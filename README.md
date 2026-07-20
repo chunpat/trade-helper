@@ -73,7 +73,7 @@
 - 默认 RSS 池包含 CoinDesk、Cointelegraph、PANews 中文快讯、Decrypt、Blockworks、The Block、CryptoSlate、Bitcoin Magazine、The Defiant、AMBCrypto、CoinGape、Bitcoin.com News
 - PANews 当前可用中文 RSS 地址是 `https://www.panewslab.com/zh/rss/newsflash.xml`
 - `zh.panewslab.com` 目前没有可解析的 RSS 主机记录，不建议配置到源列表里
-- `NEWS_PROVIDER=auto` 时，只有当主新闻池没有命中时，才会回退到 CryptoPanic 或 Brave News Search
+- `NEWS_PROVIDER=auto` 时，只有当主新闻池没有命中时，才会回退到 CryptoPanic
 - 新闻会写入持久化归档表，Dashboard 和 `/api/v1/market-insight/news` 会优先读取归档，只有归档过期时才回源抓取
 - `NEWS_SYMBOL_ALIAS_MAP` 和 `NEWS_SYMBOL_OFFICIAL_FEEDS` 都是 JSON 字符串，用来提升币种匹配和补充项目方官方 feed
 - `ENABLE_GPT_5_1` 只控制市场看板里的本地摘要文案，不会触发 OpenAI 请求
@@ -330,13 +330,12 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f backend 
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Access token 有效期，建议保持短效，例如 `15` 到 `30` 分钟 |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | Refresh token 有效期，建议 `7` 到 `30` 天 |
 | `ANOMALY_LLM_PROVIDER` | 异常新闻分析模式，常见值为 `disabled` 或 `openai-compatible` |
-| `NEWS_PROVIDER` | 新闻兜底提供方，常见值为 `auto`、`brave`、`cryptopanic` |
+| `NEWS_PROVIDER` | 新闻兜底提供方，常见值为 `auto`、`cryptopanic` |
 | `NEWS_ARCHIVE_ENABLED` | 是否启用持久化新闻归档 |
 | `NEWS_ARCHIVE_STALE_AFTER_SECONDS` | 全局新闻归档多久视为过期 |
 | `NEWS_RSS_FEED_URLS` | 逗号分隔的 RSS 源列表 |
 | `NEWS_SYMBOL_ALIAS_MAP` | 币种别名 JSON，用于提升匹配率 |
 | `NEWS_SYMBOL_OFFICIAL_FEEDS` | 币种到官方 RSS 的 JSON 映射 |
-| `BRAVE_SEARCH_API_KEY` | Brave Search API Key，`NEWS_PROVIDER=auto` 或 `brave` 时可用 |
 | `NEWS_API_KEY` | CryptoPanic API Key，`NEWS_PROVIDER=auto` 或 `cryptopanic` 时可用 |
 
 新闻归档接口示例:
@@ -353,6 +352,17 @@ LLM_API_KEY=your-llm-api-key
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
 ```
+
+切换到国内 MiniMax:
+
+```bash
+ANOMALY_LLM_PROVIDER=openai-compatible
+LLM_API_KEY=your-minimax-api-key
+LLM_BASE_URL=https://api.minimaxi.com/v1
+LLM_MODEL=MiniMax-M3
+```
+
+海外 MiniMax 账户请把 `LLM_BASE_URL` 改为 `https://api.minimax.io/v1`。
 
 认证相关的最小配置示例:
 

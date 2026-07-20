@@ -67,22 +67,32 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/polymarket',
+    name: 'Polymarket',
+    component: () => import('../views/PolymarketWorkspace.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/polymarket-traders',
     name: 'PolymarketTraders',
-    component: () => import('../views/PolymarketTraders.vue'),
-    meta: { requiresAuth: true }
+    redirect: to => ({
+      name: 'Polymarket',
+      query: { ...to.query, tab: 'traders' }
+    })
   },
   {
     path: '/polymarket-traders/:wallet',
     name: 'PolymarketTraderDetail',
     component: () => import('../views/PolymarketTraderDetail.vue'),
-    meta: { requiresAuth: true, activeMenu: '/polymarket-traders' }
+    meta: { requiresAuth: true, activeMenu: '/polymarket' }
   },
   {
     path: '/polymarket-copy-strategies',
     name: 'PolymarketCopyStrategies',
-    component: () => import('../views/PolymarketCopyStrategies.vue'),
-    meta: { requiresAuth: true }
+    redirect: to => ({
+      name: 'Polymarket',
+      query: { ...to.query, tab: 'strategies' }
+    })
   }
 ]
 

@@ -157,8 +157,11 @@
 import { computed, defineComponent, h, onMounted, onUnmounted, ref } from 'vue'
 import { ElEmpty, ElMessage, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
+import { useStore } from 'vuex'
 import { marketInsight } from '@/api'
+import { parseBackendDateTime, resolveDisplayTimezone } from '@/utils/datetime'
 
+const store = useStore()
 const loading = ref(false)
 const fiveMinute = ref([])
 const fifteenMinute = ref([])
@@ -193,6 +196,7 @@ let refreshTimer = null
 let marketCapTimer = null
 
 const visibleMarketCapItems = computed(() => marketCapItems.value.slice(0, marketCapLimit.value))
+const displayTimezone = computed(() => store.getters.displayTimezone)
 
 const formatSymbol = (symbol) => String(symbol || '').replace(/USDT$/, '/USDT')
 
@@ -212,8 +216,16 @@ const formatVolume = (value) => {
 }
 
 const formatTime = (value) => {
-  if (!value) return '-'
-  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+  const date = parseBackendDateTime(value)
+  if (!date) return '-'
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    timeZone: resolveDisplayTimezone(displayTimezone.value)
+  }).format(date)
 }
 
 const scoreTagType = (score) => {

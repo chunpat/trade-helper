@@ -247,7 +247,7 @@ export default {
       pipeline: [
         { title: '数据采集', desc: '多交易所 API 实时同步：行情、持仓、订单、成交记录' },
         { title: '风险扫描', desc: 'Top100 代币异动扫描，多因子评分，异常事件自动分级' },
-        { title: '新闻聚合', desc: 'RSS/API 多源新闻聚合，Brave/CryptoPanic 搜索，符号智能提取' },
+        { title: '新闻聚合', desc: 'RSS/API 多源新闻聚合，CryptoPanic 搜索，符号智能提取' },
         { title: 'AI 分析', desc: 'LLM 可信度评估，叙事类型识别，交易建议生成' },
         { title: '预警推送', desc: 'WebSocket 实时推送 + 邮件告警，前端即时展示' }
       ],

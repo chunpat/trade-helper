@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app.schemas.market_insight import MarketNews
+from app.services.llm_compat import parse_json_content, prepare_chat_payload
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class NewsAnalysisService:
             "如果新闻证据不足，credibility_label 必须是 待核实 或 高风险谣言，trade_bias 必须偏 neutral。"
         )
 
-        payload = {
+        payload = prepare_chat_payload({
             "model": self.model,
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
@@ -109,7 +110,7 @@ class NewsAnalysisService:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
             ],
-        }
+        }, self.base_url, self.model)
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -287,17 +288,10 @@ class NewsAnalysisService:
         return " ".join(notes)
 
     def _parse_json_content(self, content: str) -> Optional[Dict[str, Any]]:
-        normalized = content.strip()
-        if normalized.startswith("```"):
-            normalized = normalized.strip("`")
-            if normalized.startswith("json"):
-                normalized = normalized[4:]
-        normalized = normalized.strip()
-        try:
-            return json.loads(normalized)
-        except json.JSONDecodeError:
-            logger.debug("news-analysis: failed to parse llm json: %s", normalized[:400])
-            return None
+        parsed = parse_json_content(content)
+        if parsed is None:
+            logger.debug("news-analysis: failed to parse llm json: %s", content[:400])
+        return parsed
 
     def _safe_float(self, value: Any, default: Optional[float] = None) -> Optional[float]:
         if value is None or value == "":

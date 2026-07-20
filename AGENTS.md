@@ -72,7 +72,7 @@ The backend supports split deployments via env vars:
 1. **Position sync** (`position_sync.py`): Periodic polling of Binance/OKX futures → position normalization → DB upsert → WebSocket broadcast
 2. **Market data** (`market_data.py`): Price polling → DB update → WebSocket broadcast
 3. **Anomaly detection** (`anomaly_monitor_service.py`): Scans top-100 Binance USDT tickers every 5min, multi-factor scoring, news correlation
-4. **News** (`news_service.py`): Multi-source (exchange announcements, RSS, Brave Search, CryptoPanic) → archive → analysis
+4. **News** (`news_service.py`): Multi-source (exchange announcements, RSS, CryptoPanic) → archive → analysis
 
 ## Coding Conventions
 
@@ -112,4 +112,4 @@ The backend supports split deployments via env vars:
 | `START_ANOMALY_MONITOR` | Enable anomaly scanning + news worker |
 | `ENABLE_GPT_5_1` | Enable LLM market analysis |
 | `ANOMALY_LLM_PROVIDER` | LLM provider for anomaly analysis |
-| `NEWS_PROVIDER` | News source selection (`auto`, `rss`, `cryptopanic`, `brave`) |
+| `NEWS_PROVIDER` | News source selection (`auto`, `cryptopanic`) |

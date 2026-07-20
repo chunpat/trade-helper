@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 class NewsService:
     PROVIDER_AUTO = "auto"
-    PROVIDER_BRAVE = "brave"
     PROVIDER_CRYPTOPANIC = "cryptopanic"
     BINANCE_ANNOUNCEMENT_SOURCE = "Binance Announcements"
     BINANCE_ANNOUNCEMENT_DOMAIN = "binance.com"
@@ -140,7 +139,7 @@ class NewsService:
 
     def __init__(self):
         self.provider = os.getenv("NEWS_PROVIDER", self.PROVIDER_AUTO).strip().lower() or self.PROVIDER_AUTO
-        if self.provider not in {self.PROVIDER_AUTO, self.PROVIDER_BRAVE, self.PROVIDER_CRYPTOPANIC}:
+        if self.provider not in {self.PROVIDER_AUTO, self.PROVIDER_CRYPTOPANIC}:
             logger.warning("news-service: unsupported NEWS_PROVIDER=%s, fallback to auto", self.provider)
             self.provider = self.PROVIDER_AUTO
 
@@ -173,12 +172,6 @@ class NewsService:
             "https://www.coinbase.com/blog/landing",
         ).strip()
         self.official_page_item_limit = int(os.getenv("NEWS_OFFICIAL_PAGE_ITEM_LIMIT", "12"))
-        self.brave_api_key = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
-        self.brave_base_url = os.getenv(
-            "BRAVE_SEARCH_BASE_URL",
-            "https://api.search.brave.com/res/v1"
-        ).rstrip("/")
-        self.brave_freshness = os.getenv("BRAVE_NEWS_FRESHNESS", "pd").strip() or "pd"
         self.rss_feed_urls = self._load_rss_feed_urls()
         self.rss_cache_seconds = int(os.getenv("NEWS_RSS_CACHE_SECONDS", "180"))
         self.rss_per_feed_limit = int(os.getenv("NEWS_RSS_PER_FEED_LIMIT", "12"))
@@ -309,11 +302,7 @@ class NewsService:
         return filtered_items[:limit]
 
     def _get_provider_order(self) -> List[str]:
-        if self.provider == self.PROVIDER_BRAVE:
-            return [self.PROVIDER_BRAVE]
-        if self.provider == self.PROVIDER_CRYPTOPANIC:
-            return [self.PROVIDER_CRYPTOPANIC]
-        return [self.PROVIDER_CRYPTOPANIC, self.PROVIDER_BRAVE]
+        return [self.PROVIDER_CRYPTOPANIC]
 
     async def _request_provider_news(
         self,
@@ -324,9 +313,6 @@ class NewsService:
         if provider == self.PROVIDER_CRYPTOPANIC:
             raw_items = await self._request_cryptopanic_news(asset_symbol=asset_symbol, limit=limit)
             return [self._to_market_news(item, asset_symbol=asset_symbol) for item in raw_items]
-        if provider == self.PROVIDER_BRAVE:
-            raw_items = await self._request_brave_news(asset_symbol=asset_symbol, limit=limit)
-            return [self._to_market_news_from_brave(item, asset_symbol=asset_symbol) for item in raw_items]
         return []
 
     async def _fetch_rss_pool(self, limit: int) -> List[MarketNews]:
@@ -680,48 +666,6 @@ class NewsService:
 
         return payload.get("results", [])
 
-    async def _request_brave_news(self, asset_symbol: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
-        if not self.brave_api_key:
-            logger.debug("news-service: BRAVE_SEARCH_API_KEY missing, skipping Brave fetch")
-            return []
-
-        params = {
-            "q": self._build_brave_query(asset_symbol),
-            "count": min(max(limit, 1), 20),
-            "freshness": self.brave_freshness,
-            "search_lang": "en",
-            "safesearch": "moderate",
-        }
-        headers = {
-            "Accept": "application/json",
-            "X-Subscription-Token": self.brave_api_key,
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(f"{self.brave_base_url}/news/search", params=params, headers=headers)
-
-            if response.status_code != 200:
-                logger.warning(
-                    "news-service: brave request failed status=%s body=%s",
-                    response.status_code,
-                    response.text[:300],
-                )
-                return []
-
-            payload = response.json()
-        except Exception as exc:
-            logger.warning("news-service: brave fetch failed for %s: %s", asset_symbol or "market", exc)
-            return []
-
-        news_block = payload.get("news") or {}
-        return payload.get("results") or news_block.get("results") or []
-
-    def _build_brave_query(self, asset_symbol: Optional[str] = None) -> str:
-        if asset_symbol:
-            return f'"{asset_symbol}" crypto token binance'
-        return "crypto market bitcoin altcoin binance"
-
     def _to_market_news(self, item: Dict[str, Any], asset_symbol: Optional[str] = None) -> MarketNews:
         source = item.get("source") or {}
         url = item.get("url")
@@ -745,53 +689,6 @@ class NewsService:
             url=url,
             summary=summary,
             published_at=self._parse_datetime(item.get("published_at") or item.get("created_at")),
-            symbols=symbols,
-        )
-
-    def _validate_short_symbol_match(self, symbol: str, title: Optional[str], summary: Optional[str]) -> bool:
-        """Verify that a short (≤3 char) symbol actually refers to the crypto token, not a common English word."""
-        haystack = f"{title or ''} {summary or ''}"
-        pattern = re.compile(
-            rf'\b{re.escape(symbol)}\b\s*(token|protocol|price| coin|crypto|chain|network|trading|usdt|usd|exchange|listing|market|futures|spot|airdrop|mining|staking|governance|voting)',
-            re.IGNORECASE,
-        )
-        if pattern.search(haystack):
-            return True
-        dollar_pattern = re.compile(rf'\${re.escape(symbol)}\b', re.IGNORECASE)
-        if dollar_pattern.search(haystack):
-            return True
-        pair_pattern = re.compile(
-            rf'{re.escape(symbol)}(?:USDT|USDC|BUSD|FDUSD|/USDT|/USD|/BTC|/ETH)',
-            re.IGNORECASE,
-        )
-        if pair_pattern.search(haystack):
-            return True
-        return False
-
-    def _to_market_news_from_brave(self, item: Dict[str, Any], asset_symbol: Optional[str] = None) -> MarketNews:
-        meta_url = item.get("meta_url") or {}
-        url = item.get("url")
-        source_domain = self._extract_domain(meta_url.get("hostname") or meta_url.get("netloc") or url)
-        summary = (
-            item.get("description")
-            or " ".join((item.get("extra_snippets") or [])[:2])
-            or None
-        )
-
-        symbols = [asset_symbol] if asset_symbol else []
-        if asset_symbol and len(asset_symbol) <= 3:
-            if not self._validate_short_symbol_match(asset_symbol, item.get("title"), summary):
-                symbols = []
-        return MarketNews(
-            title=item.get("title") or "Untitled",
-            source=meta_url.get("hostname") or item.get("source") or "Brave Search",
-            source_domain=source_domain,
-            sentiment=None,
-            url=url,
-            summary=summary,
-            published_at=self._parse_datetime(
-                item.get("page_age") or item.get("published_at") or item.get("age")
-            ),
             symbols=symbols,
         )
 

@@ -97,7 +97,7 @@ def test_to_jsonable_serializes_market_news_datetime_fields_for_json_columns():
     payload = service._to_jsonable(
         MarketNews(
             title="TRUMP token spikes after liquidity burst",
-            source="Brave Search",
+            source="CoinDesk",
             source_domain="reuters.com",
             url="https://www.reuters.com/example",
             summary="A liquidity-driven move attracted heavy derivatives attention.",

@@ -719,7 +719,7 @@ export default {
     }
 
     const goBack = () => {
-      router.push({ name: 'PolymarketTraders' })
+      router.push({ name: 'Polymarket', query: { tab: 'traders' } })
     }
 
     const formatDateTime = value => value ? formatDisplayDateTime(value) : '-'

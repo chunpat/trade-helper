@@ -9,11 +9,15 @@ import httpx
 from app.core.database import SessionLocal
 from app.models.market_anomaly import NarrativeEvent
 from app.schemas.market_insight import MarketNews
+from app.services.llm_compat import parse_json_content, prepare_chat_payload
 
 logger = logging.getLogger(__name__)
 
 
 class NarrativeDetector:
+    PROVIDER_DISABLED = "disabled"
+    PROVIDER_OPENAI_COMPATIBLE = "openai-compatible"
+
     NARRATIVE_TYPES = {
         "product_launch": "产品/功能上线",
         "exchange_listing": "交易所上币",
@@ -29,11 +33,22 @@ class NarrativeDetector:
     NARRATIVE_TRIGGER_MIN_CHANGE_PCT = 5.0
 
     def __init__(self):
+        self.provider = (
+            os.getenv("ANOMALY_LLM_PROVIDER", self.PROVIDER_DISABLED).strip().lower()
+            or self.PROVIDER_DISABLED
+        )
+        if self.provider not in {self.PROVIDER_DISABLED, self.PROVIDER_OPENAI_COMPATIBLE}:
+            logger.warning(
+                "narrative-detector: unsupported ANOMALY_LLM_PROVIDER=%s, fallback to disabled",
+                self.provider,
+            )
+            self.provider = self.PROVIDER_DISABLED
+
         self.api_key = os.getenv("LLM_API_KEY", "").strip()
         self.base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.model = os.getenv("LLM_MODEL", "gpt-4o-mini")
         self.timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
-        self.enabled = bool(self.api_key)
+        self.enabled = self.provider == self.PROVIDER_OPENAI_COMPATIBLE and bool(self.api_key)
 
     async def detect(
         self,
@@ -100,7 +115,7 @@ class NarrativeDetector:
             "risk_warning (风险提示). "
         )
 
-        payload = {
+        payload = prepare_chat_payload({
             "model": self.model,
             "temperature": 0.1,
             "response_format": {"type": "json_object"},
@@ -108,7 +123,7 @@ class NarrativeDetector:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
             ],
-        }
+        }, self.base_url, self.model)
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -126,9 +141,8 @@ class NarrativeDetector:
         if not content:
             return None
 
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
+        parsed = parse_json_content(content)
+        if not parsed:
             return None
 
         return {
