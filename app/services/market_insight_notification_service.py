@@ -34,6 +34,10 @@ class MarketNotificationConfig:
 
 class MarketInsightNotificationService:
     EVENT_TYPE = "market_breakout"
+    REINFORCEMENT_LOOKBACK_HOURS = 24
+    REINFORCEMENT_SCORE_DELTA = 10.0
+    REINFORCEMENT_BREAKOUT_DELTA = 0.2
+    REINFORCEMENT_VOLUME_MULTIPLIER = 1.25
 
     def __init__(self, interval: Optional[int] = None):
         self.interval = interval or int(
@@ -125,6 +129,102 @@ class MarketInsightNotificationService:
         finally:
             db.close()
 
+    def _latest_delivery_contexts(
+        self,
+        keys: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        """读取观察窗口内各标的最近一次成功通知，用于判断是否属于强化信号。"""
+        if not keys:
+            return {}
+        cutoff = datetime.utcnow() - timedelta(
+            hours=self.REINFORCEMENT_LOOKBACK_HOURS
+        )
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(NotificationDeliveryLog)
+                .filter(NotificationDeliveryLog.channel == "dingtalk")
+                .filter(NotificationDeliveryLog.event_type == self.EVENT_TYPE)
+                .filter(NotificationDeliveryLog.dedupe_key.in_(keys))
+                .filter(NotificationDeliveryLog.created_at >= cutoff)
+                .order_by(NotificationDeliveryLog.created_at.desc())
+                .all()
+            )
+            latest: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                if row.dedupe_key in latest:
+                    continue
+                latest[row.dedupe_key] = {
+                    "created_at": row.created_at,
+                    "context_payload": dict(row.context_payload or {}),
+                }
+            return latest
+        finally:
+            db.close()
+
+    @classmethod
+    def _is_reinforced_signal(
+        cls,
+        signal: MomentumSignal,
+        previous_signal: Dict[str, Any],
+    ) -> bool:
+        if not previous_signal:
+            return False
+        score_delta = float(signal.score) - float(previous_signal.get("score") or 0)
+        breakout_delta = (
+            float(signal.breakout_percent)
+            - float(previous_signal.get("breakout_percent") or 0)
+        )
+        volume_5m_reinforced = float(signal.volume_ratio_5m) >= (
+            float(previous_signal.get("volume_ratio_5m") or 0)
+            * cls.REINFORCEMENT_VOLUME_MULTIPLIER
+        )
+        volume_15m_reinforced = float(signal.volume_ratio_15m) >= (
+            float(previous_signal.get("volume_ratio_15m") or 0)
+            * cls.REINFORCEMENT_VOLUME_MULTIPLIER
+        )
+        return (
+            score_delta >= cls.REINFORCEMENT_SCORE_DELTA
+            or breakout_delta >= cls.REINFORCEMENT_BREAKOUT_DELTA
+            or volume_5m_reinforced
+            or volume_15m_reinforced
+        )
+
+    @classmethod
+    def _prepare_delivery_candidates(
+        cls,
+        candidates: List[Dict[str, Any]],
+        previous_deliveries: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """标记首次/强化信号，并抑制冷却后但没有继续增强的重复信号。"""
+        prepared = []
+        now = datetime.utcnow()
+        for candidate in candidates:
+            signal: MomentumSignal = candidate["signal"]
+            previous = previous_deliveries.get(signal.symbol)
+            if previous is None:
+                candidate["notification_kind"] = "initial"
+                prepared.append(candidate)
+                continue
+
+            previous_context = previous.get("context_payload") or {}
+            previous_signal = dict(previous_context.get("signal") or {})
+            if not cls._is_reinforced_signal(signal, previous_signal):
+                continue
+
+            previous_created_at = previous.get("created_at")
+            elapsed_minutes = None
+            if isinstance(previous_created_at, datetime):
+                elapsed_minutes = max(
+                    0,
+                    int((now - previous_created_at).total_seconds() // 60),
+                )
+            candidate["notification_kind"] = "reinforced"
+            candidate["previous_signal"] = previous_signal
+            candidate["elapsed_minutes"] = elapsed_minutes
+            prepared.append(candidate)
+        return prepared
+
     def _record_deliveries(
         self,
         candidates: List[Dict[str, Any]],
@@ -167,6 +267,7 @@ class MarketInsightNotificationService:
         analysis.pop("llm_payload", None)
         return {
             "preset": preset_key,
+            "notification_kind": candidate.get("notification_kind", "initial"),
             "periods": candidate.get("periods") or [],
             "signal": signal.model_dump(mode="json"),
             "news_archive_ids": [
@@ -265,18 +366,40 @@ class MarketInsightNotificationService:
     ) -> str:
         display_candidates = candidates[:4]
         normalized_keyword = " ".join(str(keyword or "").split()) or "TradeHelper"
+        reinforced_count = sum(
+            item.get("notification_kind") == "reinforced"
+            for item in candidates
+        )
+        initial_count = len(candidates) - reinforced_count
+        if reinforced_count == len(candidates):
+            title = "强化信号触发"
+            summary = f"检测到 {reinforced_count} 个放量突破强化信号"
+        elif initial_count == len(candidates):
+            title = "首次突破信号"
+            summary = f"检测到 {initial_count} 个首次放量有效突破信号"
+        else:
+            title = "市场洞察"
+            summary = f"首次突破 {initial_count} 个｜强化信号 {reinforced_count} 个"
         lines = [
-            f"【{normalized_keyword} · 市场洞察】",
-            f"检测到 {len(candidates)} 个放量有效突破信号｜{preset_label}预设",
+            f"【{normalized_keyword} · {title}】",
+            f"{summary}｜{preset_label}预设",
             "",
         ]
         for index, item in enumerate(display_candidates, start=1):
             signal: MomentumSignal = item["signal"]
             symbol = signal.symbol.removesuffix("USDT") + "/USDT"
             periods = " + ".join(item["periods"])
+            notification_kind = item.get("notification_kind", "initial")
+            signal_marker = "🔁 强化" if notification_kind == "reinforced" else "🆕 首次"
+            elapsed_minutes = item.get("elapsed_minutes")
+            elapsed_text = (
+                f"（距上次 {elapsed_minutes} 分钟）"
+                if notification_kind == "reinforced" and elapsed_minutes is not None
+                else ""
+            )
             lines.extend(
                 [
-                    f"{index}. {symbol} · {periods}",
+                    f"{index}. {signal_marker}{elapsed_text}｜{symbol} · {periods}",
                     (
                         f"现价 {cls._format_price(signal.last_price)}｜"
                         f"评分 {signal.score:.1f}"
@@ -291,6 +414,26 @@ class MarketInsightNotificationService:
                     ),
                 ]
             )
+            previous_signal = item.get("previous_signal") or {}
+            if notification_kind == "reinforced" and previous_signal:
+                lines.extend(
+                    [
+                        (
+                            "强化变化："
+                            f"评分 {float(previous_signal.get('score') or 0):.1f} → {signal.score:.1f}｜"
+                            f"突破 {float(previous_signal.get('breakout_percent') or 0):+.2f}% → "
+                            f"{signal.breakout_percent:+.2f}%"
+                        ),
+                        (
+                            "量比变化："
+                            f"5m {float(previous_signal.get('volume_ratio_5m') or 0):.2f}x → "
+                            f"{signal.volume_ratio_5m:.2f}x｜"
+                            f"15m {float(previous_signal.get('volume_ratio_15m') or 0):.2f}x → "
+                            f"{signal.volume_ratio_15m:.2f}x"
+                        ),
+                        "风险提示：信号已进入加速阶段，谨慎追价，优先观察回踩承接。",
+                    ]
+                )
             analysis = item.get("analysis") or {}
             news_items: List[MarketNews] = item.get("news_items") or []
             if analysis:
@@ -350,6 +493,16 @@ class MarketInsightNotificationService:
         pending = [
             item for item in candidates if item["signal"].symbol not in recent_keys
         ]
+        if not pending:
+            return []
+
+        previous_deliveries = self._latest_delivery_contexts(
+            [item["signal"].symbol for item in pending]
+        )
+        pending = self._prepare_delivery_candidates(
+            pending,
+            previous_deliveries,
+        )
         if not pending:
             return []
 

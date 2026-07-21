@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -73,6 +73,79 @@ def test_build_message_contains_signal_details():
     assert "UTC+8" in message
 
 
+def test_prepare_delivery_candidates_marks_reinforced_and_suppresses_weak_repeat():
+    now = datetime.utcnow()
+    previous_signal = _signal("AAAUSDT", 61.2).model_dump(mode="json")
+    previous_signal.update({
+        "breakout_percent": 0.55,
+        "volume_ratio_5m": 3.86,
+        "volume_ratio_15m": 1.38,
+    })
+    previous_deliveries = {
+        "AAAUSDT": {
+            "created_at": now - timedelta(minutes=121),
+            "context_payload": {"signal": previous_signal},
+        },
+        "WEAKUSDT": {
+            "created_at": now - timedelta(minutes=90),
+            "context_payload": {
+                "signal": _signal("WEAKUSDT", 80).model_dump(mode="json")
+            },
+        },
+    }
+    reinforced = _signal("AAAUSDT", 99.3).model_copy(update={
+        "breakout_percent": 0.89,
+        "volume_ratio_5m": 6.55,
+        "volume_ratio_15m": 2.98,
+    })
+    weak_repeat = _signal("WEAKUSDT", 81)
+    candidates = [
+        {"signal": reinforced, "periods": ["5分钟", "15分钟"]},
+        {"signal": weak_repeat, "periods": ["5分钟"]},
+        {"signal": _signal("NEWUSDT"), "periods": ["5分钟"]},
+    ]
+
+    prepared = MarketInsightNotificationService._prepare_delivery_candidates(
+        candidates,
+        previous_deliveries,
+    )
+
+    assert [item["signal"].symbol for item in prepared] == ["AAAUSDT", "NEWUSDT"]
+    assert prepared[0]["notification_kind"] == "reinforced"
+    assert prepared[0]["elapsed_minutes"] in {120, 121}
+    assert prepared[1]["notification_kind"] == "initial"
+
+
+def test_build_message_uses_reinforced_title_and_comparison():
+    current = _signal("MUUSDT", 99.3).model_copy(update={
+        "breakout_percent": 0.89,
+        "volume_ratio_5m": 6.55,
+        "volume_ratio_15m": 2.98,
+    })
+    previous = _signal("MUUSDT", 61.2).model_dump(mode="json")
+    previous.update({
+        "breakout_percent": 0.55,
+        "volume_ratio_5m": 3.86,
+        "volume_ratio_15m": 1.38,
+    })
+
+    message = MarketInsightNotificationService._build_message(
+        [{
+            "signal": current,
+            "periods": ["5分钟", "15分钟"],
+            "notification_kind": "reinforced",
+            "previous_signal": previous,
+            "elapsed_minutes": 121,
+        }]
+    )
+
+    assert "强化信号触发" in message
+    assert "距上次 121 分钟" in message
+    assert "评分 61.2 → 99.3" in message
+    assert "5m 3.86x → 6.55x" in message
+    assert "谨慎追价" in message
+
+
 def test_build_message_contains_custom_dingtalk_keyword():
     message = MarketInsightNotificationService._build_message(
         [{"signal": _signal("AAAUSDT"), "periods": ["5分钟"]}],
@@ -105,6 +178,7 @@ async def test_scan_once_sends_only_non_cooled_symbols(monkeypatch):
 
     monkeypatch.setattr(service, "_load_config", lambda: config)
     monkeypatch.setattr(service, "_recent_keys", lambda keys, cooldown: {"AAAUSDT"})
+    monkeypatch.setattr(service, "_latest_delivery_contexts", lambda keys: {})
     monkeypatch.setattr(
         service,
         "_record_deliveries",
