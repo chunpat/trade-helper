@@ -160,6 +160,25 @@ def test_market_cap_stablecoin_filter_covers_symbol_id_and_category_name():
     )
 
 
+def test_market_cap_rwa_classifier_covers_credit_funds_and_gold():
+    service = MarketInsightService()
+
+    cases = [
+        ({"id": "figure-heloc", "symbol": "figr_heloc"}, "tokenized_credit"),
+        ({"id": "hashnote-usyc", "symbol": "usyc"}, "tokenized_fund"),
+        ({"id": "blackrock-usd-institutional-digital-liquidity-fund", "symbol": "buidl"}, "tokenized_fund"),
+        ({"id": "tether-gold", "symbol": "xaut"}, "tokenized_commodity"),
+    ]
+    for row, expected_type in cases:
+        classification = service._classify_tokenized_rwa_market_row(row)
+        assert classification is not None
+        assert classification[0] == expected_type
+
+    assert service._classify_tokenized_rwa_market_row(
+        {"id": "bitcoin", "symbol": "btc"}
+    ) is None
+
+
 def test_binance_equity_classifier_distinguishes_stock_etf_and_crypto():
     service = MarketInsightService()
 
@@ -204,6 +223,24 @@ def test_market_cap_volatility_refills_after_removing_stablecoins(monkeypatch):
             "price_change_percentage_24h": 0,
             "sparkline_in_7d": {"price": [1, 1, 1]},
         },
+        {
+            "id": "figure-heloc",
+            "symbol": "figr_heloc",
+            "name": "Figure Heloc",
+            "current_price": 1,
+            "market_cap": 850,
+            "price_change_percentage_24h": -1.2,
+            "sparkline_in_7d": {"price": [1, 0.99, 1.01]},
+        },
+        {
+            "id": "blackrock-usd-institutional-digital-liquidity-fund",
+            "symbol": "buidl",
+            "name": "BlackRock USD Institutional Digital Liquidity Fund",
+            "current_price": 1,
+            "market_cap": 840,
+            "price_change_percentage_24h": 0,
+            "sparkline_in_7d": {"price": [1, 1, 1]},
+        },
         *[
             {
                 "id": f"coin-{index}",
@@ -234,6 +271,8 @@ def test_market_cap_volatility_refills_after_removing_stablecoins(monkeypatch):
 
     assert len(result.items) == 20
     assert all(item.symbol != "USDT" for item in result.items)
+    assert all(item.symbol not in {"FIGR_HELOC", "BUIDL"} for item in result.items)
+    assert {item.symbol for item in result.rwa_items} == {"FIGR_HELOC", "BUIDL"}
     assert [item.rank for item in result.items] == list(range(1, 21))
 
 
@@ -271,6 +310,15 @@ def test_fetch_binance_equities_includes_perpetual_etf_and_bstock():
                     "underlyingType": "TRADFI",
                     "underlyingSubType": ["ETF"],
                 },
+                {
+                    "symbol": "SPCXUSDT",
+                    "baseAsset": "SPCX",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                    "contractType": "TRADIFI_PERPETUAL",
+                    "underlyingType": "EQUITY",
+                    "underlyingSubType": ["TradFi"],
+                },
             ],
         }),
         (futures_ticker_url, ()): FakeResponse(200, [
@@ -295,6 +343,12 @@ def test_fetch_binance_equities_includes_perpetual_etf_and_bstock():
                     "quoteAsset": "USDT",
                     "status": "TRADING",
                 },
+                {
+                    "symbol": "SPCXBUSDT",
+                    "baseAsset": "SPCXB",
+                    "quoteAsset": "USDT",
+                    "status": "TRADING",
+                },
             ],
         }),
         (
@@ -314,8 +368,20 @@ def test_fetch_binance_equities_includes_perpetual_etf_and_bstock():
             "quoteVolume": "500000",
         }),
         (
+            spot_ticker_url,
+            (("symbol", "SPCXBUSDT"),),
+        ): FakeResponse(200, {
+            "lastPrice": "160",
+            "priceChangePercent": "3.1",
+            "quoteVolume": "19000000",
+        }),
+        (
             spot_kline_url,
             (("interval", "1h"), ("limit", 169), ("symbol", "TSLABUSDT")),
+        ): FakeResponse(200, klines),
+        (
+            spot_kline_url,
+            (("interval", "1h"), ("limit", 169), ("symbol", "SPCXBUSDT")),
         ): FakeResponse(200, klines),
     }
     client = FakeAsyncClient(responses, [])
@@ -331,5 +397,10 @@ def test_fetch_binance_equities_includes_perpetual_etf_and_bstock():
         "TSLAUSDT",
         "QQQUSDT",
         "TSLABUSDT",
+        "SPCXBUSDT",
     }
+    spcx = next(item for item in result if item.symbol == "SPCXBUSDT")
+    assert spcx.underlying_symbol == "SPCX"
+    assert spcx.name == "SpaceX"
+    assert spcx.product_type == "tokenized_stock"
     assert all(item.volatility_7d > 0 for item in result)

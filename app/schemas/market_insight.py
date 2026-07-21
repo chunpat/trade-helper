@@ -98,6 +98,12 @@ class MarketCapVolatility(BaseModel):
     volatility_7d: float = Field(..., description="基于7天小时价格计算的实现波动率%")
 
 
+class TokenizedRwaVolatility(MarketCapVolatility):
+    asset_type: str = Field(..., description="tokenized_credit、tokenized_fund 或 tokenized_commodity")
+    asset_type_label: str
+    market_size_note: str = Field(..., description="该资产报告规模的统计口径")
+
+
 class BinanceEquityVolatility(BaseModel):
     symbol: str = Field(..., description="币安交易代码")
     underlying_symbol: str = Field(..., description="对应股票或 ETF 代码")
@@ -112,6 +118,7 @@ class BinanceEquityVolatility(BaseModel):
 
 class MarketCapVolatilityResponse(BaseModel):
     items: List[MarketCapVolatility] = Field(default_factory=list)
+    rwa_items: List[TokenizedRwaVolatility] = Field(default_factory=list)
     binance_equities: List[BinanceEquityVolatility] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.now)
 

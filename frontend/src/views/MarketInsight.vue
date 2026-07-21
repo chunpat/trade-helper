@@ -119,7 +119,7 @@
         <div class="card-header">
           <div>
             <strong>🌐 市场资产波动率</strong>
-            <p>加密币榜已排除稳定币；股票类来自币安股票永续、ETF 永续与 bStocks</p>
+            <p>稳定币已排除；代币化信贷、基金和黄金单列为链上 RWA，避免与原生加密币混排</p>
           </div>
           <el-select
             v-if="assetVolatilityTab === 'crypto'"
@@ -134,7 +134,7 @@
       </template>
 
       <el-tabs v-model="assetVolatilityTab" class="asset-tabs">
-        <el-tab-pane label="加密币（无稳定币）" name="crypto">
+        <el-tab-pane label="原生加密资产" name="crypto">
           <el-table v-loading="marketCapLoading" :data="visibleMarketCapItems" stripe size="small">
             <el-table-column prop="rank" label="排名" width="70" />
             <el-table-column label="币种" min-width="150">
@@ -165,6 +165,54 @@
               <el-empty description="市值波动率数据暂不可用" :image-size="64" />
             </template>
           </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane :label="`链上 RWA (${tokenizedRwas.length})`" name="rwa">
+          <el-table v-loading="marketCapLoading" :data="tokenizedRwas" stripe size="small">
+            <el-table-column label="资产" min-width="170">
+              <template #default="{ row }">
+                <strong class="symbol">{{ row.symbol }}</strong>
+                <span class="coin-name">{{ row.name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="类型" min-width="150">
+              <template #default="{ row }">
+                <el-tag type="warning" size="small" effect="plain">{{ row.asset_type_label }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="现价" min-width="120" align="right">
+              <template #default="{ row }">${{ formatPrice(row.last_price) }}</template>
+            </el-table-column>
+            <el-table-column label="报告规模" min-width="130" align="right">
+              <template #default="{ row }">
+                <el-tooltip :content="row.market_size_note" placement="top">
+                  <span class="market-size-value">{{ formatVolume(row.market_cap) }}</span>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column label="24H涨幅" min-width="110" align="right">
+              <template #default="{ row }">
+                <el-tag :type="row.price_change_percent_24h >= 0 ? 'success' : 'danger'" size="small">
+                  {{ row.price_change_percent_24h >= 0 ? '+' : '' }}{{ Number(row.price_change_percent_24h).toFixed(2) }}%
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="7日波动率" min-width="120" align="right">
+              <template #default="{ row }">
+                <strong :class="volatilityClass(row.volatility_7d)">{{ Number(row.volatility_7d).toFixed(2) }}%</strong>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="当前榜单范围内没有链上 RWA" :image-size="64" />
+            </template>
+          </el-table>
+          <el-alert
+            type="warning"
+            :closable="false"
+            show-icon
+            class="equity-risk-note"
+            title="RWA 的报告规模可能是贷款未偿本金、基金 AUM 或底层商品价值，不能直接与原生加密币流通市值比较。"
+          />
         </el-tab-pane>
 
         <el-tab-pane :label="`币安股票类 (${binanceEquities.length})`" name="equities">
@@ -247,6 +295,7 @@ const scannedCount = ref(0)
 const updatedAt = ref('')
 const marketCapLoading = ref(false)
 const marketCapItems = ref([])
+const tokenizedRwas = ref([])
 const binanceEquities = ref([])
 const marketCapLimit = ref(30)
 const marketCapUpdatedAt = ref('')
@@ -420,6 +469,7 @@ async function loadMarketCap(silent = true) {
   try {
     const data = await marketInsight.getMarketCapVolatility({ limit: 30 })
     marketCapItems.value = data.items || []
+    tokenizedRwas.value = data.rwa_items || []
     binanceEquities.value = data.binance_equities || []
     marketCapUpdatedAt.value = data.timestamp || ''
   } catch (error) {
@@ -526,6 +576,7 @@ onUnmounted(() => {
 .market-cap-card { border-radius: 12px; margin-bottom: 18px; }
 .asset-tabs { margin-top: -4px; }
 .equity-risk-note { margin-top: 14px; }
+.market-size-value { cursor: help; border-bottom: 1px dashed #98a2b3; }
 .rank-select { width: 140px; }
 .coin-name { margin-left: 8px; color: #667085; font-size: 12px; }
 .cap-updated { margin-top: 12px; color: #98a2b3; font-size: 12px; text-align: right; }

@@ -17,6 +17,7 @@ from app.schemas.market_insight import (
     MarketMetrics,
     MomentumRadarResponse,
     MomentumSignal,
+    TokenizedRwaVolatility,
     MarketSentiment,
     MarketNews,
     TradingSignal,
@@ -67,6 +68,40 @@ class MarketInsightService:
         "ripple-usd", "true-usd", "usd1", "usdd", "usds", "usdtb",
         "usd-coin", "usdx-money-usdx",
     }
+    TOKENIZED_RWA_ASSETS = {
+        "FIGRHELOC": (
+            "tokenized_credit",
+            "代币化私人信贷",
+            "报告规模按链上 HELOC 未偿本金余额统计，不等同于可流通加密币市值",
+        ),
+        "USYC": (
+            "tokenized_fund",
+            "代币化货币市场基金",
+            "报告规模代表基金份额价值，不等同于原生加密币流通市值",
+        ),
+        "BUIDL": (
+            "tokenized_fund",
+            "代币化国债基金",
+            "报告规模代表基金资产管理规模，不等同于原生加密币流通市值",
+        ),
+        "XAUT": (
+            "tokenized_commodity",
+            "代币化黄金",
+            "每枚代币对应一金衡盎司实物黄金，规模随黄金价格与发行量变化",
+        ),
+        "PAXG": (
+            "tokenized_commodity",
+            "代币化黄金",
+            "每枚代币对应一金衡盎司实物黄金，规模随黄金价格与发行量变化",
+        ),
+    }
+    TOKENIZED_RWA_IDS = {
+        "figure-heloc": "FIGRHELOC",
+        "hashnote-usyc": "USYC",
+        "blackrock-usd-institutional-digital-liquidity-fund": "BUIDL",
+        "tether-gold": "XAUT",
+        "pax-gold": "PAXG",
+    }
     BINANCE_EQUITY_NAMES = {
         "AAPL": "Apple",
         "AMZN": "Amazon",
@@ -84,6 +119,7 @@ class MarketInsightService:
         "NVDA": "NVIDIA",
         "PAYP": "PayPay",
         "PLTR": "Palantir",
+        "SPCX": "SpaceX",
         "SNDK": "SanDisk",
         "TSLA": "Tesla",
         "TSM": "TSMC",
@@ -430,7 +466,7 @@ class MarketInsightService:
             return MomentumRadarResponse(timestamp=datetime.now())
 
     async def get_market_cap_volatility(self, limit: int = 30) -> MarketCapVolatilityResponse:
-        """获取非稳定币市值榜，以及币安股票类产品的7日实现波动率。"""
+        """获取原生加密资产、链上 RWA 与币安股票类产品的7日实现波动率。"""
         normalized_limit = 20 if limit <= 20 else 30
         cache_key = f"market_cap_volatility_{normalized_limit}"
         if self._is_cache_valid(cache_key):
@@ -453,10 +489,12 @@ class MarketInsightService:
                     self._fetch_binance_equity_volatility(client),
                 )
                 rows = crypto_response.json()
+                market_rows = rows if isinstance(rows, list) else []
                 items = []
                 crypto_rows = [
-                    row for row in (rows if isinstance(rows, list) else [])
+                    row for row in market_rows
                     if not self._is_stablecoin_market_row(row)
+                    and self._classify_tokenized_rwa_market_row(row) is None
                 ][:normalized_limit]
                 for display_rank, row in enumerate(crypto_rows, start=1):
                     prices = [
@@ -473,8 +511,36 @@ class MarketInsightService:
                         volatility_7d=self._calculate_realized_volatility(prices),
                     ))
 
+                rwa_items = []
+                rwa_rows = [
+                    row for row in market_rows
+                    if self._classify_tokenized_rwa_market_row(row) is not None
+                ]
+                for display_rank, row in enumerate(rwa_rows, start=1):
+                    classification = self._classify_tokenized_rwa_market_row(row)
+                    if classification is None:
+                        continue
+                    asset_type, asset_type_label, market_size_note = classification
+                    prices = [
+                        float(value) for value in (row.get("sparkline_in_7d") or {}).get("price", [])
+                        if value is not None and float(value) > 0
+                    ]
+                    rwa_items.append(TokenizedRwaVolatility(
+                        rank=display_rank,
+                        symbol=str(row.get("symbol") or "").upper(),
+                        name=str(row.get("name") or ""),
+                        last_price=float(row.get("current_price") or 0),
+                        market_cap=float(row.get("market_cap") or 0),
+                        price_change_percent_24h=round(float(row.get("price_change_percentage_24h") or 0), 2),
+                        volatility_7d=self._calculate_realized_volatility(prices),
+                        asset_type=asset_type,
+                        asset_type_label=asset_type_label,
+                        market_size_note=market_size_note,
+                    ))
+
                 result = MarketCapVolatilityResponse(
                     items=items,
+                    rwa_items=rwa_items,
                     binance_equities=binance_equities,
                     timestamp=datetime.now(),
                 )
@@ -490,7 +556,7 @@ class MarketInsightService:
 
     @classmethod
     def _is_stablecoin_market_row(cls, row: Dict[str, Any]) -> bool:
-        symbol = str(row.get("symbol") or "").upper().replace("-", "")
+        symbol = cls._normalize_market_symbol(row.get("symbol"))
         coin_id = str(row.get("id") or "").lower()
         name = str(row.get("name") or "").lower()
         return (
@@ -498,6 +564,20 @@ class MarketInsightService:
             or coin_id in cls.STABLECOIN_IDS
             or "stablecoin" in name
         )
+
+    @staticmethod
+    def _normalize_market_symbol(value: Any) -> str:
+        return "".join(character for character in str(value or "").upper() if character.isalnum())
+
+    @classmethod
+    def _classify_tokenized_rwa_market_row(
+        cls,
+        row: Dict[str, Any],
+    ) -> Optional[tuple[str, str, str]]:
+        symbol = cls._normalize_market_symbol(row.get("symbol"))
+        coin_id = str(row.get("id") or "").lower()
+        asset_key = cls.TOKENIZED_RWA_IDS.get(coin_id, symbol)
+        return cls.TOKENIZED_RWA_ASSETS.get(asset_key)
 
     @staticmethod
     def _calculate_realized_volatility(prices: List[float]) -> float:
@@ -560,8 +640,16 @@ class MarketInsightService:
                 for item in (futures_tickers if isinstance(futures_tickers, list) else [])
             }
             futures_products = []
+            supported_stock_symbols = set(self.BINANCE_EQUITY_NAMES)
+            supported_stock_symbols.update(self.BINANCE_EQUITY_ETFS)
             for contract in futures_exchange.get("symbols", []) if isinstance(futures_exchange, dict) else []:
                 product_type = self._classify_binance_equity_contract(contract)
+                base_asset = str(contract.get("baseAsset") or "").upper()
+                if product_type and base_asset:
+                    # 币安 bStock 现货没有独立的资产类型字段，因此使用同一底层
+                    # 在合约 exchangeInfo 中的 EQUITY / ETF 元数据动态确认，避免新品
+                    # 依赖静态白名单。静态名单仅用于接口暂时缺少对应合约时兜底。
+                    supported_stock_symbols.add(base_asset)
                 if (
                     product_type
                     and contract.get("status") == "TRADING"
@@ -578,11 +666,6 @@ class MarketInsightService:
                         }
                     )
 
-            supported_stock_symbols = set(self.BINANCE_EQUITY_NAMES) | {
-                str(product["underlying_symbol"])
-                for product in futures_products
-                if product["product_type"] == "stock_perpetual"
-            }
             quote_priority = {"USDT": 0, "USDC": 1, "FDUSD": 2, "USD1": 3}
             spot_by_underlying: Dict[str, Dict[str, Any]] = {}
             for market in spot_exchange.get("symbols", []) if isinstance(spot_exchange, dict) else []:
