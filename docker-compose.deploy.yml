@@ -1,6 +1,13 @@
 # 与基础及 prod 配置合并；镜像摘要由 Actions 生成，密钥只在服务器读取。
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 x-app: &app
   image: ${BACKEND_IMAGE:?缺少后端镜像}
+  logging: *logging
   env_file: !override
     - ${DEPLOY_ENV_FILE:?缺少服务器环境文件路径}
   environment:
@@ -19,6 +26,8 @@ x-app: &app
     start_period: 30s
 
 services:
+  redis:
+    logging: *logging
   backend:
     <<: *app
     build: !reset null
@@ -31,6 +40,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
   frontend:
+    logging: *logging
     image: ${FRONTEND_IMAGE:?缺少前端镜像}
     build: !reset null
     healthcheck:

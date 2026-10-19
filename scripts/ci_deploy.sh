@@ -2,6 +2,15 @@
 # 在 GitHub Actions 中运行：只传部署清单，生产配置留在服务器。
 set -euo pipefail
 
+# 默认服务器公钥来自已通过 SSH 校验的本机 known_hosts，可用 Secret 覆盖。
+if [[ -z ${DEPLOY_KNOWN_HOSTS:-} && ${DEPLOY_HOST:-} == 43.130.253.147 && ${DEPLOY_PORT:-22} == 22 ]]; then
+  DEPLOY_KNOWN_HOSTS=$(cat "$(dirname "${BASH_SOURCE[0]}")/../.github/deploy_known_hosts")
+fi
+DEPLOY_FRONTEND_MODE=${DEPLOY_FRONTEND_MODE:-baota}
+BAOTA_SITE_HOST=${BAOTA_SITE_HOST:-tradehelper.chunpat.com}
+[[ $DEPLOY_FRONTEND_MODE == baota || $DEPLOY_FRONTEND_MODE == docker ]] || { echo '前端部署模式必须为 baota 或 docker' >&2; exit 1; }
+[[ $BAOTA_SITE_HOST =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || { echo '宝塔站点域名无效' >&2; exit 1; }
+
 for variable in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_PATH COMPOSE_PROJECT_NAME BACKEND_IMAGE FRONTEND_IMAGE GHCR_USER GHCR_TOKEN GITHUB_SHA GITHUB_RUN_ID GITHUB_RUN_ATTEMPT; do
   if [[ -z ${!variable:-} ]]; then
     echo "缺少配置：${variable}" >&2
@@ -36,7 +45,7 @@ tar -czf - docker-compose.yml docker-compose.prod.yml docker-compose.deploy.yml 
 
 # 临时令牌只经 SSH 标准输入传输，服务器使用临时 Docker 登录目录。
 printf '%s\n' "$GHCR_TOKEN" |
-  ssh "${ssh_options[@]}" "$remote" "bash '$release_dir/scripts/deploy.sh' '${DEPLOY_PATH%/}' '$COMPOSE_PROJECT_NAME'"
+  ssh "${ssh_options[@]}" "$remote" "bash '$release_dir/scripts/deploy.sh' '${DEPLOY_PATH%/}' '$COMPOSE_PROJECT_NAME' '$DEPLOY_FRONTEND_MODE' '$BAOTA_SITE_HOST'"
 
 if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
   {

@@ -154,12 +154,14 @@ jobs:
       contents: read
       packages: read
     env:
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST || '43.130.253.147' }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER || 'root' }}
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
       DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/www/wwwroot/trade-helper' }}
+      DEPLOY_FRONTEND_MODE: ${{ vars.DEPLOY_FRONTEND_MODE || 'baota' }}
+      BAOTA_SITE_HOST: ${{ vars.BAOTA_SITE_HOST || 'tradehelper.chunpat.com' }}
       COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_PROJECT_NAME || 'trade-helper' }}
       BACKEND_IMAGE: ${{ needs.images.outputs.backend }}
       FRONTEND_IMAGE: ${{ needs.images.outputs.frontend }}
