@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getStoredAuthState } from '../api'
 import store from '../store'
+import { POLYMARKET_ENABLED } from '../features'
 
 const routes = [
   {
@@ -103,6 +104,9 @@ const router = createRouter({
 
 // Global navigation guard for auth
 router.beforeEach((to, from, next) => {
+  if (!POLYMARKET_ENABLED && to.path.startsWith('/polymarket')) {
+    return next({ name: 'Dashboard', replace: true })
+  }
   const requiresAuth = to.matched.some(record => record.meta && record.meta.requiresAuth)
   const authState = getStoredAuthState()
   const token = store.state.token || authState.token || authState.refreshToken

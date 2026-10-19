@@ -121,14 +121,14 @@ async def startup_event():
     else:
         logging.info("startup: market insight notifier disabled")
 
-    if _read_bool_env("START_POLYMARKET_TRADER_CACHE", True):
+    if _read_bool_env("START_POLYMARKET_TRADER_CACHE", False):
         logging.info("startup: initializing polymarket trader cache")
         app.state.polymarket_trader_cache = polymarket_trader_cache_service
         _schedule_service_start(app.state.polymarket_trader_cache, "polymarket trader cache")
     else:
         logging.info("startup: polymarket trader cache disabled")
 
-    if _read_bool_env("START_POLYMARKET_COPY_RUNNER", True):
+    if _read_bool_env("START_POLYMARKET_COPY_RUNNER", False):
         logging.info("startup: initializing polymarket copy runner")
         app.state.polymarket_copy_runner = polymarket_copy_runner_service
         _schedule_service_start(app.state.polymarket_copy_runner, "polymarket copy runner")

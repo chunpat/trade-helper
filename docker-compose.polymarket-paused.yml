@@ -1,0 +1,16 @@
+# 暂停状态也应用于旧版本回退，避免重新启动跟单或缓存任务。
+services:
+  backend:
+    environment:
+      START_POLYMARKET_TRADER_CACHE: "False"
+      START_POLYMARKET_COPY_RUNNER: "False"
+  insight-worker:
+    environment:
+      START_POLYMARKET_TRADER_CACHE: "False"
+      START_POLYMARKET_COPY_RUNNER: "False"
+  polymarket-worker:
+    profiles: [polymarket]
+    restart: "no"
+    environment:
+      START_POLYMARKET_TRADER_CACHE: "False"
+      START_POLYMARKET_COPY_RUNNER: "False"

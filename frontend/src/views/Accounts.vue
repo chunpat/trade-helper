@@ -79,7 +79,7 @@
           <el-select v-model="form.exchange" placeholder="请选择交易所" style="width: 100%">
             <el-option label="Binance" value="binance"></el-option>
             <el-option label="OKX" value="okx"></el-option>
-            <el-option label="Polymarket" value="polymarket"></el-option>
+            <el-option v-if="polymarketEnabled || (isEdit && isPolymarket)" label="Polymarket" value="polymarket"></el-option>
           </el-select>
         </el-form-item>
         <el-form-item :label="keyLabel" prop="api_key">
@@ -195,6 +195,7 @@ import { useStore } from 'vuex'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { riskControl } from '@/api'
 import { formatDateTime as formatDisplayDateTime } from '@/utils/datetime'
+import { POLYMARKET_ENABLED } from '@/features'
 
 export default {
   name: 'Accounts',
@@ -588,6 +589,7 @@ export default {
     })
 
     return {
+      polymarketEnabled: POLYMARKET_ENABLED,
       accounts,
       loading,
       dialogVisible,

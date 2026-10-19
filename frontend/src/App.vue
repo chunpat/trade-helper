@@ -19,7 +19,7 @@
           <el-icon><TrendCharts /></el-icon>
           <span>市场洞察</span>
         </el-menu-item>
-        <el-menu-item index="/polymarket">
+        <el-menu-item v-if="polymarketEnabled" index="/polymarket">
           <el-icon><Opportunity /></el-icon>
           <span>Polymarket</span>
         </el-menu-item>
@@ -85,11 +85,13 @@
 <script>
 import { DataLine, Wallet, TrendCharts, Histogram, Document, Warning, Setting, CaretBottom, Opportunity } from '@element-plus/icons-vue'
 import { formatCurrentDateTime, getDisplayTimezoneLabel, getDisplayTimezoneOffsetLabel } from '@/utils/datetime'
+import { POLYMARKET_ENABLED } from './features'
 
 export default {
   name: 'App',
   data() {
     return {
+      polymarketEnabled: POLYMARKET_ENABLED,
       currentTimeTick: Date.now(),
       currentTimeTimer: null
     }
