@@ -5,6 +5,11 @@ const REFRESH_TOKEN_KEY = 'refresh_token'
 const TOKEN_EXPIRES_AT_KEY = 'token_expires_at'
 const AUTH_STORAGE_EVENT = 'auth-storage-changed'
 const REFRESH_THRESHOLD_MS = 90 * 1000
+let authSessionVersion = 0
+
+export function getAuthSessionVersion() {
+  return authSessionVersion
+}
 
 
 function notifyAuthChanged(detail) {
@@ -41,6 +46,8 @@ export function saveAuthTokens(authPayload) {
 
 
 export function clearAuthStorage() {
+  authSessionVersion += 1
+  refreshPromise = null
   localStorage.removeItem(ACCESS_TOKEN_KEY)
   localStorage.removeItem(REFRESH_TOKEN_KEY)
   localStorage.removeItem(TOKEN_EXPIRES_AT_KEY)
@@ -85,8 +92,33 @@ const api = axios.create({
 
 let refreshPromise = null
 
+function tokenSubject(token) {
+  if (!token) return null
+  try {
+    return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).sub || token
+  } catch (_) {
+    return token
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key !== ACCESS_TOKEN_KEY && event.key !== null) return
+    authSessionVersion += 1
+    refreshPromise = null
+    if (event.key === null || tokenSubject(event.oldValue) !== tokenSubject(event.newValue)) {
+      // 其他标签页切换用户时，连同页面自己的局部数据一起清理。
+      notifyAuthChanged({ token: null, refreshToken: null, tokenExpiresAt: null })
+      window.location.reload()
+    } else {
+      notifyAuthChanged(getStoredAuthState())
+    }
+  })
+}
+
 
 async function performTokenRefresh() {
+  const sessionVersion = authSessionVersion
   const { refreshToken } = getStoredAuthState()
   if (!refreshToken) {
     throw new Error('Missing refresh token')
@@ -97,6 +129,7 @@ async function performTokenRefresh() {
     { refresh_token: refreshToken },
     { skipAuthRefresh: true, skipAuthHeader: true }
   )
+  if (sessionVersion !== authSessionVersion) throw new Error('登录用户已切换')
   saveAuthTokens(data)
   return data
 }
@@ -104,9 +137,10 @@ async function performTokenRefresh() {
 
 export async function refreshAccessToken() {
   if (!refreshPromise) {
-    refreshPromise = performTokenRefresh().finally(() => {
-      refreshPromise = null
+    const pending = performTokenRefresh().finally(() => {
+      if (refreshPromise === pending) refreshPromise = null
     })
+    refreshPromise = pending
   }
   return refreshPromise
 }
@@ -114,13 +148,17 @@ export async function refreshAccessToken() {
 // Request interceptor
 api.interceptors.request.use(
   async config => {
+    config.authSessionVersion = authSessionVersion
     if (!shouldSkipRefresh(config) && shouldRefreshBeforeRequest()) {
       try {
         await refreshAccessToken()
-      } catch (_) {
-        clearAuthStorage()
+      } catch (error) {
+        if (config.authSessionVersion === authSessionVersion) clearAuthStorage()
+        throw error
       }
     }
+
+    if (config.authSessionVersion !== authSessionVersion) throw new Error('登录用户已切换')
 
     const token = getStoredAuthState().token
     if (token && !config.skipAuthHeader) {
@@ -135,13 +173,18 @@ api.interceptors.request.use(
 
 // Response interceptor
 api.interceptors.response.use(
-  response => response.data,
+  response => {
+    if (response.config.authSessionVersion !== authSessionVersion) throw new Error('登录用户已切换')
+    return response.data
+  },
   async error => {
     const originalRequest = error.config || {}
+    if (originalRequest.authSessionVersion !== authSessionVersion) return Promise.reject(error)
     if (error.response?.status === 401 && !shouldSkipRefresh(originalRequest) && !originalRequest._retry) {
       originalRequest._retry = true
       try {
         await refreshAccessToken()
+        if (originalRequest.authSessionVersion !== authSessionVersion) throw new Error('登录用户已切换')
         const token = getStoredAuthState().token
         if (token) {
           originalRequest.headers = originalRequest.headers || {}
@@ -149,6 +192,7 @@ api.interceptors.response.use(
         }
         return api(originalRequest)
       } catch (refreshError) {
+        if (originalRequest.authSessionVersion !== authSessionVersion) return Promise.reject(refreshError)
         clearAuthStorage()
         if (window.location.pathname !== '/login') {
           window.location.href = '/login'
@@ -278,7 +322,7 @@ export const riskControl = {
 
   // Auth endpoints
   registerUser(data) {
-    return api.post('/auth/register', data)
+    return api.post('/auth/register', data, { skipAuthRefresh: true, skipAuthHeader: true })
   },
   login(data) {
     return api.post('/auth/token', data, { skipAuthRefresh: true, skipAuthHeader: true })

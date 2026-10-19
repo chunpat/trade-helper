@@ -436,6 +436,56 @@ risk_control:
 - `docker-compose.dev.yml` 额外提供 MySQL 和后端代码挂载，适合本地联调
 - 容器模式已支持 API 与信息库更新分离部署
 
+## GitHub Actions：测试、镜像发布和自动部署
+
+工作流位于 `.github/workflows/ci-cd.yml`：
+
+- 提交到 `main` 的 PR：运行 Python 3.11 后端测试、Node.js 24 前端认证测试及生产构建，保存测试报告和前端产物。
+- 推送到 `main`：测试通过后发布前后端 Docker 镜像到 GHCR，再通过 SSH 部署到 `production` 环境。
+- 在 Actions 页面手动运行时选择 `main`，也会执行完整发布；选择其他分支只执行测试和前端构建。
+- 镜像同时支持 Linux amd64 和 arm64，部署使用本次构建的摘要。前端、backend、insight-worker 和 polymarket-worker 一起更新；后端三个角色共享同一镜像。
+
+### 一次性配置
+
+在仓库 Settings → Environments 创建 `production`，添加以下 Secrets（也可设置为仓库 Secrets）：
+
+| Secret | 内容 |
+| --- | --- |
+| `DEPLOY_HOST` | 服务器 IPv4 地址或域名 |
+| `DEPLOY_USER` | 能执行 Docker、读写部署目录的 SSH 用户 |
+| `DEPLOY_SSH_KEY` | 该用户的 SSH 私钥，使用无口令的部署专用密钥 |
+| `DEPLOY_KNOWN_HOSTS` | 已核实的服务器 SSH 公钥对应的 known_hosts 完整记录；非 22 端口使用 `[主机]:端口` 格式 |
+
+在同一环境添加 Variables：
+
+| Variable | 内容 |
+| --- | --- |
+| `DEPLOY_PATH` | 必填，服务器部署根目录，例如 `/opt/trade-helper`；路径只支持字母、数字、下划线、斜杠和连字符 |
+| `DEPLOY_PORT` | SSH 端口，默认 `22` |
+| `COMPOSE_PROJECT_NAME` | 默认 `trade-helper`；已有部署必须填写原来的 Compose 项目名，可在服务器用 `docker compose ls` 查看，确保复用原有容器和数据卷 |
+
+服务器需要 Linux、Bash、`flock`、Docker 和 Docker Compose **2.24.4 或更新版本**，并能访问 GHCR 和现有 MySQL。提前在 `${DEPLOY_PATH}/.env` 放好生产配置，包括 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`、`JWT_SECRET` 等。容器内 Redis 使用 `REDIS_HOST=redis`；连接宿主机 MySQL 时使用 `DB_HOST=host.docker.internal`。保留原有 JWT 密钥即可延续现有登录凭证。环境文件留在服务器，不写入镜像或上传到 GitHub。
+
+GHCR 发布和服务器拉取均使用工作流自带的 `GITHUB_TOKEN`，不需要另配仓库访问令牌。服务器上的 Docker 登录信息使用临时目录，部署结束后清除。配置缺失时部署任务会明确失败，已通过的测试和镜像发布结果仍可查看。
+
+### 部署与恢复
+
+每次部署文件保存到 `${DEPLOY_PATH}/releases/<提交号>-<运行号>-<重试次数>`，`${DEPLOY_PATH}/current` 指向最近一次成功版本。服务器先拉取镜像，在一次性容器中完成数据库初始化和幂等迁移，再更新后端和两个 worker；健康检查通过后重新创建前端 Nginx，并验证前端容器能访问后端。
+
+拉取镜像或数据库初始化失败不会切换服务。新版本启动或健康检查失败时，脚本尝试恢复上一成功版本，并将本次 Actions 标记为失败。第一次接入流水线没有历史发布目录，不能自动恢复此前的手工部署。容器恢复不会撤销数据库迁移，也不会删除数据库或 Redis 数据卷。
+
+本地可运行 `pytest tests/test_deploy_pipeline.py -q` 验证 Compose 合并、发布顺序和失败恢复，测试不会连接服务器或启动容器。工作流语法可用 [actionlint](https://github.com/rhysd/actionlint) 检查；镜像发布使用 [Docker 官方 GitHub Actions](https://docs.docker.com/build/ci/github-actions/)。
+
+## 用户数据隔离与升级
+
+交易所账户和 Polymarket 策略绑定所属用户。持仓、预警、交易复盘、账户行情记录、仪表盘统计及实时推送仅允许所属用户访问；新注册用户从空账户开始。市场公开行情和新闻仍可共享，系统级钉钉通知由管理员维护。
+
+升级需要同时更新前端、API 后端及 insight worker，并重启后端。启动时（或运行 `python scripts/init_db.py`）会幂等添加归属字段和索引，将无归属的历史账户分配给现有活跃管理员，优先选择用户名为 `admin` 的管理员。已有归属不会被覆盖；没有管理员时，旧数据保持无归属，仅后续管理员可访问。迁移失败会阻止后端启动，避免继续提供未隔离的数据。
+
+WebSocket 客户端连接 `/ws` 后须在 10 秒内发送首帧 `{"type":"auth","token":"<access_token>"}`。前端需同步更新；调试脚本通过 `WS_ACCESS_TOKEN` 环境变量读取访问令牌，后端不再向未认证连接推送持仓。
+
+验证：`pytest tests/test_user_data_isolation.py tests/test_auth_refresh_flow.py -q`；前端执行 `npm run test:auth` 和 `npm run build`。
+
 ## 贡献指南
 
 1. Fork 项目

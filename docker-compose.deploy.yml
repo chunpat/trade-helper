@@ -1,0 +1,40 @@
+# 与基础及 prod 配置合并；镜像摘要由 Actions 生成，密钥只在服务器读取。
+x-app: &app
+  image: ${BACKEND_IMAGE:?缺少后端镜像}
+  env_file: !override
+    - ${DEPLOY_ENV_FILE:?缺少服务器环境文件路径}
+  environment:
+    DB_HOST: ${DB_HOST:?请配置 DB_HOST}
+    DB_PORT: ${DB_PORT:-3306}
+    DB_USER: ${DB_USER:?请配置 DB_USER}
+    DB_PASSWORD: ${DB_PASSWORD:?请配置 DB_PASSWORD}
+    DB_NAME: ${DB_NAME:?请配置 DB_NAME}
+    REDIS_HOST: ${REDIS_HOST:-redis}
+    JWT_SECRET: ${JWT_SECRET:?请在服务器环境文件中配置 JWT_SECRET}
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+    interval: 10s
+    timeout: 6s
+    retries: 12
+    start_period: 30s
+
+services:
+  backend:
+    <<: *app
+    build: !reset null
+  insight-worker:
+    <<: *app
+    build: !reset null
+  polymarket-worker:
+    <<: *app
+    build: !reset null
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  frontend:
+    image: ${FRONTEND_IMAGE:?缺少前端镜像}
+    build: !reset null
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6

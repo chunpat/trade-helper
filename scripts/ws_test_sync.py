@@ -5,10 +5,12 @@ Connects to ws://localhost:8029/ws and prints messages for 60 seconds.
 import time
 from websocket import WebSocketApp
 import json
+import os
 
 URI = 'ws://localhost:8029/ws'
 
 def on_open(ws):
+    ws.send(json.dumps({'type': 'auth', 'token': os.environ['WS_ACCESS_TOKEN']}))
     print('open')
 
 def on_message(ws, msg):
@@ -24,6 +26,8 @@ def on_error(ws, err):
     print('error', err)
 
 if __name__ == '__main__':
+    if not os.getenv('WS_ACCESS_TOKEN'):
+        raise SystemExit('请先设置 WS_ACCESS_TOKEN 为当前用户的访问令牌')
     ws = WebSocketApp(URI, on_open=on_open, on_message=on_message, on_close=on_close, on_error=on_error)
     # run for a period
     import threading

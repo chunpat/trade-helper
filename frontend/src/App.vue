@@ -124,8 +124,8 @@ export default {
     }
   },
   methods: {
-    doLogout() {
-      this.$store.dispatch('logout')
+    async doLogout() {
+      await this.$store.dispatch('logout')
       this.$router.push({ name: 'Login' })
     }
   },

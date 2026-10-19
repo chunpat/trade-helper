@@ -51,8 +51,8 @@ class PolymarketCopyRunnerService:
         if self._task and not self._task.done():
             self._task.cancel()
 
-    def get_status(self) -> PolymarketCopyRunnerStatus:
-        strategy_count = len(self.copy_service.list_running_strategy_ids())
+    def get_status(self, copy_service=None) -> PolymarketCopyRunnerStatus:
+        strategy_count = len((copy_service or self.copy_service).list_running_strategy_ids())
         return PolymarketCopyRunnerStatus(
             running=self._running,
             interval_seconds=self.interval_seconds,

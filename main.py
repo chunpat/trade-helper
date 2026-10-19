@@ -186,7 +186,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
     When either task ends (client disconnects or send fails) we make sure to remove the connection.
     """
-    await ws_manager.connect(websocket)
+    if not await ws_manager.connect(websocket):
+        return
     heartbeat_interval = int(os.getenv("WS_HEARTBEAT_INTERVAL", "25"))
 
     async def _receiver():

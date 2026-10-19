@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_current_user
+from app.core.deps import get_current_admin
 from app.models.notification import NotificationChannelConfig
 from app.schemas.notification import DingTalkConfigRead, DingTalkConfigUpdate, NotificationTestResult
 from app.services.dingtalk_notification_service import dingtalk_notification_service
@@ -42,7 +42,7 @@ def _serialize(config: NotificationChannelConfig | None) -> DingTalkConfigRead:
 @router.get("/dingtalk", response_model=DingTalkConfigRead)
 def get_dingtalk_config(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_admin),
 ):
     return _serialize(_get_config(db))
 
@@ -51,7 +51,7 @@ def get_dingtalk_config(
 def update_dingtalk_config(
     payload: DingTalkConfigUpdate,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_admin),
 ):
     config = _get_config(db)
     if config is None:
@@ -89,7 +89,7 @@ def update_dingtalk_config(
 @router.post("/dingtalk/test", response_model=NotificationTestResult)
 async def test_dingtalk_config(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_admin),
 ):
     config = _get_config(db)
     if config is None or not config.webhook_url:

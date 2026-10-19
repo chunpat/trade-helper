@@ -13,6 +13,7 @@ class RiskLevelEnum(enum.Enum):
 class Account(Base, BaseMixin):
     __tablename__ = "accounts"
 
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     exchange = Column(String(50), nullable=False)
     api_key = Column(String(255), nullable=False)
     api_secret = Column(String(255), nullable=False)
@@ -99,6 +100,7 @@ class RiskAlert(Base, BaseMixin):
     is_resolved = Column(Boolean, default=False)
     resolved_at = Column(DateTime)
     resolution_notes = Column(String(500))
+    account = relationship("Account")
 
 class OrderLog(Base, BaseMixin):
     __tablename__ = "order_logs"

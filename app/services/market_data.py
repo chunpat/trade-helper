@@ -127,6 +127,7 @@ class MarketDataService:
             # return a small summary for broadcasting
             return {
                 "id": position.id,
+                "account_id": position.account_id,
                 "symbol": position.symbol,
                 "current_price": position.current_price,
                 "unrealized_pnl": position.unrealized_pnl,

@@ -6,7 +6,7 @@ import logging
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
-from app.core.database import get_db
+from app.core.ownership import get_user_db as get_db, require_account
 from app.core.deps import get_current_user
 from app.schemas import risk_control as schemas
 from app.services.risk_control_service import RiskControlService
@@ -594,6 +594,7 @@ async def create_risk_config(
     current_user=Depends(get_current_user)
 ):
     """创建风控配置"""
+    require_account(db, account_id)
     from app.models.risk_control import RiskConfig
     if config.account_id != account_id:
         raise HTTPException(status_code=400, detail="Account ID mismatch")
@@ -660,6 +661,7 @@ async def check_position_risk(
     db: Session = Depends(get_db)
 ):
     """检查持仓风险"""
+    require_account(db, account_id)
     risk_service = RiskControlService(db)
     result = risk_service.check_position_risk(account_id, symbol, size, leverage)
     return result
@@ -673,6 +675,7 @@ async def check_order_risk(
     db: Session = Depends(get_db)
 ):
     """检查订单风险"""
+    require_account(db, account_id)
     risk_service = RiskControlService(db)
     result = risk_service.check_order_risk(account_id, symbol, size, price)
     return result
@@ -684,6 +687,7 @@ async def create_position(
     current_user=Depends(get_current_user)
 ):
     """创建新持仓"""
+    require_account(db, position.account_id)
     from app.models.risk_control import Position, RiskLevelEnum
     
     # 首先检查持仓风险
@@ -727,16 +731,15 @@ async def list_positions(
 
 
 @router.post('/positions/sync', status_code=202)
-async def trigger_positions_sync(current_user=Depends(get_current_user)):
-    """Trigger a background one-shot positions sync.
-
-    This endpoint will run a single sync across active accounts and return 202 Accepted.
-    It is intended for manual testing when you added account API keys.
-    """
+async def trigger_positions_sync(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """仅为当前用户可访问的活跃账户安排一次后台同步。"""
     syncer = get_position_sync_from_env()
     # fire-and-forget the one-shot sync
     import asyncio
-    asyncio.create_task(syncer.sync_once())
+    from app.models.risk_control import Account
+    accounts = db.query(Account).filter(Account.is_active == True).all()
+    for account in accounts:
+        asyncio.create_task(syncer._sync_account(account))
     return {"status": "sync scheduled"}
 
 
@@ -840,39 +843,22 @@ async def test_account_connectivity(
 
 
 @router.get('/accounts/{account_id}/positions/test')
-async def test_account_positions(account_id: int, current_user=Depends(get_current_user)):
-    """Debug endpoint: call adapter for an account and return raw positions or error.
+async def test_account_positions(account_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """仅检查当前用户拥有的交易所账户。"""
+    from app.services.exchange.binance_adapter import create_adapter_for_account
 
-    Useful to verify API key permissions and response body (does not store results).
-    """
-    db = SessionLocal()
+    acct = require_account(db, account_id)
+    adapter = create_adapter_for_account(acct)
+    if not adapter:
+        return {"error": "adapter not available for this account (check exchange field or credentials)"}
     try:
-        from app.models.risk_control import Account
-
-        acct = db.query(Account).filter(Account.id == account_id).first()
-        if not acct:
-            return {"error": "account not found"}
-
-        from app.services.exchange.binance_adapter import create_adapter_for_account
-
-        adapter = create_adapter_for_account(acct)
-        if not adapter:
-            return {"error": "adapter not available for this account (check exchange field or credentials)"}
-
-        # we want to surface raw status/body when adapter can't parse positions
-        try:
-            rows = await adapter.fetch_positions()
-        except Exception:
-            rows = None
-
-        if rows is not None:
-            return {"rows": rows}
-
-        # try raw debug to surface server status/body
-        raw = await adapter.fetch_positions_raw()
-        return {"rows": None, "debug": raw}
-    finally:
-        db.close()
+        rows = await adapter.fetch_positions()
+    except Exception:
+        rows = None
+    if rows is not None:
+        return {"rows": rows}
+    raw = await adapter.fetch_positions_raw()
+    return {"rows": None, "debug": raw}
 
 @router.patch("/positions/{position_id}", response_model=schemas.PositionInDB)
 async def update_position(
@@ -908,6 +894,7 @@ async def get_account_risk_summary(
     db: Session = Depends(get_db)
 ):
     """获取账户风险概览"""
+    require_account(db, account_id)
     risk_service = RiskControlService(db)
     return risk_service.get_account_risk_summary(account_id)
 
@@ -918,6 +905,7 @@ async def create_risk_alert(
     current_user=Depends(get_current_user)
 ):
     """创建风险预警"""
+    require_account(db, alert.account_id)
     risk_service = RiskControlService(db)
     return risk_service.create_risk_alert(
         alert.account_id,
