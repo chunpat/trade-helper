@@ -41,7 +41,7 @@ compose() {
   export BACKEND_IMAGE FRONTEND_IMAGE
   docker compose --project-name "$project_name" --env-file "$DEPLOY_ENV_FILE" \
     -f "$directory/docker-compose.yml" -f "$directory/docker-compose.prod.yml" \
-    -f "$directory/docker-compose.deploy.yml" "$@"
+    -f "$directory/docker-compose.deploy.yml" -f "$release_dir/docker-compose.polymarket-paused.yml" "$@"
 }
 
 original_frontend=$(readlink -f "$app_dir/frontend/dist" 2>/dev/null || true)
@@ -68,7 +68,7 @@ activate_frontend() {
 
 apply_release() {
   local directory=$1
-  compose "$directory" up -d --no-build --wait --wait-timeout 240 backend insight-worker polymarket-worker || return 1
+  compose "$directory" up -d --no-build --wait --wait-timeout 240 backend insight-worker || return 1
   if [[ $frontend_mode == baota ]]; then
     activate_frontend "$directory" || return 1
     curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8029/health -o /dev/null || return 1
@@ -82,7 +82,15 @@ apply_release() {
 previous_release=$(readlink -f "$app_dir/current" 2>/dev/null || true)
 compose "$release_dir" config --quiet
 # 拉取失败时保留当前容器，尚不执行服务切换。
-compose "$release_dir" pull backend insight-worker polymarket-worker frontend
+compose "$release_dir" pull backend insight-worker frontend
+# 暂停旧 worker，并关闭其自动重启；不删除容器或数据卷。
+docker ps -aq --filter "label=com.docker.compose.project=$project_name" \
+  --filter 'label=com.docker.compose.service=polymarket-worker' |
+  while IFS= read -r worker_id; do
+    [[ -n $worker_id ]] || continue
+    docker update --restart=no "$worker_id" >/dev/null
+    docker stop "$worker_id" >/dev/null
+  done
 if [[ $frontend_mode == baota ]]; then
   # 只从前端镜像取出静态文件，不启动第二套 Nginx，也不在服务器编译。
   chmod a+rx "$app_dir/releases" "$release_dir"
@@ -94,7 +102,7 @@ if [[ $frontend_mode == baota ]]; then
   [[ -s "$release_dir/frontend-dist/index.html" ]] || { echo '镜像中缺少前端首页' >&2; exit 1; }
   chmod -R a+rX "$release_dir/frontend-dist"
 fi
-# 先完成幂等初始化与迁移，再同时启动三个后端角色。
+# 先完成幂等初始化与迁移，再启动 API 和市场洞察服务。
 compose "$release_dir" run --rm --no-deps backend python -c 'from app.core.database import init_db; init_db()'
 
 if ! apply_release "$release_dir"; then
@@ -122,4 +130,4 @@ if ! apply_release "$release_dir"; then
 fi
 
 ln -sfn "$release_dir" "$app_dir/current"
-echo "前端（${frontend_mode}）、后端和两个 worker 均已通过健康检查"
+echo "前端（${frontend_mode}）、后端和市场洞察 worker 均已通过健康检查；Polymarket 保持暂停"

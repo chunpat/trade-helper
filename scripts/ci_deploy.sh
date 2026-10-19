@@ -39,7 +39,7 @@ ssh_options=(-i "$work_dir/key" -p "$DEPLOY_PORT" -o BatchMode=yes -o Identities
 release_dir="${DEPLOY_PATH%/}/releases/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 remote="${DEPLOY_USER}@${DEPLOY_HOST}"
 
-tar -czf - docker-compose.yml docker-compose.prod.yml docker-compose.deploy.yml scripts/deploy.sh \
+tar -czf - docker-compose.yml docker-compose.prod.yml docker-compose.deploy.yml docker-compose.polymarket-paused.yml scripts/deploy.sh \
   -C "$work_dir" images.env registry-user |
   ssh "${ssh_options[@]}" "$remote" "mkdir -p '$release_dir' && tar -xzf - -C '$release_dir'"
 

@@ -474,13 +474,21 @@ GHCR 发布和服务器拉取均使用工作流自带的 `GITHUB_TOKEN`，不需
 
 ### 部署与恢复
 
-每次部署文件保存到 `${DEPLOY_PATH}/releases/<提交号>-<运行号>-<重试次数>`，`${DEPLOY_PATH}/current` 指向最近一次成功版本。服务器先拉取镜像，在一次性容器中完成数据库初始化和幂等迁移，再更新后端和两个 worker。宝塔模式随后切换 `frontend/dist` 链接，通过本机 HTTPS 入口比对首页，并检查后端健康状态；Docker 模式重建前端容器并检查其访问后端是否正常。
+每次部署文件保存到 `${DEPLOY_PATH}/releases/<提交号>-<运行号>-<重试次数>`，`${DEPLOY_PATH}/current` 指向最近一次成功版本。服务器先拉取镜像，在一次性容器中完成数据库初始化和幂等迁移，再更新后端和市场洞察 worker。宝塔模式随后切换 `frontend/dist` 链接，通过本机 HTTPS 入口比对首页，并检查后端健康状态；Docker 模式重建前端容器并检查其访问后端是否正常。
 
 首次接入宝塔模式会备份原有 `frontend/dist` 到 `releases/frontend-backup.*`；发布失败时恢复已有前端文件或上一版本。发布目录和前端备份应保留至确认新版本稳定。新建的项目容器每个最多保存 3 份、每份 20 MB 的日志，避免无上限增长；该设置在合并后首次部署重建容器时生效。流水线不清理其他站点、数据库、数据卷或系统日志。
 
 拉取镜像或数据库初始化失败不会切换服务。新版本启动或健康检查失败时，脚本尝试恢复上一成功版本，并将本次 Actions 标记为失败。第一次接入流水线没有历史发布目录，不能自动恢复此前的手工部署。容器恢复不会撤销数据库迁移，也不会删除数据库或 Redis 数据卷。
 
 本地可运行 `pytest tests/test_deploy_pipeline.py -q` 验证 Compose 合并、发布顺序和失败恢复，测试不会连接服务器或启动容器。工作流语法可用 [actionlint](https://github.com/rhysd/actionlint) 检查；镜像发布使用 [Docker 官方 GitHub Actions](https://docs.docker.com/build/ci/github-actions/)。
+
+## Polymarket 暂停
+
+Polymarket 当前暂时隐藏：侧边栏和新建账户选项不展示该功能，旧页面链接跳转到仪表盘。页面、接口实现及已有账户、策略、历史数据均保留，已有账户仍可在账户管理中维护。
+
+API 中的跟单任务和交易员缓存任务默认关闭。`polymarket-worker` 放入单独的 `polymarket` Compose profile，默认启动不包含它。部署脚本仅启动 API 和市场洞察 worker，同时停止已有 Polymarket worker 并关闭其自动重启。`docker-compose.polymarket-paused.yml` 在部署和回退旧版本时均生效，避免旧版本重新启动相关任务。
+
+恢复时需要同时调整前端 `src/features.js` 开关、暂停覆盖配置和部署服务列表，并明确启用需要的后台任务；仅恢复菜单不会启动跟单。
 
 ## 用户数据隔离与升级
 

@@ -22,9 +22,11 @@ def test_compose_deployment_uses_images_and_preserves_roles(tmp_path):
            'BACKEND_IMAGE': 'ghcr.io/test/backend@sha256:' + 'a' * 64,
            'FRONTEND_IMAGE': 'ghcr.io/test/frontend@sha256:' + 'b' * 64}
     command = ['docker', 'compose', '--env-file', str(env_file)]
-    for filename in ('docker-compose.yml', 'docker-compose.prod.yml', 'docker-compose.deploy.yml'):
+    for filename in ('docker-compose.yml', 'docker-compose.prod.yml', 'docker-compose.deploy.yml', 'docker-compose.polymarket-paused.yml'):
         command.extend(['-f', str(ROOT / filename)])
-    result = subprocess.run(command + ['config', '--format', 'json'], env=env, text=True, capture_output=True, check=True)
+    default_services = subprocess.run(command + ['config', '--services'], env=env, text=True, capture_output=True, check=True)
+    assert 'polymarket-worker' not in default_services.stdout.splitlines()
+    result = subprocess.run(command + ['--profile', 'polymarket', 'config', '--format', 'json'], env=env, text=True, capture_output=True, check=True)
     services = json.loads(result.stdout)['services']
     for name in ('backend', 'insight-worker', 'polymarket-worker'):
         service = services[name]
@@ -34,9 +36,11 @@ def test_compose_deployment_uses_images_and_preserves_roles(tmp_path):
         assert service['healthcheck']['test'][1] == 'python'
         assert service['logging']['options'] == {'max-size': '20m', 'max-file': '3'}
         assert 'host.docker.internal=host-gateway' in service['extra_hosts']
+        assert service['environment']['START_POLYMARKET_TRADER_CACHE'] == 'False'
+        assert service['environment']['START_POLYMARKET_COPY_RUNNER'] == 'False'
     assert services['backend']['environment']['START_POSITION_SYNC'] == 'True'
     assert services['insight-worker']['environment']['START_ANOMALY_MONITOR'] == 'True'
-    assert services['polymarket-worker']['environment']['START_POLYMARKET_TRADER_CACHE'] == 'True'
+    assert services['polymarket-worker']['restart'] == 'no'
     assert 'build' not in services['frontend']
     assert services['frontend']['healthcheck']['test'][1] == 'wget'
 
@@ -44,6 +48,7 @@ def test_compose_deployment_uses_images_and_preserves_roles(tmp_path):
 def prepare_release(directory, marker):
     (directory / 'scripts').mkdir(parents=True)
     shutil.copy(ROOT / 'scripts/deploy.sh', directory / 'scripts/deploy.sh')
+    shutil.copy(ROOT / 'docker-compose.polymarket-paused.yml', directory / 'docker-compose.polymarket-paused.yml')
     (directory / 'images.env').write_text(f'BACKEND_IMAGE={marker}\nFRONTEND_IMAGE={marker}\n')
     (directory / 'registry-user').write_text('test-user\n')
     (directory / 'frontend-dist').mkdir()
@@ -83,6 +88,8 @@ if args[0] == 'login':
     assert sys.stdin.read().strip() == 'test-token'
 if args[0] == 'create':
     print('temporary-extract-container')
+if args[:2] == ['ps', '-aq']:
+    print('paused-worker')
 if args[0] == 'cp':
     (Path(args[-1]) / 'index.html').write_text('new')
 if os.getenv('BACKEND_IMAGE') == 'new':
@@ -91,7 +98,7 @@ if os.getenv('BACKEND_IMAGE') == 'new':
         sys.exit(1)
     if failure == 'migration' and 'run' in args:
         sys.exit(1)
-    if 'up' in args and failure == 'backend' and args[-1] == 'polymarket-worker':
+    if 'up' in args and failure == 'backend' and args[-1] == 'insight-worker':
         sys.exit(1)
     if 'up' in args and failure == 'frontend' and args[-1] == 'frontend':
         sys.exit(1)
@@ -136,7 +143,7 @@ if '--resolve' in args:
         migration_index = next(i for i, entry in enumerate(commands) if 'run' in entry['args'])
         first_start_index = next(i for i, entry in enumerate(commands) if 'up' in entry['args'])
         assert migration_index < first_start_index
-        assert starts[0]['args'][-3:] == ['backend', 'insight-worker', 'polymarket-worker']
+        assert starts[0]['args'][-2:] == ['backend', 'insight-worker']
         if mode == 'docker':
             assert starts[1]['args'][-1] == 'frontend'
             assert '--force-recreate' in starts[1]['args']
@@ -149,6 +156,11 @@ if '--resolve' in args:
         if failure not in ('pull',):
             assert any(entry['args'] == ['rm', 'temporary-extract-container'] for entry in commands)
     assert not any('down' in entry['args'] for entry in commands)
+    assert all('polymarket-worker' not in entry['args'] for entry in starts)
+    assert all(str(release / 'docker-compose.polymarket-paused.yml') in entry['args'] for entry in starts)
+    if failure != 'pull':
+        assert any(entry['args'] == ['update', '--restart=no', 'paused-worker'] for entry in commands)
+        assert any(entry['args'] == ['stop', 'paused-worker'] for entry in commands)
     assert not Path(commands[0]['config']).exists()
     assert 'test-token' not in result.stdout + result.stderr
 
