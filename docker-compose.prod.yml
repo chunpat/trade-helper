@@ -6,3 +6,7 @@ services:
   insight-worker:
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  polymarket-worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

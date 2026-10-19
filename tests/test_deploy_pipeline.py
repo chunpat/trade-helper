@@ -32,6 +32,8 @@ def test_compose_deployment_uses_images_and_preserves_roles(tmp_path):
         assert service['image'] == env['BACKEND_IMAGE']
         assert service['environment']['JWT_SECRET'] == 'test-only'
         assert service['healthcheck']['test'][1] == 'python'
+        assert service['logging']['options'] == {'max-size': '20m', 'max-file': '3'}
+        assert 'host.docker.internal=host-gateway' in service['extra_hosts']
     assert services['backend']['environment']['START_POSITION_SYNC'] == 'True'
     assert services['insight-worker']['environment']['START_ANOMALY_MONITOR'] == 'True'
     assert services['polymarket-worker']['environment']['START_POLYMARKET_TRADER_CACHE'] == 'True'
@@ -44,27 +46,45 @@ def prepare_release(directory, marker):
     shutil.copy(ROOT / 'scripts/deploy.sh', directory / 'scripts/deploy.sh')
     (directory / 'images.env').write_text(f'BACKEND_IMAGE={marker}\nFRONTEND_IMAGE={marker}\n')
     (directory / 'registry-user').write_text('test-user\n')
+    (directory / 'frontend-dist').mkdir()
+    (directory / 'frontend-dist/index.html').write_text(marker)
 
 
 @pytest.mark.parametrize('failure', ['', 'pull', 'migration', 'backend', 'frontend'])
-def test_deploy_health_checks_and_rollback(tmp_path, failure):
+@pytest.mark.parametrize('mode', ['docker', 'baota'])
+@pytest.mark.parametrize('has_previous', [True, False])
+def test_deploy_health_checks_and_rollback(tmp_path, failure, mode, has_previous):
     app = tmp_path / 'app'
     previous, release = app / 'releases/previous', app / 'releases/new'
     prepare_release(previous, 'previous')
     prepare_release(release, 'new')
+    if mode == 'baota':
+        shutil.rmtree(release / 'frontend-dist')
     (app / '.env').write_text('TEST=true\n')
-    (app / 'current').symlink_to(previous)
+    if has_previous:
+        (app / 'current').symlink_to(previous)
+    (app / 'frontend').mkdir()
+    if has_previous:
+        (app / 'frontend/dist').symlink_to(previous / 'frontend-dist')
+    else:
+        (app / 'frontend/dist').mkdir()
+        (app / 'frontend/dist/index.html').write_text('manual-deployment')
     binaries = tmp_path / 'bin'
     binaries.mkdir()
     # 使用替身验证命令顺序和失败恢复，不执行任何 Docker 变更。
     docker = binaries / 'docker'
     docker.write_text(f'''#!{sys.executable}
 import json, os, sys
+from pathlib import Path
 args = sys.argv[1:]
 with open(os.environ['COMMAND_LOG'], 'a') as log:
     log.write(json.dumps({{'args': args, 'image': os.getenv('BACKEND_IMAGE'), 'config': os.getenv('DOCKER_CONFIG')}}) + '\\n')
 if args[0] == 'login':
     assert sys.stdin.read().strip() == 'test-token'
+if args[0] == 'create':
+    print('temporary-extract-container')
+if args[0] == 'cp':
+    (Path(args[-1]) / 'index.html').write_text('new')
 if os.getenv('BACKEND_IMAGE') == 'new':
     failure = os.environ['FAILURE']
     if failure == 'pull' and 'pull' in args:
@@ -77,6 +97,18 @@ if os.getenv('BACKEND_IMAGE') == 'new':
         sys.exit(1)
 ''')
     docker.chmod(0o755)
+    curl = binaries / 'curl'
+    curl.write_text(f'''#!{sys.executable}
+import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+if '--resolve' in args:
+    live = Path(os.environ['APP_DIR']) / 'frontend/dist/index.html'
+    if os.environ['FAILURE'] == 'frontend' and live.read_text() == 'new':
+        sys.exit(22)
+    Path(args[args.index('-o') + 1]).write_text(live.read_text())
+''')
+    curl.chmod(0o755)
     # macOS 未自带 flock；此测试只验证发布流程，生产仍使用系统 flock。
     if not shutil.which('flock'):
         flock = binaries / 'flock'
@@ -84,24 +116,38 @@ if os.getenv('BACKEND_IMAGE') == 'new':
         flock.chmod(0o755)
     log = tmp_path / 'commands.jsonl'
     env = {**os.environ, 'PATH': str(binaries) + os.pathsep + os.environ['PATH'],
-           'COMMAND_LOG': str(log), 'FAILURE': failure}
-    result = subprocess.run(['bash', str(release / 'scripts/deploy.sh'), str(app), 'trade-helper'],
+           'COMMAND_LOG': str(log), 'FAILURE': failure, 'APP_DIR': str(app)}
+    result = subprocess.run(['bash', str(release / 'scripts/deploy.sh'), str(app), 'trade-helper', mode],
                             env=env, input='test-token\n', text=True, capture_output=True)
     assert (result.returncode == 0) == (not failure), result.stderr
-    assert (app / 'current').resolve() == (previous if failure else release)
+    if not failure:
+        assert (app / 'current').resolve() == release
+    elif has_previous:
+        assert (app / 'current').resolve() == previous
+    else:
+        assert not (app / 'current').exists()
     commands = [json.loads(line) for line in log.read_text().splitlines()]
     starts = [entry for entry in commands if 'up' in entry['args']]
     if failure in ('pull', 'migration'):
         assert not starts
-    elif failure:
+    elif failure and has_previous:
         assert any(entry['image'] == 'previous' for entry in starts)
-    else:
+    elif not failure:
         migration_index = next(i for i, entry in enumerate(commands) if 'run' in entry['args'])
         first_start_index = next(i for i, entry in enumerate(commands) if 'up' in entry['args'])
         assert migration_index < first_start_index
         assert starts[0]['args'][-3:] == ['backend', 'insight-worker', 'polymarket-worker']
-        assert starts[1]['args'][-1] == 'frontend'
-        assert '--force-recreate' in starts[1]['args']
+        if mode == 'docker':
+            assert starts[1]['args'][-1] == 'frontend'
+            assert '--force-recreate' in starts[1]['args']
+    if mode == 'baota':
+        assert all('frontend' not in entry['args'] for entry in starts)
+        expected = ('previous' if has_previous else 'manual-deployment') if failure else 'new'
+        assert (app / 'frontend/dist/index.html').read_text() == expected
+        if not failure:
+            assert (app / 'frontend/dist').is_symlink()
+        if failure not in ('pull',):
+            assert any(entry['args'] == ['rm', 'temporary-extract-container'] for entry in commands)
     assert not any('down' in entry['args'] for entry in commands)
     assert not Path(commands[0]['config']).exists()
     assert 'test-token' not in result.stdout + result.stderr
