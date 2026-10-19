@@ -43,7 +43,7 @@
       </div>
     </el-card>
 
-    <el-card class="notification-card">
+    <el-card v-if="isAdmin" class="notification-card">
       <template #header>
         <div class="display-time-card-header">
           <span>市场洞察 · 钉钉通知</span>
@@ -212,6 +212,7 @@ export default {
   name: 'Settings',
   setup() {
     const store = useStore()
+    const isAdmin = computed(() => Boolean(store.state.currentUser?.is_admin))
     const loading = ref(false)
     const submitting = ref(false)
     const accounts = ref([])
@@ -382,12 +383,13 @@ export default {
       ElMessage.success(`时间显示已切换为 ${getDisplayTimezoneLabel(value)} ${getDisplayTimezoneOffsetLabel(value)}`)
     }
 
-    onMounted(() => {
+    onMounted(async () => {
       currentTimeTimer = window.setInterval(() => {
         currentTimeTick.value = Date.now()
       }, 1000)
       fetchAccounts()
-      fetchDingTalkConfig()
+      if (!store.state.currentUser) await store.dispatch('fetchCurrentUser')
+      if (isAdmin.value) fetchDingTalkConfig()
     })
 
     onBeforeUnmount(() => {
@@ -398,6 +400,7 @@ export default {
     })
 
     return {
+      isAdmin,
       browserTimezoneLabel,
       currentDisplayTime,
       displayTimezone,

@@ -5,6 +5,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.services.polymarket_copy_service import polymarket_copy_service
+
 from app.schemas.polymarket import (
     PolymarketActivityItem,
     PolymarketTraderCachePoolInfo,
@@ -38,6 +40,7 @@ router = polymarket_api.router
 def create_test_app():
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[polymarket_api.get_copy_service] = lambda: polymarket_copy_service
     return app
 
 
@@ -293,7 +296,7 @@ def test_create_polymarket_copy_strategy_endpoint(monkeypatch):
         assert payload.execution_account_id == 3
         return _copy_strategy(3)
 
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "create_strategy", fake_create_strategy)
+    monkeypatch.setattr(polymarket_copy_service, "create_strategy", fake_create_strategy)
 
     client = TestClient(create_test_app())
     response = client.post(
@@ -354,7 +357,7 @@ def test_simulate_polymarket_copy_strategy_endpoint(monkeypatch):
             notes=["测试"],
         )
 
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "simulate_strategy", fake_simulate)
+    monkeypatch.setattr(polymarket_copy_service, "simulate_strategy", fake_simulate)
 
     client = TestClient(create_test_app())
     response = client.post(
@@ -373,7 +376,7 @@ def test_list_polymarket_copy_strategies_endpoint(monkeypatch):
     def fake_list_strategies():
         return [_copy_strategy(1), _copy_strategy(2)]
 
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "list_strategies", fake_list_strategies)
+    monkeypatch.setattr(polymarket_copy_service, "list_strategies", fake_list_strategies)
 
     client = TestClient(create_test_app())
     response = client.get("/api/v1/polymarket/strategies")
@@ -397,8 +400,8 @@ def test_start_stop_polymarket_copy_strategy_endpoints(monkeypatch):
         strategy.status = "stopped"
         return strategy
 
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "start_strategy", fake_start)
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "stop_strategy", fake_stop)
+    monkeypatch.setattr(polymarket_copy_service, "start_strategy", fake_start)
+    monkeypatch.setattr(polymarket_copy_service, "stop_strategy", fake_stop)
 
     client = TestClient(create_test_app())
     start_response = client.post("/api/v1/polymarket/strategies/7/start")
@@ -414,7 +417,7 @@ def test_start_polymarket_copy_strategy_endpoint_returns_400_for_live_start_vali
     def fake_start(_strategy_id: int):
         raise ValueError("Polymarket 执行适配器不可用")
 
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "start_strategy", fake_start)
+    monkeypatch.setattr(polymarket_copy_service, "start_strategy", fake_start)
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/polymarket/strategies/7/start")
@@ -463,7 +466,7 @@ def test_preflight_polymarket_copy_strategy_endpoint(monkeypatch):
             notes=["测试"],
         )
 
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "preflight_live_strategy", fake_preflight)
+    monkeypatch.setattr(polymarket_copy_service, "preflight_live_strategy", fake_preflight)
 
     client = TestClient(create_test_app())
     response = client.post("/api/v1/polymarket/strategies/9/preflight", json={"lookback_hours": 24, "activity_limit": 120})
@@ -501,8 +504,8 @@ def test_list_polymarket_copy_strategy_runs_endpoint(monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "get_strategy", fake_get_strategy)
-    monkeypatch.setattr(polymarket_api.polymarket_copy_service, "list_simulation_runs", fake_list_runs)
+    monkeypatch.setattr(polymarket_copy_service, "get_strategy", fake_get_strategy)
+    monkeypatch.setattr(polymarket_copy_service, "list_simulation_runs", fake_list_runs)
 
     client = TestClient(create_test_app())
     response = client.get("/api/v1/polymarket/strategies/9/runs", params={"limit": 5})
@@ -514,7 +517,8 @@ def test_list_polymarket_copy_strategy_runs_endpoint(monkeypatch):
 
 
 def test_get_polymarket_copy_runner_status_endpoint(monkeypatch):
-    def fake_status():
+    def fake_status(copy_service=None):
+        assert copy_service is polymarket_copy_service
         return PolymarketCopyRunnerStatus(running=True, interval_seconds=15, strategy_count=2)
 
     monkeypatch.setattr(polymarket_api.polymarket_copy_runner_service, "get_status", fake_status)

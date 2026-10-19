@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from app.core.deps import get_db
+from app.core.ownership import get_user_db as get_db
 from app.schemas.dashboard import DashboardSummary, PositionChartData, RiskDistributionItem, DashboardAlert, ChartSeries
 from app.models.risk_control import Account, RiskAlert, RiskLevelEnum, Position, TransactionHistory, AccountSnapshot
 from typing import List

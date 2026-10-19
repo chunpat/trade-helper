@@ -3,6 +3,8 @@
 Run inside the backend container so it connects to ws://localhost:8000/ws
 """
 import asyncio
+import json
+import os
 import websockets
 
 async def run():
@@ -10,6 +12,7 @@ async def run():
     print('connecting to', uri)
     try:
         async with websockets.connect(uri) as ws:
+            await ws.send(json.dumps({'type': 'auth', 'token': os.environ['WS_ACCESS_TOKEN']}))
             print('connected')
             # receive messages for 20 seconds
             async def recv():
@@ -27,4 +30,6 @@ async def run():
         print('connection failed', e)
 
 if __name__ == '__main__':
+    if not os.getenv('WS_ACCESS_TOKEN'):
+        raise SystemExit('请先设置 WS_ACCESS_TOKEN 为当前用户的访问令牌')
     asyncio.run(run())

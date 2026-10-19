@@ -1,5 +1,5 @@
 # Build stage
-FROM public.ecr.aws/docker/library/node:20-alpine AS build-stage
+FROM public.ecr.aws/docker/library/node:24-alpine AS build-stage
 
 # Set working directory
 WORKDIR /app
@@ -19,7 +19,7 @@ RUN npm config set registry https://registry.npmmirror.com
 COPY package*.json ./
 
 # Install dependencies (including dev dependencies for build)
-RUN npm install --prefer-offline --no-audit --production=false
+RUN npm ci --include=dev --no-audit --no-fund
 
 # Copy project files
 COPY . .

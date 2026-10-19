@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from app.core.database import get_db
+from app.core.ownership import get_user_db as get_db
 from app.models.risk_control import TickerHistory
 from app.schemas.risk_control import TickerHistoryInDB
 

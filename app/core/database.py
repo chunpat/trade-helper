@@ -81,6 +81,9 @@ def init_db():
     
     Base.metadata.create_all(bind=engine)
 
+    from app.core.ownership import migrate_ownership
+    migrate_ownership(engine)
+
     # create_all 不会给已有表补字段，生产升级时需要显式兼容旧的通知配置表。
     try:
         from sqlalchemy import text

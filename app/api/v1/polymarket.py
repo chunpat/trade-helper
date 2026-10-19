@@ -1,6 +1,10 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from app.core.database import SessionLocal
+from app.core.deps import get_current_user
+from app.core.ownership import scope_session
 
 from app.schemas.polymarket import (
     PolymarketActivityItem,
@@ -20,13 +24,17 @@ from app.schemas.polymarket_copy import (
     PolymarketCopyStrategyRead,
 )
 from app.services.polymarket_copy_runner_service import polymarket_copy_runner_service
-from app.services.polymarket_copy_service import polymarket_copy_service
+from app.services.polymarket_copy_service import PolymarketCopyService
 from app.services.polymarket_data_client import PolymarketAPIError
 from app.services.polymarket_trader_cache_service import polymarket_trader_cache_service
 from app.services.polymarket_trader_analytics_service import polymarket_trader_analytics_service
 
 
 router = APIRouter(prefix="/polymarket", tags=["polymarket"])
+
+
+def get_copy_service(current_user=Depends(get_current_user)):
+    return PolymarketCopyService(session_factory=lambda: scope_session(SessionLocal(), current_user))
 
 
 @router.get("/traders", response_model=List[PolymarketTraderSummary])
@@ -154,30 +162,30 @@ async def get_polymarket_trader_followability(wallet: str):
 
 
 @router.post("/strategies", response_model=PolymarketCopyStrategyRead)
-async def create_polymarket_copy_strategy(payload: PolymarketCopyStrategyCreate):
+async def create_polymarket_copy_strategy(payload: PolymarketCopyStrategyCreate, service=Depends(get_copy_service)):
     try:
-        return polymarket_copy_service.create_strategy(payload)
+        return service.create_strategy(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/strategies", response_model=List[PolymarketCopyStrategyRead])
-async def list_polymarket_copy_strategies():
-    return polymarket_copy_service.list_strategies()
+async def list_polymarket_copy_strategies(service=Depends(get_copy_service)):
+    return service.list_strategies()
 
 
 @router.get("/strategies/{strategy_id}", response_model=PolymarketCopyStrategyRead)
-async def get_polymarket_copy_strategy(strategy_id: int):
-    strategy = polymarket_copy_service.get_strategy(strategy_id)
+async def get_polymarket_copy_strategy(strategy_id: int, service=Depends(get_copy_service)):
+    strategy = service.get_strategy(strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="strategy not found")
     return strategy
 
 
 @router.post("/strategies/{strategy_id}/start", response_model=PolymarketCopyStrategyRead)
-async def start_polymarket_copy_strategy(strategy_id: int):
+async def start_polymarket_copy_strategy(strategy_id: int, service=Depends(get_copy_service)):
     try:
-        strategy = polymarket_copy_service.start_strategy(strategy_id)
+        strategy = service.start_strategy(strategy_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if strategy is None:
@@ -186,8 +194,8 @@ async def start_polymarket_copy_strategy(strategy_id: int):
 
 
 @router.post("/strategies/{strategy_id}/stop", response_model=PolymarketCopyStrategyRead)
-async def stop_polymarket_copy_strategy(strategy_id: int):
-    strategy = polymarket_copy_service.stop_strategy(strategy_id)
+async def stop_polymarket_copy_strategy(strategy_id: int, service=Depends(get_copy_service)):
+    strategy = service.stop_strategy(strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="strategy not found")
     return strategy
@@ -197,20 +205,22 @@ async def stop_polymarket_copy_strategy(strategy_id: int):
 async def list_polymarket_copy_strategy_runs(
     strategy_id: int,
     limit: int = Query(20, ge=1, le=100, description="返回最近运行次数"),
+    service=Depends(get_copy_service),
 ):
-    strategy = polymarket_copy_service.get_strategy(strategy_id)
+    strategy = service.get_strategy(strategy_id)
     if strategy is None:
         raise HTTPException(status_code=404, detail="strategy not found")
-    return polymarket_copy_service.list_simulation_runs(strategy_id, limit=limit)
+    return service.list_simulation_runs(strategy_id, limit=limit)
 
 
 @router.post("/strategies/{strategy_id}/simulate", response_model=PolymarketCopySimulationResult)
 async def simulate_polymarket_copy_strategy(
     strategy_id: int,
     payload: PolymarketCopySimulationRequest,
+    service=Depends(get_copy_service),
 ):
     try:
-        result = await polymarket_copy_service.simulate_strategy(strategy_id, payload)
+        result = await service.simulate_strategy(strategy_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PolymarketAPIError as exc:
@@ -225,9 +235,10 @@ async def simulate_polymarket_copy_strategy(
 async def preflight_polymarket_copy_strategy(
     strategy_id: int,
     payload: Optional[PolymarketCopySimulationRequest] = None,
+    service=Depends(get_copy_service),
 ):
     try:
-        result = await polymarket_copy_service.preflight_live_strategy(strategy_id, payload)
+        result = await service.preflight_live_strategy(strategy_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PolymarketAPIError as exc:
@@ -239,5 +250,5 @@ async def preflight_polymarket_copy_strategy(
 
 
 @router.get("/copy-runner/status", response_model=PolymarketCopyRunnerStatus)
-async def get_polymarket_copy_runner_status():
-    return polymarket_copy_runner_service.get_status()
+async def get_polymarket_copy_runner_status(service=Depends(get_copy_service)):
+    return polymarket_copy_runner_service.get_status(copy_service=service)

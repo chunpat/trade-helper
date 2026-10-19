@@ -1,8 +1,24 @@
 import { createStore } from 'vuex'
-import { clearAuthStorage, getAuthStorageEventName, getStoredAuthState, riskControl, saveAuthTokens } from '../api'
+import { clearAuthStorage, getAuthSessionVersion, getAuthStorageEventName, getStoredAuthState, riskControl, saveAuthTokens } from '../api'
 import { getStoredDisplayTimezone, setStoredDisplayTimezone } from '../utils/datetime'
 
 const storedAuthState = getStoredAuthState()
+
+const defaultDashboardData = () => ({
+  totalPositionValue: 0,
+  positionValueStatus: 'normal',
+  dayChange: 0,
+  activeAlerts: 0,
+  alertStatus: 'normal',
+  highRiskAlerts: 0,
+  mediumRiskAlerts: 0,
+  dailyPnL: 0,
+  pnlStatus: 'normal',
+  pnlRatio: 0,
+  activeAccounts: 0,
+  normalAccounts: 0,
+  abnormalAccounts: 0
+})
 
 const store = createStore({
   state: {
@@ -15,21 +31,7 @@ const store = createStore({
     positions: [],
     alerts: [],
     riskConfigs: {},
-    dashboardData: {
-      totalPositionValue: 0,
-      positionValueStatus: 'normal',
-      dayChange: 0,
-      activeAlerts: 0,
-      alertStatus: 'normal',
-      highRiskAlerts: 0,
-      mediumRiskAlerts: 0,
-      dailyPnL: 0,
-      pnlStatus: 'normal',
-      pnlRatio: 0,
-      activeAccounts: 0,
-      normalAccounts: 0,
-      abnormalAccounts: 0
-    }
+    dashboardData: defaultDashboardData()
   },
 
   mutations: {
@@ -37,6 +39,14 @@ const store = createStore({
       state.token = authState?.token || null
       state.refreshToken = authState?.refreshToken || null
       state.tokenExpiresAt = authState?.tokenExpiresAt || null
+      if (!state.token) {
+        state.currentUser = null
+        state.accounts = []
+        state.positions = []
+        state.alerts = []
+        state.riskConfigs = {}
+        state.dashboardData = defaultDashboardData()
+      }
     },
     SET_DISPLAY_TIMEZONE(state, timezone) {
       state.displayTimezone = timezone || 'system'
@@ -96,36 +106,31 @@ const store = createStore({
     },
     // Auth actions
     async login({ commit }, { username, password }) {
+      clearAuthStorage()
       try {
         const data = await riskControl.login({ username, password })
         commit('SET_AUTH_STATE', saveAuthTokens(data))
-        // optionally fetch current user
-        // we don't have an endpoint returning me yet (me exists), but we can call it
-        try {
-          const me = await riskControl.getMe()
-          commit('SET_CURRENT_USER', me)
-        } catch (e) {
-          // ignore
-        }
+        const me = await riskControl.getMe()
+        commit('SET_CURRENT_USER', me)
         return data
       } catch (e) {
         throw e
       }
     },
     async logout({ commit, state }) {
-      if (state.refreshToken) {
+      const refreshToken = state.refreshToken
+      clearAuthStorage()
+      commit('SET_AUTH_STATE', { token: null, refreshToken: null, tokenExpiresAt: null })
+      if (refreshToken) {
         try {
-          await riskControl.logout({ refresh_token: state.refreshToken })
+          await riskControl.logout({ refresh_token: refreshToken })
         } catch (_) {
           // ignore logout failures and clear local auth state regardless
         }
       }
-
-      clearAuthStorage()
-      commit('SET_AUTH_STATE', { token: null, refreshToken: null, tokenExpiresAt: null })
-      commit('SET_CURRENT_USER', null)
     },
     async fetchCurrentUser({ commit, state }) {
+      const sessionVersion = getAuthSessionVersion()
       const authState = state.token || state.refreshToken ? state : getStoredAuthState()
       if (!authState.token && !authState.refreshToken) return null
       try {
@@ -133,6 +138,7 @@ const store = createStore({
         commit('SET_CURRENT_USER', me)
         return me
       } catch (e) {
+        if (sessionVersion !== getAuthSessionVersion()) return null
         // token invalid or other issue - clear token
         clearAuthStorage()
         commit('SET_AUTH_STATE', { token: null, refreshToken: null, tokenExpiresAt: null })

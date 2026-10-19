@@ -1,0 +1,173 @@
+name: 测试、构建与部署
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# PR 可取消旧检查；主分支部署串行运行，避免中途终止更新。
+concurrency:
+  group: ci-cd-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  backend:
+    name: 后端测试
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      DB_HOST: 127.0.0.1
+      DB_USER: ci
+      DB_PASSWORD: ci-test-only
+      DB_NAME: trade_helper_ci
+      JWT_SECRET: ci-test-only-not-for-production
+      ENABLE_GPT_5_1: 'False'
+      ANOMALY_LLM_PROVIDER: disabled
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt
+      - name: 运行后端与部署回归测试
+        run: python -m pytest tests/ -q --junitxml=test-results/backend.xml
+      - name: 保存测试报告
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-results
+          path: test-results/backend.xml
+          retention-days: 14
+
+  frontend:
+    name: 前端测试与构建
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      VITE_API_URL: /api/v1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test:auth
+      - run: npm run build
+      - name: 保存前端构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+          retention-days: 14
+
+  images:
+    name: 发布 Docker 镜像
+    needs: [backend, frontend]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      backend: ${{ steps.refs.outputs.backend }}
+      frontend: ${{ steps.refs.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 生成镜像名称
+        id: names
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          echo "prefix=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并发布后端及 worker 镜像
+        id: backend
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.names.outputs.prefix }}-backend:sha-${{ github.sha }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: 构建并发布前端镜像
+        id: frontend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.names.outputs.prefix }}-frontend:sha-${{ github.sha }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          build-args: API_URL=/api/v1
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+      - name: 固定本次部署的镜像摘要
+        id: refs
+        env:
+          PREFIX: ${{ steps.names.outputs.prefix }}
+          BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
+          FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
+        run: |
+          echo "backend=${PREFIX}-backend@${BACKEND_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "frontend=${PREFIX}-frontend@${FRONTEND_DIGEST}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: 部署生产环境
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      COMPOSE_PROJECT_NAME: ${{ vars.COMPOSE_PROJECT_NAME || 'trade-helper' }}
+      BACKEND_IMAGE: ${{ needs.images.outputs.backend }}
+      FRONTEND_IMAGE: ${{ needs.images.outputs.frontend }}
+      GHCR_USER: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 上传部署文件并更新服务
+        run: bash scripts/ci_deploy.sh

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:auth": "node --test tests/auth-isolation.test.mjs",
     "preview": "vite preview",
     "serve": "vite preview",
     "lint": "eslint src --ext .js,.vue"
