@@ -349,6 +349,12 @@ export const riskControl = {
 }
 
 export const marketInsight = {
+  getRsiDivergence() {
+    return api.get('/market-insight/rsi-divergence', { timeout: 60000 })
+  },
+  getRsiDivergenceDetail(symbol) {
+    return api.get('/market-insight/rsi-divergence/detail', { params: { symbol }, timeout: 15000 })
+  },
   getMomentumRadar(params) {
     return api.get('/market-insight/momentum-radar', { params, timeout: 8000 })
   },

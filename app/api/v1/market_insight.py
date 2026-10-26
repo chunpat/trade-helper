@@ -19,12 +19,34 @@ from app.schemas.market_insight import (
     TradingSignal,
     MarketOverview
 )
+from app.schemas.rsi_divergence import RsiDivergenceDetail, RsiDivergenceRadar
 from app.services.anomaly_monitor_service import anomaly_monitor_service
 from app.services.market_insight_service import market_insight_service
 from app.services.news_archive_service import news_archive_service
 from app.services.narrative_detector import narrative_detector
+from app.services.rsi_divergence_service import rsi_divergence_service
 
 router = APIRouter(prefix="/market-insight", tags=["market-insight"])
+
+
+@router.get("/rsi-divergence", response_model=RsiDivergenceRadar)
+async def get_rsi_divergence():
+    """扫描1小时RSI背离，返回近24小时已确认信号。"""
+    try:
+        return await rsi_divergence_service.scan()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="RSI背离行情暂不可用，请稍后重试") from exc
+
+
+@router.get("/rsi-divergence/detail", response_model=RsiDivergenceDetail)
+async def get_rsi_divergence_detail(
+    symbol: str = Query(..., min_length=5, max_length=30, pattern=r"^[A-Z0-9]+USDT$"),
+):
+    """返回相同算法计算的小时K线、RSI及背离画线端点。"""
+    try:
+        return await rsi_divergence_service.get_detail(symbol)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="RSI背离图表暂不可用，请稍后重试") from exc
 
 
 @router.get("/dashboard", response_model=MarketInsightDashboard)

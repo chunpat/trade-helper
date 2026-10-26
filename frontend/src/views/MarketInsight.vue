@@ -1,20 +1,20 @@
 <template>
   <div class="momentum-page">
-    <el-page-header @back="$router.back()" content="市场洞察 · 短线量价雷达" class="page-header" />
+    <el-page-header @back="$router.back()" content="市场洞察 · 量价突破与 RSI 背离" class="page-header" />
 
     <el-card shadow="never" class="intro-card">
       <div class="intro-row">
         <div>
-          <h2>只抓刚开始放量的山寨币</h2>
-          <p>短周期上涨只作为候选；必须放量突破前48小时压力位，并超过币种自身波动噪声，才触发预警。</p>
+          <h2>量价突破与 1 小时 RSI 背离</h2>
+          <p>量价雷达筛选放量突破压力位的山寨币；RSI 背离独立监测价格与动量的分歧。</p>
         </div>
         <div class="intro-actions">
           <el-tag type="warning" effect="plain">不追 24H 榜一</el-tag>
-          <el-button :icon="Refresh" :loading="loading || marketCapLoading" type="primary" @click="refreshAll">刷新</el-button>
+          <el-button :icon="Refresh" :loading="loading || marketCapLoading || rsiLoading" type="primary" @click="refreshAll">刷新</el-button>
         </div>
       </div>
       <div class="scan-meta">
-        <span>本轮分析 {{ scannedCount }} 个高流动性合约</span>
+        <span>突破雷达本轮分析 {{ scannedCount }} 个高流动性合约</span>
         <span>更新时间：{{ formatTime(updatedAt) }}</span>
         <span>每 30 秒自动刷新</span>
       </div>
@@ -113,6 +113,8 @@
         </el-card>
       </el-col>
     </el-row>
+
+    <rsi-divergence-radar ref="rsiRadar" @loading-change="rsiLoading = $event" />
 
     <el-card shadow="hover" class="market-cap-card">
       <template #header>
@@ -281,6 +283,7 @@ import { ElEmpty, ElMessage, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useStore } from 'vuex'
 import { marketInsight } from '@/api'
+import RsiDivergenceRadar from '@/components/RsiDivergenceRadar.vue'
 import {
   MARKET_ALERT_PRESETS,
   MARKET_ALERT_PRESET_OPTIONS,
@@ -289,6 +292,8 @@ import { parseBackendDateTime, resolveDisplayTimezone } from '@/utils/datetime'
 
 const store = useStore()
 const loading = ref(false)
+const rsiLoading = ref(false)
+const rsiRadar = ref(null)
 const fiveMinute = ref([])
 const fifteenMinute = ref([])
 const scannedCount = ref(0)
@@ -483,6 +488,7 @@ async function loadMarketCap(silent = true) {
 function refreshAll() {
   loadRadar(false)
   loadMarketCap(false)
+  rsiRadar.value?.refresh()
 }
 
 function applySettings() {
