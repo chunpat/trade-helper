@@ -90,7 +90,16 @@
             短线量价雷达：放量有效突破
           </el-checkbox>
         </el-form-item>
-        <el-form-item label="告警组合阈值">
+        <el-form-item label="BOLL 三周期提醒">
+          <el-checkbox v-model="dingTalkForm.notify_bollinger_breakout">
+            24H 成交额 ≥ 1 亿 USDT，4h / 1h / 15m 同向在轨道外
+          </el-checkbox>
+          <div class="help-text">
+            BOLL(24,2)，每分钟检测一次；使用三个周期各自最新已收盘价，全部高于上轨或全部低于下轨才提醒。
+            独立于量价突破和新闻分析；同币同方向冷却 60 分钟，关闭页面后继续扫描。
+          </div>
+        </el-form-item>
+        <el-form-item label="突破告警组合阈值">
           <div class="preset-config">
             <el-radio-group v-model="dingTalkForm.market_alert_preset">
               <el-radio-button
@@ -110,7 +119,7 @@
             </div>
           </div>
         </el-form-item>
-        <el-form-item label="新闻与 LLM 关联">
+        <el-form-item label="突破新闻与 LLM 关联">
           <el-switch v-model="dingTalkForm.market_news_analysis_enabled" />
           <div class="help-text">
             触发后关联历史新闻库、补抓该币种最新资讯，再由当前配置的 LLM 生成信息面摘要。
@@ -255,6 +264,7 @@ export default {
       secret: '',
       keyword: 'TradeHelper',
       notify_market_breakout: true,
+      notify_bollinger_breakout: false,
       notify_risk_alert: true,
       market_alert_preset: 'balanced',
       market_news_analysis_enabled: true,
@@ -296,6 +306,7 @@ export default {
         dingTalkForm.enabled = Boolean(data.enabled)
         dingTalkForm.keyword = data.keyword || 'TradeHelper'
         dingTalkForm.notify_market_breakout = Boolean(data.notify_market_breakout)
+        dingTalkForm.notify_bollinger_breakout = Boolean(data.notify_bollinger_breakout)
         dingTalkForm.notify_risk_alert = Boolean(data.notify_risk_alert)
         dingTalkForm.market_alert_preset = data.market_alert_preset || 'balanced'
         dingTalkForm.market_news_analysis_enabled = data.market_news_analysis_enabled !== false

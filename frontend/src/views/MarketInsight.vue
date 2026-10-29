@@ -10,7 +10,7 @@
         </div>
         <div class="intro-actions">
           <el-tag type="warning" effect="plain">不追 24H 榜一</el-tag>
-          <el-button :icon="Refresh" :loading="loading || marketCapLoading || rsiLoading" type="primary" @click="refreshAll">刷新</el-button>
+          <el-button :icon="Refresh" :loading="loading || marketCapLoading || rsiLoading || bollLoading" type="primary" @click="refreshAll">刷新</el-button>
         </div>
       </div>
       <div class="scan-meta">
@@ -115,6 +115,7 @@
     </el-row>
 
     <rsi-divergence-radar ref="rsiRadar" @loading-change="rsiLoading = $event" />
+    <bollinger-radar ref="bollRadar" @loading-change="bollLoading = $event" />
 
     <el-card shadow="hover" class="market-cap-card">
       <template #header>
@@ -284,6 +285,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import { useStore } from 'vuex'
 import { marketInsight } from '@/api'
 import RsiDivergenceRadar from '@/components/RsiDivergenceRadar.vue'
+import BollingerRadar from '@/components/BollingerRadar.vue'
 import {
   MARKET_ALERT_PRESETS,
   MARKET_ALERT_PRESET_OPTIONS,
@@ -294,6 +296,8 @@ const store = useStore()
 const loading = ref(false)
 const rsiLoading = ref(false)
 const rsiRadar = ref(null)
+const bollLoading = ref(false)
+const bollRadar = ref(null)
 const fiveMinute = ref([])
 const fifteenMinute = ref([])
 const scannedCount = ref(0)
@@ -489,6 +493,7 @@ function refreshAll() {
   loadRadar(false)
   loadMarketCap(false)
   rsiRadar.value?.refresh()
+  bollRadar.value?.refresh()
 }
 
 function applySettings() {

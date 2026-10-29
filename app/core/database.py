@@ -89,6 +89,10 @@ def init_db():
         from sqlalchemy import text
         with engine.connect() as conn:
             notification_columns = {
+                "notify_bollinger_breakout": (
+                    "ALTER TABLE notification_channel_configs "
+                    "ADD COLUMN notify_bollinger_breakout BOOLEAN NOT NULL DEFAULT FALSE"
+                ),
                 "keyword": (
                     "ALTER TABLE notification_channel_configs "
                     "ADD COLUMN keyword VARCHAR(64) NOT NULL DEFAULT 'TradeHelper'"

@@ -9,7 +9,14 @@ from typing import Any, Dict, List, Optional, Set
 
 from app.core.database import SessionLocal
 from app.models.notification import NotificationChannelConfig, NotificationDeliveryLog
+from app.schemas.bollinger import BollingerSignal
 from app.schemas.market_insight import MarketNews, MomentumRadarResponse, MomentumSignal
+from app.services.bollinger_service import (
+    BOLL_MULTIPLIER,
+    BOLL_PERIOD,
+    BOLL_SCAN_INTERVAL_MS,
+    bollinger_service,
+)
 from app.services.dingtalk_notification_service import dingtalk_notification_service
 from app.services.market_alert_presets import get_market_alert_preset
 from app.services.market_insight_service import market_insight_service
@@ -30,10 +37,14 @@ class MarketNotificationConfig:
     min_score: float
     cooldown_minutes: int
     news_analysis_enabled: bool
+    notify_market_breakout: bool = True
+    notify_bollinger_breakout: bool = False
 
 
 class MarketInsightNotificationService:
     EVENT_TYPE = "market_breakout"
+    BOLLINGER_EVENT_TYPE = "bollinger_breakout"
+    BOLLINGER_COOLDOWN_MINUTES = 60
     REINFORCEMENT_LOOKBACK_HOURS = 24
     REINFORCEMENT_SCORE_DELTA = 10.0
     REINFORCEMENT_BREAKOUT_DELTA = 0.2
@@ -45,6 +56,8 @@ class MarketInsightNotificationService:
         )
         self._task = None
         self._running = False
+        self._last_bollinger_slot = None
+        self._scan_lock = asyncio.Lock()
 
     def _load_config(self) -> Optional[MarketNotificationConfig]:
         db = SessionLocal()
@@ -57,7 +70,7 @@ class MarketInsightNotificationService:
             if (
                 config is None
                 or not config.enabled
-                or not config.notify_market_breakout
+                or not (config.notify_market_breakout or config.notify_bollinger_breakout)
                 or not config.webhook_url
             ):
                 return None
@@ -74,6 +87,8 @@ class MarketInsightNotificationService:
                 min_score=preset.min_score,
                 cooldown_minutes=preset.cooldown_minutes,
                 news_analysis_enabled=bool(config.market_news_analysis_enabled),
+                notify_market_breakout=bool(config.notify_market_breakout),
+                notify_bollinger_breakout=bool(config.notify_bollinger_breakout),
             )
         finally:
             db.close()
@@ -478,10 +493,29 @@ class MarketInsightNotificationService:
         return "\n".join(lines)
 
     async def scan_once(self) -> List[str]:
-        config = self._load_config()
-        if config is None:
-            return []
+        async with self._scan_lock:
+            config = self._load_config()
+            if config is None:
+                self._last_bollinger_slot = None
+                return []
+            jobs = []
+            if config.notify_market_breakout:
+                jobs.append(self._scan_breakout(config))
+            if config.notify_bollinger_breakout:
+                jobs.append(self._scan_bollinger(config))
+            else:
+                self._last_bollinger_slot = None
+            # 两类提醒独立执行，某一行情源或通知失败不阻断另一类。
+            results = await asyncio.gather(*jobs, return_exceptions=True)
+            sent = []
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error("市场提醒扫描失败", exc_info=(type(result), result, result.__traceback__))
+                else:
+                    sent.extend(result)
+            return sent
 
+    async def _scan_breakout(self, config: MarketNotificationConfig) -> List[str]:
         radar = await market_insight_service.get_momentum_radar(
             **config.radar_params
         )
@@ -525,6 +559,92 @@ class MarketInsightNotificationService:
             ",".join(sent_keys),
         )
         return sent_keys
+
+    @staticmethod
+    def _bollinger_key(signal: BollingerSignal) -> str:
+        return f"{signal.symbol}:{signal.direction}"
+
+    def _recent_bollinger_keys(self, signals: List[BollingerSignal]) -> Set[str]:
+        if not signals:
+            return set()
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(NotificationDeliveryLog.dedupe_key)
+                .filter(NotificationDeliveryLog.channel == "dingtalk")
+                .filter(NotificationDeliveryLog.event_type == self.BOLLINGER_EVENT_TYPE)
+                .filter(NotificationDeliveryLog.dedupe_key.in_([self._bollinger_key(item) for item in signals]))
+                .filter(NotificationDeliveryLog.created_at >= datetime.utcnow() - timedelta(minutes=self.BOLLINGER_COOLDOWN_MINUTES))
+                .distinct().all()
+            )
+            return {row[0] for row in rows}
+        finally:
+            db.close()
+
+    def _record_bollinger_deliveries(self, signals: List[BollingerSignal]) -> None:
+        db = SessionLocal()
+        try:
+            db.add_all([
+                NotificationDeliveryLog(
+                    channel="dingtalk", event_type=self.BOLLINGER_EVENT_TYPE,
+                    dedupe_key=self._bollinger_key(signal),
+                    context_payload={"signal": signal.model_dump(mode="json"), "period": BOLL_PERIOD, "multiplier": BOLL_MULTIPLIER},
+                ) for signal in signals
+            ])
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    @classmethod
+    def _build_bollinger_message(cls, signals: List[BollingerSignal], keyword: str) -> str:
+        keyword = " ".join(str(keyword or "").split()) or "TradeHelper"
+        beijing = timezone(timedelta(hours=8))
+        lines = [
+            f"【{keyword} · BOLL三周期轨外提醒】",
+            f"24H成交额 ≥ 1亿USDT｜BOLL({BOLL_PERIOD},{BOLL_MULTIPLIER})｜每分钟检查",
+            "",
+        ]
+        for signal in signals:
+            direction = "全部高于上轨" if signal.direction == "above_upper" else "全部低于下轨"
+            lines.extend([
+                f"{signal.symbol.removesuffix('USDT')}/USDT · {direction}",
+                f"24H成交额：{signal.quote_volume_24h / 100_000_000:.2f} 亿USDT",
+            ])
+            for band in signal.bands:
+                closed_at = datetime.fromtimestamp(band.closed_at / 1000, beijing)
+                lines.append(
+                    f"{band.interval} 收盘 {cls._format_price(band.close)}｜"
+                    f"上轨 {cls._format_price(band.upper)}｜下轨 {cls._format_price(band.lower)}"
+                    f"（{closed_at:%m-%d %H:%M} UTC+8）"
+                )
+            lines.append("")
+        lines.append("按各周期最新已收盘K线判断；同币同方向冷却60分钟。")
+        return "\n".join(lines)
+
+    async def _scan_bollinger(self, config: MarketNotificationConfig) -> List[str]:
+        slot = int(time.time() * 1000) // BOLL_SCAN_INTERVAL_MS
+        if slot == self._last_bollinger_slot:
+            return []
+        radar = await bollinger_service.scan()
+        recent = self._recent_bollinger_keys(radar.signals)
+        pending = [signal for signal in radar.signals if self._bollinger_key(signal) not in recent]
+        sent = []
+        # 分批发送并只记录已送达批次，避免未展示的信号被标记成已提醒。
+        for offset in range(0, len(pending), 4):
+            batch = pending[offset:offset + 4]
+            await dingtalk_notification_service.send_text(
+                webhook_url=config.webhook_url, secret=config.secret,
+                content=self._build_bollinger_message(batch, config.keyword),
+            )
+            self._record_bollinger_deliveries(batch)
+            sent.extend(signal.symbol for signal in batch)
+        # 行情失败时保留重试机会；成功后同一分钟只检查一次。
+        if radar.failed_count == 0:
+            self._last_bollinger_slot = slot
+        return sent
 
     async def poller(self) -> None:
         self._running = True
