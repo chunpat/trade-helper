@@ -29,6 +29,7 @@ def _serialize(config: NotificationChannelConfig | None) -> DingTalkConfigRead:
         secret_configured=bool(config and config.secret),
         keyword=str(config.keyword or "TradeHelper") if config else "TradeHelper",
         notify_market_breakout=bool(config.notify_market_breakout) if config else True,
+        notify_bollinger_breakout=bool(config.notify_bollinger_breakout) if config else False,
         notify_risk_alert=bool(config.notify_risk_alert) if config else True,
         market_alert_preset=preset.key,
         market_news_analysis_enabled=(
@@ -74,6 +75,9 @@ def update_dingtalk_config(
     config.enabled = payload.enabled
     config.keyword = " ".join(str(payload.keyword or "").split()) or "TradeHelper"
     config.notify_market_breakout = payload.notify_market_breakout
+    # 旧客户端未传新字段时保留已保存的开关。
+    if "notify_bollinger_breakout" in payload.model_fields_set:
+        config.notify_bollinger_breakout = payload.notify_bollinger_breakout
     config.notify_risk_alert = payload.notify_risk_alert
     preset = get_market_alert_preset(payload.market_alert_preset)
     config.market_alert_preset = preset.key

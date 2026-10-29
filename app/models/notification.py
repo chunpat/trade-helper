@@ -12,6 +12,7 @@ class NotificationChannelConfig(Base, BaseMixin):
     secret = Column(String(255), nullable=True)
     keyword = Column(String(64), nullable=False, default="TradeHelper")
     notify_market_breakout = Column(Boolean, nullable=False, default=True)
+    notify_bollinger_breakout = Column(Boolean, nullable=False, default=False)
     notify_risk_alert = Column(Boolean, nullable=False, default=True)
     market_alert_preset = Column(String(32), nullable=False, default="balanced")
     market_news_analysis_enabled = Column(Boolean, nullable=False, default=True)

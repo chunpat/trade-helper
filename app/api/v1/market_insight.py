@@ -1,11 +1,12 @@
 """市场洞察API端点"""
 from datetime import datetime, timedelta
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional
 
 from app.core.database import SessionLocal
 from app.models.market_anomaly import NarrativeEvent
+from app.schemas.bollinger import BollingerRadarResponse
 from app.schemas.market_insight import (
     AnomalyEventDetail,
     AnomalyEventSummary,
@@ -21,12 +22,22 @@ from app.schemas.market_insight import (
 )
 from app.schemas.rsi_divergence import RsiDivergenceDetail, RsiDivergenceRadar
 from app.services.anomaly_monitor_service import anomaly_monitor_service
+from app.services.bollinger_service import bollinger_service
 from app.services.market_insight_service import market_insight_service
 from app.services.news_archive_service import news_archive_service
 from app.services.narrative_detector import narrative_detector
 from app.services.rsi_divergence_service import rsi_divergence_service
 
 router = APIRouter(prefix="/market-insight", tags=["market-insight"])
+
+
+@router.get("/bollinger-radar", response_model=BollingerRadarResponse)
+async def get_bollinger_radar():
+    """返回24H成交额达1亿USDT且4h/1h/15m同向收于布林带外的合约。"""
+    try:
+        return await bollinger_service.scan()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="BOLL多周期行情暂不可用，请稍后重试") from exc
 
 
 @router.get("/rsi-divergence", response_model=RsiDivergenceRadar)

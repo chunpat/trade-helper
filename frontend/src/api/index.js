@@ -349,6 +349,9 @@ export const riskControl = {
 }
 
 export const marketInsight = {
+  getBollingerRadar() {
+    return api.get('/market-insight/bollinger-radar', { timeout: 60000 })
+  },
   getRsiDivergence() {
     return api.get('/market-insight/rsi-divergence', { timeout: 60000 })
   },

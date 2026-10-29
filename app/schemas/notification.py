@@ -9,6 +9,7 @@ class DingTalkConfigUpdate(BaseModel):
     secret: Optional[str] = Field(None, max_length=255)
     keyword: str = Field("TradeHelper", max_length=64)
     notify_market_breakout: bool = True
+    notify_bollinger_breakout: bool = False
     notify_risk_alert: bool = True
     market_alert_preset: Literal["high_frequency", "balanced", "strict"] = "balanced"
     market_news_analysis_enabled: bool = True
@@ -22,6 +23,7 @@ class DingTalkConfigRead(BaseModel):
     secret_configured: bool = False
     keyword: str = "TradeHelper"
     notify_market_breakout: bool = True
+    notify_bollinger_breakout: bool = False
     notify_risk_alert: bool = True
     market_alert_preset: Literal["high_frequency", "balanced", "strict"] = "balanced"
     market_news_analysis_enabled: bool = True
