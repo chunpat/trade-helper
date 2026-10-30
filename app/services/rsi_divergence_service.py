@@ -160,7 +160,7 @@ def analyze_klines(symbol: str, rows: List[List[Any]], now_ms: int) -> RsiDiverg
 
 class RsiDivergenceService:
     BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
-    SCAN_LIMIT = 30
+    MIN_QUOTE_VOLUME = 100_000_000
     HISTORY_LIMIT = 499
 
     def __init__(self):
@@ -231,11 +231,18 @@ class RsiDivergenceService:
                 tickers = ticker_response.json()
                 if not isinstance(tickers, list):
                     raise ValueError("合约行情数据格式错误")
-                candidates = sorted(
-                    (item for item in tickers if item.get("symbol") in active
-                     and float(item.get("quoteVolume") or 0) >= 5_000_000),
-                    key=lambda item: float(item["quoteVolume"]), reverse=True,
-                )[:self.SCAN_LIMIT]
+                candidates = []
+                for item in tickers:
+                    if item.get("symbol") not in active:
+                        continue
+                    try:
+                        quote_volume = float(item.get("quoteVolume") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(quote_volume) and quote_volume >= self.MIN_QUOTE_VOLUME:
+                        candidates.append(item)
+                # 按USDT成交额筛选，不限前30，覆盖全部达到1亿USDT的合约。
+                candidates.sort(key=lambda item: float(item["quoteVolume"]), reverse=True)
                 semaphore = asyncio.Semaphore(6)
 
                 async def inspect(ticker):
@@ -254,6 +261,7 @@ class RsiDivergenceService:
                        if now_ms - 24 * HOUR_MS < signal.confirmed_at <= now_ms]
             result = RsiDivergenceRadar(
                 **get_rsi_rules(preset).model_dump(),
+                min_quote_volume=self.MIN_QUOTE_VOLUME,
                 signals=sorted(signals, key=lambda item: item.confirmed_at, reverse=True),
                 scanned_count=len(successful), failed_count=len(results) - len(successful),
                 timestamp=datetime.fromtimestamp(now_ms / 1000, timezone.utc),

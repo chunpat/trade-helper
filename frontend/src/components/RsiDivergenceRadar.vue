@@ -4,7 +4,7 @@
       <div class="rsi-header">
         <div>
           <strong>1 小时 RSI 背离 · {{ radar.preset_label }}筛选</strong>
-          <p>独立扫描成交额最高的 30 个活跃 USDT 加密永续合约（24H 成交额 ≥ 500 万美元），展示近 24 小时确认的信号</p>
+          <p>独立扫描币安所有 24H 成交额 ≥ 1 亿 USDT 的活跃加密永续合约，不限前 30，展示近 24 小时确认的信号</p>
         </div>
         <div class="rsi-actions">
           <insight-notification-toggle event="rsi_divergence" />

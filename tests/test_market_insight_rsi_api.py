@@ -31,6 +31,7 @@ def test_rsi_radar_api_uses_fixed_hourly_defaults(monkeypatch):
     assert response.status_code == 200
     assert response.json()["interval"] == "1h"
     assert response.json()["rsi_period"] == 14
+    assert response.json()["min_quote_volume"] == 100_000_000
     assert response.json()["pivot_right"] == 5
     assert response.json()["min_bars"] == 10
     assert response.json()["min_price_change_percent"] == 0.5

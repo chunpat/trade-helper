@@ -203,7 +203,7 @@ def test_invalid_or_stale_data_is_not_reported_as_no_signal(problem):
         analyze_klines("BTCUSDT", rows, 60 * HOUR_MS)
 
 
-def install_exchange(monkeypatch, fail_symbols=(), old_signal=False):
+def install_exchange(monkeypatch, fail_symbols=(), old_signal=False, extra_symbols=(), volumes=None):
     now_ms = 60 * HOUR_MS + 100
     calls = []
     symbols = ["BTCUSDT", "ETHUSDT", "SMALLUSDT", "USDCUSDT", "STOCKUSDT", "OLDUSDT", "DELIVERYUSDT"]
@@ -213,6 +213,10 @@ def install_exchange(monkeypatch, fail_symbols=(), old_signal=False):
     info[4]["underlyingType"] = "EQUITY"
     info[5]["status"] = "SETTLING"
     info[6]["contractType"] = "CURRENT_QUARTER"
+    symbols.extend(extra_symbols)
+    info.extend({"symbol": symbol, "baseAsset": symbol[:-4], "status": "TRADING",
+                 "quoteAsset": "USDT", "contractType": "PERPETUAL", "underlyingType": "COIN"}
+                for symbol in extra_symbols)
 
     def handler(request):
         calls.append(request)
@@ -220,7 +224,8 @@ def install_exchange(monkeypatch, fail_symbols=(), old_signal=False):
             return httpx.Response(200, json={"symbols": info})
         if request.url.path.endswith("24hr"):
             return httpx.Response(200, json=[{"symbol": symbol,
-                "quoteVolume": "100" if symbol == "SMALLUSDT" else "50000000"} for symbol in symbols])
+                "quoteVolume": (volumes or {}).get(symbol, "99999999.99" if symbol == "SMALLUSDT" else "100000000"),
+                "volume": "999999999999"} for symbol in symbols])
         assert request.url.params["interval"] == "1h"
         assert request.url.params["limit"] == "499"
         assert request.url.params["endTime"] == str(now_ms)
@@ -252,12 +257,32 @@ def test_scan_includes_btc_eth_independently_of_breakout_and_caches(monkeypatch)
         assert [item.symbol for item in first.signals] == ["BTCUSDT", "ETHUSDT"]
         assert first.scanned_count == 2
         assert first.failed_count == 0
+        assert first.min_quote_volume == 100_000_000
         assert first.timestamp == datetime.fromtimestamp(now_ms / 1000, timezone.utc)
         await service.get_detail("BTCUSDT")
 
     asyncio.run(run())
     assert len(calls) == 4
     assert service._cached("radar", 61 * HOUR_MS) is None
+
+
+def test_scan_covers_all_contracts_over_100m_without_top30_limit(monkeypatch):
+    extra = [f"COIN{i}USDT" for i in range(35)]
+    calls, _ = install_exchange(monkeypatch, extra_symbols=extra)
+    result = asyncio.run(RsiDivergenceService().scan())
+    expected = {"BTCUSDT", "ETHUSDT", *extra}
+    assert result.scanned_count == 37
+    assert {item.symbol for item in result.signals} == expected
+    assert {request.url.params["symbol"] for request in calls if request.url.path.endswith("klines")} == expected
+
+
+@pytest.mark.parametrize("volume", ["99999999.99", "NaN", "Infinity", "bad", None])
+def test_quote_volume_threshold_ignores_base_volume_and_invalid_amounts(monkeypatch, volume):
+    calls, _ = install_exchange(monkeypatch, volumes={"BTCUSDT": volume})
+    result = asyncio.run(RsiDivergenceService().scan())
+    assert result.scanned_count == 1
+    assert [item.symbol for item in result.signals] == ["ETHUSDT"]
+    assert len([request for request in calls if request.url.path.endswith("klines")]) == 1
 
 
 def test_scan_reports_partial_failure_and_retries_failed_symbol(monkeypatch):
