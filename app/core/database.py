@@ -89,6 +89,10 @@ def init_db():
         from sqlalchemy import text
         with engine.connect() as conn:
             notification_columns = {
+                "notify_rsi_divergence": "ALTER TABLE notification_channel_configs ADD COLUMN notify_rsi_divergence BOOLEAN NOT NULL DEFAULT FALSE",
+                "rsi_preset": "ALTER TABLE notification_channel_configs ADD COLUMN rsi_preset VARCHAR(32) NOT NULL DEFAULT 'strict'",
+                "rsi_cooldown_minutes": "ALTER TABLE notification_channel_configs ADD COLUMN rsi_cooldown_minutes INT NOT NULL DEFAULT 240",
+                "rsi_notify_after": "ALTER TABLE notification_channel_configs ADD COLUMN rsi_notify_after DATETIME NULL",
                 "notify_bollinger_breakout": (
                     "ALTER TABLE notification_channel_configs "
                     "ADD COLUMN notify_bollinger_breakout BOOLEAN NOT NULL DEFAULT FALSE"

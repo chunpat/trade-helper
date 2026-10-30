@@ -352,11 +352,11 @@ export const marketInsight = {
   getBollingerRadar() {
     return api.get('/market-insight/bollinger-radar', { timeout: 60000 })
   },
-  getRsiDivergence() {
-    return api.get('/market-insight/rsi-divergence', { timeout: 60000 })
+  getRsiDivergence(preset = 'strict') {
+    return api.get('/market-insight/rsi-divergence', { params: { preset }, timeout: 60000 })
   },
-  getRsiDivergenceDetail(symbol) {
-    return api.get('/market-insight/rsi-divergence/detail', { params: { symbol }, timeout: 15000 })
+  getRsiDivergenceDetail(symbol, preset = 'strict') {
+    return api.get('/market-insight/rsi-divergence/detail', { params: { symbol, preset }, timeout: 15000 })
   },
   getMomentumRadar(params) {
     return api.get('/market-insight/momentum-radar', { params, timeout: 8000 })
@@ -388,6 +388,9 @@ export const marketInsight = {
 }
 
 export const notificationSettings = {
+  updateDingTalkEvent(event, enabled) {
+    return api.patch(`/notifications/dingtalk/events/${event}`, { enabled })
+  },
   getDingTalkConfig() {
     return api.get('/notifications/dingtalk')
   },

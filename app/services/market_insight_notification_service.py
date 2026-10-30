@@ -11,6 +11,7 @@ from app.core.database import SessionLocal
 from app.models.notification import NotificationChannelConfig, NotificationDeliveryLog
 from app.schemas.bollinger import BollingerSignal
 from app.schemas.market_insight import MarketNews, MomentumRadarResponse, MomentumSignal
+from app.schemas.rsi_divergence import RsiDivergenceSignal, get_rsi_rules
 from app.services.bollinger_service import (
     BOLL_MULTIPLIER,
     BOLL_PERIOD,
@@ -22,6 +23,7 @@ from app.services.market_alert_presets import get_market_alert_preset
 from app.services.market_insight_service import market_insight_service
 from app.services.news_analysis_service import news_analysis_service
 from app.services.news_archive_service import news_archive_service
+from app.services.rsi_divergence_service import HOUR_MS, rsi_divergence_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +41,17 @@ class MarketNotificationConfig:
     news_analysis_enabled: bool
     notify_market_breakout: bool = True
     notify_bollinger_breakout: bool = False
+    notify_rsi_divergence: bool = False
+    rsi_preset: str = "strict"
+    rsi_cooldown_minutes: int = 240
+    rsi_notify_after: Optional[datetime] = None
 
 
 class MarketInsightNotificationService:
     EVENT_TYPE = "market_breakout"
     BOLLINGER_EVENT_TYPE = "bollinger_breakout"
     BOLLINGER_COOLDOWN_MINUTES = 60
+    RSI_EVENT_TYPE = "rsi_divergence"
     REINFORCEMENT_LOOKBACK_HOURS = 24
     REINFORCEMENT_SCORE_DELTA = 10.0
     REINFORCEMENT_BREAKOUT_DELTA = 0.2
@@ -70,10 +77,13 @@ class MarketInsightNotificationService:
             if (
                 config is None
                 or not config.enabled
-                or not (config.notify_market_breakout or config.notify_bollinger_breakout)
+                or not (config.notify_market_breakout or config.notify_bollinger_breakout or config.notify_rsi_divergence)
                 or not config.webhook_url
             ):
                 return None
+            if config.notify_rsi_divergence and config.rsi_notify_after is None:
+                config.rsi_notify_after = datetime.utcnow()
+                db.commit()
             preset = get_market_alert_preset(
                 str(config.market_alert_preset or "balanced")
             )
@@ -89,6 +99,10 @@ class MarketInsightNotificationService:
                 news_analysis_enabled=bool(config.market_news_analysis_enabled),
                 notify_market_breakout=bool(config.notify_market_breakout),
                 notify_bollinger_breakout=bool(config.notify_bollinger_breakout),
+                notify_rsi_divergence=bool(config.notify_rsi_divergence),
+                rsi_preset=config.rsi_preset or "strict",
+                rsi_cooldown_minutes=config.rsi_cooldown_minutes or 240,
+                rsi_notify_after=config.rsi_notify_after,
             )
         finally:
             db.close()
@@ -505,7 +519,9 @@ class MarketInsightNotificationService:
                 jobs.append(self._scan_bollinger(config))
             else:
                 self._last_bollinger_slot = None
-            # 两类提醒独立执行，某一行情源或通知失败不阻断另一类。
+            if config.notify_rsi_divergence:
+                jobs.append(self._scan_rsi(config))
+            # 各类提醒独立执行，某一行情源或通知失败不阻断其他类型。
             results = await asyncio.gather(*jobs, return_exceptions=True)
             sent = []
             for result in results:
@@ -645,6 +661,97 @@ class MarketInsightNotificationService:
         if radar.failed_count == 0:
             self._last_bollinger_slot = slot
         return sent
+
+    @staticmethod
+    def _rsi_key(signal: RsiDivergenceSignal) -> str:
+        # 不包含筛选档位：切换档位不能再次发送同一对拐点。
+        return f"{signal.symbol}:{signal.direction}:{signal.previous.time}:{signal.current.time}"
+
+    def _pending_rsi_signals(
+        self, signals: List[RsiDivergenceSignal], config: MarketNotificationConfig, now_ms: int,
+    ) -> List[RsiDivergenceSignal]:
+        if config.rsi_notify_after is None:
+            return []
+        activated = config.rsi_notify_after.replace(tzinfo=timezone.utc).timestamp() * 1000
+        fresh = [item for item in signals if max(activated, now_ms - HOUR_MS) < item.confirmed_at <= now_ms]
+        if not fresh:
+            return []
+        db = SessionLocal()
+        try:
+            query = db.query(NotificationDeliveryLog).filter(
+                NotificationDeliveryLog.channel == "dingtalk",
+                NotificationDeliveryLog.event_type == self.RSI_EVENT_TYPE,
+            )
+            delivered = {row.dedupe_key for row in query.filter(
+                NotificationDeliveryLog.dedupe_key.in_([self._rsi_key(item) for item in fresh])
+            ).all()}
+            cutoff = datetime.fromtimestamp(now_ms / 1000, timezone.utc).replace(tzinfo=None) - timedelta(
+                minutes=config.rsi_cooldown_minutes,
+            )
+            cooling = {tuple(row.dedupe_key.split(":")[:2]) for row in query.filter(
+                NotificationDeliveryLog.created_at > cutoff,
+            ).all()}
+        finally:
+            db.close()
+        pending = []
+        for item in sorted(fresh, key=lambda item: item.confirmed_at, reverse=True):
+            pair = (item.symbol, item.direction)
+            if self._rsi_key(item) in delivered or pair in cooling:
+                continue
+            pending.append(item)
+            cooling.add(pair)
+        return pending
+
+    def _record_rsi_deliveries(
+        self, signals: List[RsiDivergenceSignal], config: MarketNotificationConfig,
+    ) -> None:
+        db = SessionLocal()
+        try:
+            db.add_all([NotificationDeliveryLog(
+                channel="dingtalk", event_type=self.RSI_EVENT_TYPE, dedupe_key=self._rsi_key(item),
+                context_payload={"signal": item.model_dump(mode="json"), "preset": config.rsi_preset},
+            ) for item in signals])
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    @staticmethod
+    def _build_rsi_message(signals: List[RsiDivergenceSignal], config: MarketNotificationConfig) -> str:
+        keyword = " ".join(str(config.keyword or "TradeHelper").split())
+        label = get_rsi_rules(config.rsi_preset).preset_label
+        lines = [f"【{keyword} · 1小时RSI背离 · {label}】", f"新确认 {len(signals)} 个信号（UTC+8）", ""]
+        for item in signals:
+            changed = abs(item.current.price - item.previous.price) / item.previous.price * 100
+            confirmed = datetime.fromtimestamp(item.confirmed_at / 1000, timezone(timedelta(hours=8)))
+            lines.append(
+                f"{item.symbol.removesuffix('USDT')}/USDT {item.label}｜价格{'新低' if item.direction == 'bullish' else '新高'} {changed:.2f}%｜"
+                f"RSI {item.previous.rsi:.2f}→{item.current.rsi:.2f}｜确认 {confirmed:%m-%d %H:%M}"
+            )
+        lines.extend(["", "已等待右侧5根小时K线收盘确认；同一背离只通知一次。",
+                      f"同币同方向新背离冷却 {config.rsi_cooldown_minutes} 分钟；详情见市场洞察。"])
+        return "\n".join(lines)
+
+    async def _scan_rsi(self, config: MarketNotificationConfig) -> List[str]:
+        radar = await rsi_divergence_service.scan(preset=config.rsi_preset)
+        # 扫描期间可能被用户关闭或调整强度，发送前重新核对持久化设置。
+        current = self._load_config()
+        if not current or not current.notify_rsi_divergence or (
+            current.rsi_preset != config.rsi_preset or current.rsi_notify_after != config.rsi_notify_after
+        ):
+            return []
+        pending = self._pending_rsi_signals(radar.signals, current, int(time.time() * 1000))
+        if not pending:
+            return []
+        # 同轮合并发送，失败不写发送记录，下次扫描可重试。
+        await dingtalk_notification_service.send_text(
+            webhook_url=current.webhook_url, secret=current.secret,
+            content=self._build_rsi_message(pending, current),
+        )
+        self._record_rsi_deliveries(pending, current)
+        return [item.symbol for item in pending]
 
     async def poller(self) -> None:
         self._running = True

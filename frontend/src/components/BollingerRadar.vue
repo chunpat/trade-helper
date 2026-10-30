@@ -6,7 +6,10 @@
           <strong>BOLL 三周期轨外提醒</strong>
           <p>24H 成交额 ≥ 1 亿 USDT · 4h / 1h / 15m 全部高于上轨或全部低于下轨</p>
         </div>
-        <el-button size="small" :loading="loading" @click="refresh">刷新</el-button>
+        <div class="boll-actions">
+          <insight-notification-toggle event="bollinger_breakout" />
+          <el-button size="small" :loading="loading" @click="refresh">刷新</el-button>
+        </div>
       </div>
     </template>
     <el-alert type="info" :closable="false" class="boll-note"
@@ -46,6 +49,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useStore } from 'vuex'
 import { marketInsight } from '@/api'
+import InsightNotificationToggle from '@/components/InsightNotificationToggle.vue'
 import { formatDateTime } from '@/utils/datetime'
 
 const emit = defineEmits(['loading-change'])
@@ -94,6 +98,7 @@ onUnmounted(() => {
 .boll-card { margin-bottom: 18px; border-radius: 12px; border-top: 3px solid #409eff; }
 .boll-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .boll-header strong { font-size: 16px; }
+.boll-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
 .boll-header p, .boll-meta, .boll-time { color: #667085; font-size: 12px; line-height: 1.7; }
 .boll-header p { margin: 5px 0 0; }
 .boll-note { margin-bottom: 14px; }

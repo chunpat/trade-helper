@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -6,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.deps import get_current_admin
 from app.models.notification import NotificationChannelConfig
-from app.schemas.notification import DingTalkConfigRead, DingTalkConfigUpdate, NotificationTestResult
+from app.schemas.notification import DingTalkConfigRead, DingTalkConfigUpdate, NotificationEventUpdate, NotificationTestResult
 from app.services.dingtalk_notification_service import dingtalk_notification_service
 from app.services.market_alert_presets import get_market_alert_preset
 
@@ -30,6 +31,9 @@ def _serialize(config: NotificationChannelConfig | None) -> DingTalkConfigRead:
         keyword=str(config.keyword or "TradeHelper") if config else "TradeHelper",
         notify_market_breakout=bool(config.notify_market_breakout) if config else True,
         notify_bollinger_breakout=bool(config.notify_bollinger_breakout) if config else False,
+        notify_rsi_divergence=bool(config.notify_rsi_divergence) if config else False,
+        rsi_preset=(config.rsi_preset or "strict") if config else "strict",
+        rsi_cooldown_minutes=(config.rsi_cooldown_minutes or 240) if config else 240,
         notify_risk_alert=bool(config.notify_risk_alert) if config else True,
         market_alert_preset=preset.key,
         market_news_analysis_enabled=(
@@ -72,12 +76,22 @@ def update_dingtalk_config(
     if payload.enabled and not config.webhook_url:
         raise HTTPException(status_code=400, detail="启用钉钉通知前请先配置 Webhook")
 
+    previous_rsi_enabled = bool(config.enabled and config.notify_rsi_divergence)
+    previous_rsi_preset = config.rsi_preset or "strict"
     config.enabled = payload.enabled
     config.keyword = " ".join(str(payload.keyword or "").split()) or "TradeHelper"
     config.notify_market_breakout = payload.notify_market_breakout
     # 旧客户端未传新字段时保留已保存的开关。
     if "notify_bollinger_breakout" in payload.model_fields_set:
         config.notify_bollinger_breakout = payload.notify_bollinger_breakout
+    for field in ("notify_rsi_divergence", "rsi_preset", "rsi_cooldown_minutes"):
+        if field in payload.model_fields_set:
+            setattr(config, field, getattr(payload, field))
+    if config.enabled and config.notify_rsi_divergence and (
+        not previous_rsi_enabled or previous_rsi_preset != config.rsi_preset or config.rsi_notify_after is None
+    ):
+        # 启用、重新启用或切换强度时从当前时间开始，不补发历史信号。
+        config.rsi_notify_after = datetime.utcnow()
     config.notify_risk_alert = payload.notify_risk_alert
     preset = get_market_alert_preset(payload.market_alert_preset)
     config.market_alert_preset = preset.key
@@ -85,6 +99,27 @@ def update_dingtalk_config(
     # 保留旧字段，便于已有部署和旧接口平滑升级。
     config.market_min_score = preset.min_score
     config.market_cooldown_minutes = preset.cooldown_minutes
+    db.commit()
+    db.refresh(config)
+    return _serialize(config)
+
+
+@router.patch("/dingtalk/events/{event}", response_model=DingTalkConfigRead)
+def update_dingtalk_event(
+    event: Literal["market_breakout", "bollinger_breakout", "rsi_divergence"],
+    payload: NotificationEventUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin),
+):
+    config = _get_config(db)
+    if config is None or (payload.enabled and (not config.enabled or not config.webhook_url)):
+        raise HTTPException(status_code=400, detail="请先在风控配置中保存 Webhook 并开启钉钉总开关")
+    field = f"notify_{event}"
+    if event == "rsi_divergence" and payload.enabled and (
+        not config.notify_rsi_divergence or config.rsi_notify_after is None
+    ):
+        config.rsi_notify_after = datetime.utcnow()
+    setattr(config, field, payload.enabled)
     db.commit()
     db.refresh(config)
     return _serialize(config)

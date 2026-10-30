@@ -3,19 +3,30 @@
     <template #header>
       <div class="rsi-header">
         <div>
-          <strong>1 小时 RSI 背离</strong>
+          <strong>1 小时 RSI 背离 · {{ radar.preset_label }}筛选</strong>
           <p>独立扫描成交额最高的 30 个活跃 USDT 加密永续合约（24H 成交额 ≥ 500 万美元），展示近 24 小时确认的信号</p>
         </div>
-        <el-button :loading="loading" size="small" @click="refresh">刷新背离</el-button>
+        <div class="rsi-actions">
+          <insight-notification-toggle event="rsi_divergence" />
+          <el-button :loading="loading" size="small" @click="refresh">刷新背离</el-button>
+        </div>
       </div>
     </template>
 
+    <div class="rsi-strength">
+      <span>筛选强度</span>
+      <el-radio-group v-model="preset" :disabled="loading" size="small" @change="changePreset">
+        <el-radio-button v-for="item in RSI_PRESET_OPTIONS" :key="item.key" :label="item.key">{{ item.label }}</el-radio-button>
+      </el-radio-group>
+      <span class="rsi-meta">本页强度保存在当前浏览器；钉钉通知强度在“通知设置”中单独保存。</span>
+    </div>
     <el-alert class="rsi-method" type="info" :closable="false">
       <template #title>
-        RSI(14) · 收盘价 · Wilder 平滑 · RSI 拐点左右各 5 根 · 相邻同类拐点间隔 5–60 根
+        RSI({{ radar.rsi_period }}) · 收盘价 · Wilder 平滑 · 拐点左右各 {{ radar.pivot_right }} 根 · 相邻同类拐点间隔 {{ radar.min_bars }}–{{ radar.max_bars }} 根
       </template>
-      价格低点降低、RSI 低点抬高为底背离；价格高点抬高、RSI 高点降低为顶背离。
-      仅在右侧 5 根小时 K 线全部收盘后确认，因此确认时间比拐点所在 K 线收盘晚 5 小时。30/70 线仅供观察，不作为筛选条件。
+      价格创新高/新低幅度 ≥ {{ radar.min_price_change_percent }}%，RSI 反向变化 ≥ {{ radar.min_rsi_change }} 点；
+      顶背离前一个 RSI 拐点 ≥ {{ radar.overbought }}，底背离前一个 RSI 拐点 ≤ {{ radar.oversold }}。
+      两端价格也须为严格局部高/低点。仅在右侧 {{ radar.pivot_right }} 根小时 K 线全部收盘后确认，确认时间比拐点收盘晚 {{ radar.pivot_right }} 小时。
     </el-alert>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="rsi-method" />
     <el-alert v-if="radar.failed_count" :title="`${radar.failed_count} 个合约行情暂不可用，本轮结果不完整，下次刷新会重试。`" type="warning" :closable="false" class="rsi-method" />
@@ -42,6 +53,12 @@
       </el-table-column>
       <el-table-column label="RSI 拐点（前 → 后）" min-width="165" align="right">
         <template #default="{ row }">{{ row.previous.rsi.toFixed(2) }} → {{ row.current.rsi.toFixed(2) }}</template>
+      </el-table-column>
+      <el-table-column label="背离幅度" min-width="155" align="right">
+        <template #default="{ row }">
+          <div>价格 {{ (Math.abs(row.current.price - row.previous.price) / row.previous.price * 100).toFixed(2) }}%</div>
+          <div>RSI {{ Math.abs(row.current.rsi - row.previous.rsi).toFixed(2) }} 点</div>
+        </template>
       </el-table-column>
       <el-table-column label="最新小时收盘价" min-width="140" align="right">
         <template #default="{ row }">{{ price(row.last_close) }}</template>
@@ -79,11 +96,19 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useStore } from 'vuex'
 import * as echarts from 'echarts'
 import { marketInsight } from '@/api'
+import InsightNotificationToggle from '@/components/InsightNotificationToggle.vue'
+import { RSI_PRESET_OPTIONS } from '@/constants/rsiPresets'
 import { resolveDisplayTimezone } from '@/utils/datetime'
 
 const emit = defineEmits(['loading-change'])
 const store = useStore()
-const radar = ref({ signals: [], scanned_count: 0, failed_count: 0, timestamp: null })
+const preset = ref('strict')
+const radar = ref({
+  signals: [], scanned_count: 0, failed_count: 0, timestamp: null,
+  preset: 'strict', preset_label: '严格',
+  rsi_period: 14, pivot_right: 5, min_bars: 10, max_bars: 60,
+  min_price_change_percent: 0.5, min_rsi_change: 5, overbought: 70, oversold: 30
+})
 const loading = ref(false)
 const error = ref('')
 const direction = ref('all')
@@ -111,11 +136,15 @@ async function refresh() {
   loading.value = true
   emit('loading-change', true)
   try {
-    const data = await marketInsight.getRsiDivergence()
+    const data = await marketInsight.getRsiDivergence(preset.value)
     if (disposed) return
     radar.value = data
+    if (store.state.currentUser?.id) {
+      try { window.localStorage.setItem(`rsi.preset.${store.state.currentUser.id}`, preset.value) } catch (_) { /* 浏览器可能禁用存储 */ }
+    }
     error.value = ''
   } catch (_) {
+    preset.value = radar.value.preset
     if (!disposed) error.value = radar.value.timestamp
       ? 'RSI 背离刷新失败，当前显示上次结果，请检查更新时间后重试。'
       : 'RSI 背离行情暂不可用，请稍后重试。'
@@ -123,6 +152,12 @@ async function refresh() {
     loading.value = false
     if (!disposed) emit('loading-change', false)
   }
+}
+
+function changePreset() {
+  chartVisible.value = false
+  disposeChart()
+  refresh()
 }
 
 async function openChart(signal) {
@@ -134,7 +169,7 @@ async function openChart(signal) {
   chartVisible.value = true
   chartLoading.value = true
   try {
-    const data = await marketInsight.getRsiDivergenceDetail(signal.symbol)
+    const data = await marketInsight.getRsiDivergenceDetail(signal.symbol, radar.value.preset)
     if (id !== requestId || disposed || !chartVisible.value) return
     detail = data
     await nextTick()
@@ -207,6 +242,10 @@ function disposeChart() {
 
 defineExpose({ refresh })
 onMounted(() => {
+  try {
+    const saved = window.localStorage.getItem(`rsi.preset.${store.state.currentUser?.id}`)
+    if (RSI_PRESET_OPTIONS.some(item => item.key === saved)) preset.value = saved
+  } catch (_) { /* 浏览器可能禁用存储 */ }
   refresh()
   timer = window.setInterval(refresh, 60000)
   window.addEventListener('resize', resizeChart)
@@ -223,6 +262,8 @@ onUnmounted(() => {
 .rsi-card { margin-bottom: 18px; border-radius: 12px; border-top: 3px solid #7f56d9; }
 .rsi-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .rsi-header strong { font-size: 16px; }
+.rsi-actions, .rsi-strength { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.rsi-strength { margin-bottom: 14px; }
 .rsi-header p, .rsi-meta, .chart-caption { color: #667085; font-size: 12px; line-height: 1.7; }
 .rsi-header p { margin: 5px 0 0; }
 .rsi-method, .rsi-filters { margin-bottom: 14px; }

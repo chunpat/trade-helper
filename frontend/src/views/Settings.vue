@@ -99,6 +99,22 @@
             独立于量价突破和新闻分析；同币同方向冷却 60 分钟，关闭页面后继续扫描。
           </div>
         </el-form-item>
+        <el-form-item label="RSI 背离提醒">
+          <el-checkbox v-model="dingTalkForm.notify_rsi_divergence">1 小时新确认背离，确认后尽快通知</el-checkbox>
+          <div class="help-text">后台每分钟检查，同轮信号合并发送；同一背离只发送一次，重启也不会重复。启用或切换强度后不补发历史信号，超过 1 小时的确认信号不再补发。</div>
+        </el-form-item>
+        <el-form-item label="RSI 通知强度">
+          <div>
+            <el-radio-group v-model="dingTalkForm.rsi_preset">
+              <el-radio-button v-for="item in rsiPresetOptions" :key="item.key" :label="item.key">{{ item.label }}</el-radio-button>
+            </el-radio-group>
+            <div class="help-text">{{ rsiPresetOptions.find(item => item.key === dingTalkForm.rsi_preset)?.description }}；三档均要求价格拐点并等待右侧 5 根小时 K 线确认。</div>
+          </div>
+        </el-form-item>
+        <el-form-item label="RSI 同向冷却（分钟）">
+          <el-input-number v-model="dingTalkForm.rsi_cooldown_minutes" :min="60" :max="1440" :step="60" />
+          <div class="help-text">默认 240 分钟：同币同方向的新背离在 4 小时内不再提醒；反方向单独计时。该设置只影响 RSI。</div>
+        </el-form-item>
         <el-form-item label="突破告警组合阈值">
           <div class="preset-config">
             <el-radio-group v-model="dingTalkForm.market_alert_preset">
@@ -209,6 +225,7 @@ import {
   MARKET_ALERT_PRESET_OPTIONS,
 } from '@/constants/marketAlertPresets'
 import { ElMessage } from 'element-plus'
+import { RSI_PRESET_OPTIONS } from '@/constants/rsiPresets'
 import {
   DISPLAY_TIMEZONE_OPTIONS,
   formatCurrentDateTime,
@@ -265,6 +282,9 @@ export default {
       keyword: 'TradeHelper',
       notify_market_breakout: true,
       notify_bollinger_breakout: false,
+      notify_rsi_divergence: false,
+      rsi_preset: 'strict',
+      rsi_cooldown_minutes: 240,
       notify_risk_alert: true,
       market_alert_preset: 'balanced',
       market_news_analysis_enabled: true,
@@ -307,6 +327,9 @@ export default {
         dingTalkForm.keyword = data.keyword || 'TradeHelper'
         dingTalkForm.notify_market_breakout = Boolean(data.notify_market_breakout)
         dingTalkForm.notify_bollinger_breakout = Boolean(data.notify_bollinger_breakout)
+        dingTalkForm.notify_rsi_divergence = Boolean(data.notify_rsi_divergence)
+        dingTalkForm.rsi_preset = data.rsi_preset || 'strict'
+        dingTalkForm.rsi_cooldown_minutes = Number(data.rsi_cooldown_minutes ?? 240)
         dingTalkForm.notify_risk_alert = Boolean(data.notify_risk_alert)
         dingTalkForm.market_alert_preset = data.market_alert_preset || 'balanced'
         dingTalkForm.market_news_analysis_enabled = data.market_news_analysis_enabled !== false
@@ -420,6 +443,7 @@ export default {
       displayTimezoneOptions,
       loading,
       dingTalkForm,
+      rsiPresetOptions: RSI_PRESET_OPTIONS,
       dingTalkPresetOptions,
       activeDingTalkPreset,
       dingTalkLoading,
