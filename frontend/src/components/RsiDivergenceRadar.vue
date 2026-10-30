@@ -26,7 +26,8 @@
       </template>
       价格创新高/新低幅度 ≥ {{ radar.min_price_change_percent }}%，RSI 反向变化 ≥ {{ radar.min_rsi_change }} 点；
       顶背离前一个 RSI 拐点 ≥ {{ radar.overbought }}，底背离前一个 RSI 拐点 ≤ {{ radar.oversold }}。
-      两端价格也须为严格局部高/低点。仅在右侧 {{ radar.pivot_right }} 根小时 K 线全部收盘后确认，确认时间比拐点收盘晚 {{ radar.pivot_right }} 小时。
+      允许价格与 RSI 拐点前后错开 {{ radar.price_pivot_tolerance }} 根 K 线，按实际价格拐点重验方向和幅度。
+      两者均须完成右侧 {{ radar.pivot_right }} 根收盘确认；价格拐点晚一根时，确认也顺延一小时。
     </el-alert>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="rsi-method" />
     <el-alert v-if="radar.failed_count" :title="`${radar.failed_count} 个合约行情暂不可用，本轮结果不完整，下次刷新会重试。`" type="warning" :closable="false" class="rsi-method" />
@@ -66,8 +67,11 @@
       <el-table-column label="最新 RSI" width="100" align="right">
         <template #default="{ row }">{{ row.last_rsi.toFixed(2) }}</template>
       </el-table-column>
-      <el-table-column label="拐点时间" min-width="150">
-        <template #default="{ row }">{{ formatTime(row.current.time) }}</template>
+      <el-table-column label="后拐点时间" min-width="175">
+        <template #default="{ row }">
+          <div>RSI：{{ formatTime(row.current.time) }}</div>
+          <div>价格：{{ formatTime(row.current.price_time ?? row.current.time) }}</div>
+        </template>
       </el-table-column>
       <el-table-column label="确认时间" min-width="150">
         <template #default="{ row }">{{ formatTime(row.confirmed_at) }}</template>
@@ -83,7 +87,7 @@
 
     <el-dialog v-model="chartVisible" :title="`${selected?.symbol || ''} · 1 小时 RSI ${selected?.label || '背离'}`" width="94%" destroy-on-close @opened="renderChart" @closed="disposeChart">
       <p v-if="selected" class="chart-caption">
-        连线对应历史拐点；信号于 {{ formatTime(selected.confirmed_at) }} 才确认。图表仅含已收盘 K 线。
+        价格与 RSI 连线分别对应各自历史拐点，可前后相差一根；信号于 {{ formatTime(selected.confirmed_at) }} 才确认。图表仅含已收盘 K 线。
       </p>
       <el-alert v-if="chartError" :title="chartError" type="error" :closable="false" />
       <div ref="chartElement" v-loading="chartLoading" class="rsi-chart" />
@@ -107,7 +111,7 @@ const radar = ref({
   signals: [], scanned_count: 0, failed_count: 0, timestamp: null,
   preset: 'strict', preset_label: '严格',
   rsi_period: 14, pivot_right: 5, min_bars: 10, max_bars: 60,
-  min_price_change_percent: 0.5, min_rsi_change: 5, overbought: 70, oversold: 30
+  min_price_change_percent: 0.5, min_rsi_change: 5, overbought: 70, oversold: 30, price_pivot_tolerance: 1
 })
 const loading = ref(false)
 const error = ref('')
@@ -188,10 +192,9 @@ function renderChart() {
   const signal = selected.value
   const times = candles.map(item => String(item.time))
   const color = signal.direction === 'bullish' ? '#12b76a' : '#f04438'
-  const line = field => [[
-    { coord: [String(signal.previous.time), signal.previous[field]] },
-    { coord: [String(signal.current.time), signal.current[field]] }
-  ]]
+  const line = field => [[signal.previous, signal.current].map(point => ({
+    coord: [String(field === 'price' ? (point.price_time ?? point.time) : point.time), point[field]]
+  }))]
   const startIndex = Math.max(0, candles.findIndex(item => item.time === signal.previous.time) - 15)
   const endIndex = Math.min(candles.length - 1, candles.findIndex(item => item.time === signal.current.time) + 20)
   const markLine = field => ({

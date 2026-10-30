@@ -730,7 +730,7 @@ class MarketInsightNotificationService:
                 f"{item.symbol.removesuffix('USDT')}/USDT {item.label}｜价格{'新低' if item.direction == 'bullish' else '新高'} {changed:.2f}%｜"
                 f"RSI {item.previous.rsi:.2f}→{item.current.rsi:.2f}｜确认 {confirmed:%m-%d %H:%M}"
             )
-        lines.extend(["", "已等待右侧5根小时K线收盘确认；同一背离只通知一次。",
+        lines.extend(["", "价格与RSI拐点允许错开1根，均已完成右侧5根小时K线收盘确认；同一背离只通知一次。",
                       f"同币同方向新背离冷却 {config.rsi_cooldown_minutes} 分钟；详情见市场洞察。"])
         return "\n".join(lines)
 
