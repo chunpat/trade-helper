@@ -46,6 +46,29 @@ def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]
     return values
 
 
+def _match_price_pivot(
+    candles: List[RsiCandle], index: int, bullish: bool,
+    pivot_left: int, pivot_right: int, tolerance: int,
+) -> Optional[int]:
+    """匹配附近已确认的严格价格拐点；默认左右各5根时窗口内至多一个。"""
+    matches = []
+    for at in range(index - tolerance, index + tolerance + 1):
+        if at < pivot_left or at + pivot_right >= len(candles):
+            continue
+        price = candles[at].low if bullish else candles[at].high
+        neighbors = candles[at - pivot_left:at] + candles[at + 1:at + pivot_right + 1]
+        is_pivot = all(price < item.low for item in neighbors) if bullish else all(
+            price > item.high for item in neighbors
+        )
+        if is_pivot:
+            matches.append(at)
+    if not matches:
+        return None
+    return min(matches, key=lambda at: (
+        abs(at - index), candles[at].low if bullish else -candles[at].high, at,
+    ))
+
+
 def detect_divergences(
     symbol: str,
     candles: List[RsiCandle],
@@ -84,43 +107,41 @@ def detect_divergences(
                 continue
             prior = candles[prior_index]
             bullish = direction == "bullish"
-            prior_price = prior.low if bullish else prior.high
-            price = candle.low if bullish else candle.high
-            diverges = (price < prior_price and candle.rsi > prior.rsi) if bullish else (
-                price > prior_price and candle.rsi < prior.rsi
-            )
-            if not diverges:
-                continue
             # 首个拐点须进入超买/超卖区，后一个拐点体现足够的动能衰减。
             if (prior.rsi > rules.oversold if bullish else prior.rsi < rules.overbought):
                 continue
-            price_change = abs(price - prior_price) / prior_price * 100
-            rsi_change = abs(candle.rsi - prior.rsi)
+            rsi_change = candle.rsi - prior.rsi if bullish else prior.rsi - candle.rsi
+            if rsi_change < rules.min_rsi_change:
+                continue
+            # 不跳过中间的同类RSI拐点；分别在其前后1根内匹配价格拐点。
+            prior_price_index = _match_price_pivot(
+                candles, prior_index, bullish, pivot_left, pivot_right, rules.price_pivot_tolerance,
+            )
+            price_index = _match_price_pivot(
+                candles, index, bullish, pivot_left, pivot_right, rules.price_pivot_tolerance,
+            )
+            if prior_price_index is None or price_index is None or prior_price_index >= price_index:
+                continue
+            prior_price = candles[prior_price_index].low if bullish else candles[prior_price_index].high
+            price = candles[price_index].low if bullish else candles[price_index].high
+            # 用匹配后的实际高低价重新检验方向和幅度，不能沿用RSI所在K线的价格。
+            price_change = (prior_price - price if bullish else price - prior_price) / prior_price * 100
             if price_change < rules.min_price_change_percent and not math.isclose(
                 price_change, rules.min_price_change_percent, rel_tol=1e-9,
             ):
                 continue
-            if rsi_change < rules.min_rsi_change:
-                continue
-            # RSI拐点所在K线也必须是价格拐点，避免把普通波动连成背离。
-            # 前一个RSI拐点即使未通过价格筛选也保留，不跨过它挑选更早的点。
-            def is_price_pivot(at: int) -> bool:
-                pivot_price = candles[at].low if bullish else candles[at].high
-                neighbors = candles[at - pivot_left:at] + candles[at + 1:at + pivot_right + 1]
-                prices = [item.low if bullish else item.high for item in neighbors]
-                return all(pivot_price < value for value in prices) if bullish else all(
-                    pivot_price > value for value in prices
-                )
-
-            if not is_price_pivot(prior_index) or not is_price_pivot(index):
-                continue
+            confirmation_index = max(index, prior_price_index, price_index) + pivot_right
             signals.append(RsiDivergenceSignal(
                 symbol=symbol,
                 direction=direction,
                 label="底背离" if bullish else "顶背离",
-                previous=RsiDivergencePoint(time=prior.time, price=prior_price, rsi=prior.rsi),
-                current=RsiDivergencePoint(time=candle.time, price=price, rsi=candle.rsi),
-                confirmed_at=candles[index + pivot_right].time + HOUR_MS,
+                previous=RsiDivergencePoint(
+                    time=prior.time, price_time=candles[prior_price_index].time, price=prior_price, rsi=prior.rsi,
+                ),
+                current=RsiDivergencePoint(
+                    time=candle.time, price_time=candles[price_index].time, price=price, rsi=candle.rsi,
+                ),
+                confirmed_at=candles[confirmation_index].time + HOUR_MS,
                 bars_between=index - prior_index,
                 last_close=candles[-1].close,
                 last_rsi=candles[-1].rsi,

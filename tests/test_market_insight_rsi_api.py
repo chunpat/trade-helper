@@ -39,6 +39,7 @@ def test_rsi_radar_api_uses_fixed_hourly_defaults(monkeypatch):
     assert response.json()["overbought"] == 70
     assert response.json()["oversold"] == 30
     assert response.json()["require_price_pivots"] is True
+    assert response.json()["price_pivot_tolerance"] == 1
 
 
 def test_rsi_detail_passes_valid_symbol(monkeypatch):

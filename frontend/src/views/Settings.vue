@@ -108,7 +108,7 @@
             <el-radio-group v-model="dingTalkForm.rsi_preset">
               <el-radio-button v-for="item in rsiPresetOptions" :key="item.key" :label="item.key">{{ item.label }}</el-radio-button>
             </el-radio-group>
-            <div class="help-text">{{ rsiPresetOptions.find(item => item.key === dingTalkForm.rsi_preset)?.description }}；三档均要求价格拐点并等待右侧 5 根小时 K 线确认。</div>
+            <div class="help-text">{{ rsiPresetOptions.find(item => item.key === dingTalkForm.rsi_preset)?.description }}；三档均允许价格与 RSI 拐点前后错开 1 根，等待两者各自右侧 5 根小时 K 线收盘确认。</div>
           </div>
         </el-form-item>
         <el-form-item label="RSI 同向冷却（分钟）">

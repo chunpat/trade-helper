@@ -8,7 +8,8 @@ RsiPreset = Literal["balanced", "strict", "strong"]
 
 
 class RsiDivergencePoint(BaseModel):
-    time: int = Field(..., description="拐点K线开盘时间，毫秒")
+    time: int = Field(..., description="RSI拐点K线开盘时间，毫秒")
+    price_time: Optional[int] = Field(None, description="匹配价格拐点的K线开盘时间，毫秒；旧记录为空时与time相同")
     price: float
     rsi: float
 
@@ -20,7 +21,7 @@ class RsiDivergenceSignal(BaseModel):
     label: str
     previous: RsiDivergencePoint
     current: RsiDivergencePoint
-    confirmed_at: int = Field(..., description="右侧第5根K线收盘后的确认时间，毫秒")
+    confirmed_at: int = Field(..., description="RSI及匹配价格拐点的右侧5根K线均收盘后的确认时间，毫秒")
     bars_between: int
     last_close: float = Field(..., description="最新已收盘1小时K线收盘价")
     last_rsi: float
@@ -48,6 +49,7 @@ class RsiDivergenceRules(BaseModel):
     overbought: float = 70
     oversold: float = 30
     require_price_pivots: bool = True
+    price_pivot_tolerance: int = 1
 
 
 def get_rsi_rules(preset: RsiPreset = "strict") -> RsiDivergenceRules:

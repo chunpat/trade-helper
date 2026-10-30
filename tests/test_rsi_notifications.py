@@ -231,3 +231,12 @@ def test_card_switch_requires_admin_and_enabled_channel(database):
 @pytest.mark.parametrize("payload", [{"rsi_preset": "unknown"}, {"rsi_cooldown_minutes": 59}, {"rsi_cooldown_minutes": 1441}])
 def test_rsi_notification_settings_are_validated(database, payload):
     assert api_client(database).put("/notifications/dingtalk", json=payload).status_code == 422
+
+
+def test_matching_price_time_does_not_change_existing_notification_identity():
+    item = signal()
+    original = MarketInsightNotificationService._rsi_key(item)
+    item.previous.price_time = item.previous.time + HOUR
+    item.current.price_time = item.current.time + HOUR
+    item.confirmed_at += HOUR
+    assert MarketInsightNotificationService._rsi_key(item) == original

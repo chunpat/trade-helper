@@ -108,7 +108,8 @@ def test_strict_filters_reject_weak_or_misaligned_divergence(direction, failure)
         value = getattr(candles[pivot], price_field)
         if failure != "equal_price_neighbor":
             value += -1 if bullish else 1
-        setattr(candles[pivot + 1], price_field, value)
+        offset = 1 if failure == "equal_price_neighbor" else 2
+        setattr(candles[pivot + offset], price_field, value)
     assert detect_divergences("BTCUSDT", candles) == []
 
 
@@ -143,7 +144,7 @@ def test_invalid_price_pivot_is_not_skipped_to_find_an_older_pair():
     candles = pivot_candles(second=40, length=46)
     # 20→40满足强背离，但中间30也是RSI低点，不能跳过它配对。
     candles[30].rsi, candles[30].low = 25, 89
-    candles[31].low = 88
+    candles[32].low = 88
     assert detect_divergences("BTCUSDT", candles) == []
 
 
@@ -152,6 +153,74 @@ def test_only_adjacent_rsi_pivots_are_compared():
     candles[30].rsi, candles[30].low = 35, 91
     signals = detect_divergences("BTCUSDT", candles)
     assert all(item.current.time != 40 * HOUR_MS for item in signals)
+
+
+@pytest.mark.parametrize("direction", ["bullish", "bearish"])
+@pytest.mark.parametrize("first_offset", [-1, 0, 1])
+@pytest.mark.parametrize("second_offset", [-1, 0, 1])
+def test_price_pivots_match_within_one_bar_and_wait_for_both_confirmations(direction, first_offset, second_offset):
+    candles = pivot_candles(direction, length=37)
+    field = "low" if direction == "bullish" else "high"
+    for at, offset in ((20, first_offset), (30, second_offset)):
+        actual = getattr(candles[at], field)
+        setattr(candles[at], field, 99 if direction == "bullish" else 101)
+        setattr(candles[at + offset], field, actual)
+    confirmed_length = 36 + max(second_offset, 0)
+    assert detect_divergences("BTCUSDT", candles[:confirmed_length - 1]) == []
+    signals = detect_divergences("BTCUSDT", candles[:confirmed_length])
+    assert len(signals) == 1
+    result = signals[0]
+    assert result.previous.time == 20 * HOUR_MS
+    assert result.current.time == 30 * HOUR_MS
+    assert result.previous.price_time == (20 + first_offset) * HOUR_MS
+    assert result.current.price_time == (30 + second_offset) * HOUR_MS
+    assert result.confirmed_at == confirmed_length * HOUR_MS
+    assert result.previous.price == (95 if direction == "bullish" else 105)
+    assert result.current.price == (90 if direction == "bullish" else 110)
+    assert result.bars_between == 10
+    # 后续波动不能修改已确认配对、价格或时间。
+    candles.extend(RsiCandle(time=i * HOUR_MS, open=100, high=200, low=50, close=100, rsi=50)
+                   for i in range(37, 46))
+    later = next(item for item in detect_divergences("BTCUSDT", candles) if item.current.time == result.current.time)
+    assert later.previous == result.previous and later.current == result.current
+    assert later.confirmed_at == result.confirmed_at
+
+
+@pytest.mark.parametrize("direction", ["bullish", "bearish"])
+@pytest.mark.parametrize("failure", ["reversed_price", "weak_price", "reversed_rsi"])
+def test_matched_prices_and_rsi_must_still_pass_direction_and_magnitude(direction, failure):
+    candles = pivot_candles(direction, length=37)
+    bullish = direction == "bullish"
+    field = "low" if bullish else "high"
+    if failure == "reversed_rsi":
+        candles[30].rsi = 10 if bullish else 90
+    else:
+        actual = (88 if bullish else 112) if failure == "reversed_price" else (90.4 if bullish else 109.6)
+        setattr(candles[21], field, actual)
+    assert detect_divergences("BTCUSDT", candles) == []
+
+
+def test_lit_offset_regression_uses_actual_prices_and_later_confirmation():
+    candles = [RsiCandle(time=i * HOUR_MS, open=3, high=3.1, low=2.9, close=3, rsi=50) for i in range(49)]
+    candles[20].rsi, candles[20].low = 27.473348474413953, 2.79
+    candles[21].low = 2.7464
+    candles[42].rsi, candles[42].low = 33.498052993196694, 2.7006
+    candles[43].low = 2.5862
+    assert detect_divergences("LITUSDT", candles[:-1]) == []
+    result = detect_divergences("LITUSDT", candles)[0]
+    assert result.previous.price == 2.7464 and result.current.price == 2.5862
+    assert result.previous.price_time == 21 * HOUR_MS and result.current.price_time == 43 * HOUR_MS
+    assert result.confirmed_at == 49 * HOUR_MS
+    assert detect_divergences("LITUSDT", candles, rules=get_rsi_rules("strong")) == []
+
+
+def test_pump_offset_regression_rejects_price_that_no_longer_makes_new_high():
+    candles = [RsiCandle(time=i * HOUR_MS, open=0.0043, high=0.0044, low=0.0042, close=0.0043, rsi=50)
+               for i in range(45)]
+    candles[20].rsi, candles[20].high = 72.48871764934387, 0.004614
+    candles[19].high = 0.00466
+    candles[39].rsi, candles[39].high = 68.14100401162617, 0.004652
+    assert detect_divergences("PUMPUSDT", candles, rules=get_rsi_rules("balanced")) == []
 
 
 def test_open_candle_is_excluded_and_last_closed_candle_is_kept():
