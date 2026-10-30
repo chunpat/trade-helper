@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from app.schemas.rsi_divergence import RsiCandle, RsiDivergenceDetail
+from app.schemas.rsi_divergence import RsiCandle, RsiDivergenceDetail, get_rsi_rules
 from app.services.rsi_divergence_service import (
     HOUR_MS,
     RsiDivergenceService,
@@ -84,10 +84,67 @@ def test_equal_price_or_rsi_is_not_divergence(same):
     assert detect_divergences("BTCUSDT", candles) == []
 
 
-@pytest.mark.parametrize("gap,expected", [(60, 1), (61, 0)])
+@pytest.mark.parametrize("gap,expected", [(9, 0), (10, 1), (60, 1), (61, 0)])
 def test_pivot_distance_is_bounded(gap, expected):
     candles = pivot_candles(second=20 + gap, length=26 + gap)
     assert len(detect_divergences("BTCUSDT", candles)) == expected
+
+
+@pytest.mark.parametrize("direction", ["bullish", "bearish"])
+@pytest.mark.parametrize("failure", ["price_change", "rsi_change", "extreme_zone", "prior_price_pivot", "current_price_pivot", "equal_price_neighbor"])
+def test_strict_filters_reject_weak_or_misaligned_divergence(direction, failure):
+    candles = pivot_candles(direction)
+    bullish = direction == "bullish"
+    price_field = "low" if bullish else "high"
+    first, second = candles[20], candles[30]
+    if failure == "price_change":
+        setattr(second, price_field, getattr(first, price_field) * (0.996 if bullish else 1.004))
+    elif failure == "rsi_change":
+        second.rsi = first.rsi + (4.99 if bullish else -4.99)
+    elif failure == "extreme_zone":
+        first.rsi, second.rsi = (31, 40) if bullish else (69, 60)
+    else:
+        pivot = 20 if failure == "prior_price_pivot" else 30
+        value = getattr(candles[pivot], price_field)
+        if failure != "equal_price_neighbor":
+            value += -1 if bullish else 1
+        setattr(candles[pivot + 1], price_field, value)
+    assert detect_divergences("BTCUSDT", candles) == []
+
+
+@pytest.mark.parametrize("direction", ["bullish", "bearish"])
+def test_strict_thresholds_are_inclusive(direction):
+    candles = pivot_candles(direction)
+    if direction == "bullish":
+        candles[20].rsi, candles[30].rsi = 30, 35
+        candles[30].low = candles[20].low * 0.995
+    else:
+        candles[20].rsi, candles[30].rsi = 70, 65
+        candles[30].high = candles[20].high * 1.005
+    assert len(detect_divergences("BTCUSDT", candles)) == 1
+
+
+@pytest.mark.parametrize("prior_price,price,prior_rsi,rsi", [
+    (81527.7, 81594.3, 69.90, 64.92),
+    (0.9454, 0.9455, 69.43, 68.29),
+    (0.0050556, 0.0051853, 72.77, 68.14),
+])
+def test_screenshot_weak_bearish_signals_are_filtered(prior_price, price, prior_rsi, rsi):
+    candles = pivot_candles("bearish")
+    for candle in candles:
+        candle.open = candle.close = prior_price * 0.98
+        candle.high, candle.low = prior_price * 0.99, prior_price * 0.97
+    candles[20].high, candles[20].rsi = prior_price, prior_rsi
+    candles[30].high, candles[30].rsi = price, rsi
+    assert detect_divergences("BTCUSDT", candles) == []
+
+
+def test_invalid_price_pivot_is_not_skipped_to_find_an_older_pair():
+    candles = pivot_candles(second=40, length=46)
+    # 20→40满足强背离，但中间30也是RSI低点，不能跳过它配对。
+    candles[30].rsi, candles[30].low = 25, 89
+    candles[31].low = 88
+    assert detect_divergences("BTCUSDT", candles) == []
 
 
 def test_only_adjacent_rsi_pivots_are_compared():
@@ -229,3 +286,40 @@ def test_scan_excludes_signals_confirmed_more_than_24_hours_ago(monkeypatch):
     result = asyncio.run(RsiDivergenceService().scan())
     assert result.signals == []
     assert result.scanned_count == 2
+
+
+@pytest.mark.parametrize("direction", ["bullish", "bearish"])
+def test_presets_apply_increasing_thresholds_to_same_candles(direction):
+    candles = pivot_candles(direction, second=32, length=38)
+    if direction == "bullish":
+        candles[20].rsi, candles[32].rsi = 30, 36
+    else:
+        candles[20].rsi, candles[32].rsi = 70, 64
+    assert len(detect_divergences("BTCUSDT", candles, rules=get_rsi_rules("balanced"))) == 1
+    assert len(detect_divergences("BTCUSDT", candles, rules=get_rsi_rules("strict"))) == 1
+    assert detect_divergences("BTCUSDT", candles, rules=get_rsi_rules("strong")) == []
+    candles = pivot_candles(direction, second=32, length=38)
+    assert len(detect_divergences("BTCUSDT", candles, rules=get_rsi_rules("strong"))) == 1
+
+
+def test_presets_reuse_market_data_without_mutating_strict_cache(monkeypatch):
+    calls, _ = install_exchange(monkeypatch)
+
+    def analyze(symbol, rows, now):
+        candles = pivot_candles(second=32, length=38)
+        return RsiDivergenceDetail(symbol=symbol, candles=candles, signals=detect_divergences(symbol, candles))
+
+    monkeypatch.setattr("app.services.rsi_divergence_service.analyze_klines", analyze)
+    service = RsiDivergenceService()
+
+    async def run():
+        strict = await service.scan()
+        strong = await service.scan(preset="strong")
+        balanced = await service.get_detail("BTCUSDT", preset="balanced")
+        assert strong.preset == "strong" and strong.min_rsi_change == 8
+        assert balanced.preset == "balanced" and balanced.min_rsi_change == 3
+        assert await service.scan() == strict
+        assert strict.preset == "strict" and strict.min_rsi_change == 5
+
+    asyncio.run(run())
+    assert len([request for request in calls if request.url.path.endswith("klines")]) == 2

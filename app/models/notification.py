@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Float, Index, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, Index, Integer, JSON, String, Text
 
 from .base import Base, BaseMixin
 
@@ -13,6 +13,10 @@ class NotificationChannelConfig(Base, BaseMixin):
     keyword = Column(String(64), nullable=False, default="TradeHelper")
     notify_market_breakout = Column(Boolean, nullable=False, default=True)
     notify_bollinger_breakout = Column(Boolean, nullable=False, default=False)
+    notify_rsi_divergence = Column(Boolean, nullable=False, default=False)
+    rsi_preset = Column(String(32), nullable=False, default="strict")
+    rsi_cooldown_minutes = Column(Integer, nullable=False, default=240)
+    rsi_notify_after = Column(DateTime, nullable=True)
     notify_risk_alert = Column(Boolean, nullable=False, default=True)
     market_alert_preset = Column(String(32), nullable=False, default="balanced")
     market_news_analysis_enabled = Column(Boolean, nullable=False, default=True)

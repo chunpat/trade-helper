@@ -4,6 +4,8 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+RsiPreset = Literal["balanced", "strict", "strong"]
+
 
 class RsiDivergencePoint(BaseModel):
     time: int = Field(..., description="拐点K线开盘时间，毫秒")
@@ -33,20 +35,40 @@ class RsiCandle(BaseModel):
     rsi: Optional[float] = None
 
 
-class RsiDivergenceDetail(BaseModel):
+class RsiDivergenceRules(BaseModel):
+    preset: RsiPreset = "strict"
+    preset_label: str = "严格"
+    rsi_period: int = 14
+    pivot_left: int = 5
+    pivot_right: int = 5
+    min_bars: int = 10
+    max_bars: int = 60
+    min_price_change_percent: float = 0.5
+    min_rsi_change: float = 5
+    overbought: float = 70
+    oversold: float = 30
+    require_price_pivots: bool = True
+
+
+def get_rsi_rules(preset: RsiPreset = "strict") -> RsiDivergenceRules:
+    if preset == "balanced":
+        return RsiDivergenceRules(preset=preset, preset_label="均衡", min_price_change_percent=0.3,
+                                  min_rsi_change=3, overbought=65, oversold=35)
+    if preset == "strong":
+        return RsiDivergenceRules(preset=preset, preset_label="更强", min_price_change_percent=1,
+                                  min_rsi_change=8, overbought=75, oversold=25, min_bars=12)
+    return RsiDivergenceRules()
+
+
+class RsiDivergenceDetail(RsiDivergenceRules):
     symbol: str
     interval: Literal["1h"] = "1h"
     candles: List[RsiCandle] = Field(default_factory=list)
     signals: List[RsiDivergenceSignal] = Field(default_factory=list)
 
 
-class RsiDivergenceRadar(BaseModel):
+class RsiDivergenceRadar(RsiDivergenceRules):
     interval: Literal["1h"] = "1h"
-    rsi_period: int = 14
-    pivot_left: int = 5
-    pivot_right: int = 5
-    min_bars: int = 5
-    max_bars: int = 60
     lookback_hours: int = 24
     signals: List[RsiDivergenceSignal] = Field(default_factory=list)
     scanned_count: int = 0

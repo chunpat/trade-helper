@@ -24,10 +24,11 @@
       <template #header>
         <div class="card-header">
           <div>
-            <strong>计算方法与雷达参数</strong>
-            <p>参数会保存在当前浏览器，并直接参与后端筛选计算</p>
+            <strong>突破雷达 · 参数与通知</strong>
+            <p>5m / 15m 共用此通知开关；筛选参数保存在当前浏览器，并参与后端计算</p>
           </div>
           <div class="settings-actions">
+            <insight-notification-toggle event="market_breakout" />
             <el-button size="small" @click="resetSettings">恢复默认</el-button>
             <el-button size="small" type="primary" @click="applySettings">应用参数</el-button>
           </div>
@@ -286,6 +287,7 @@ import { useStore } from 'vuex'
 import { marketInsight } from '@/api'
 import RsiDivergenceRadar from '@/components/RsiDivergenceRadar.vue'
 import BollingerRadar from '@/components/BollingerRadar.vue'
+import InsightNotificationToggle from '@/components/InsightNotificationToggle.vue'
 import {
   MARKET_ALERT_PRESETS,
   MARKET_ALERT_PRESET_OPTIONS,

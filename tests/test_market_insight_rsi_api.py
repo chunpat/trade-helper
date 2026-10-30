@@ -22,7 +22,8 @@ def client():
 
 
 def test_rsi_radar_api_uses_fixed_hourly_defaults(monkeypatch):
-    async def scan():
+    async def scan(preset="strict"):
+        assert preset == "strict"
         return RsiDivergenceRadar(scanned_count=30, timestamp=datetime.now(timezone.utc))
 
     monkeypatch.setattr(market_insight_api.rsi_divergence_service, "scan", scan)
@@ -31,17 +32,27 @@ def test_rsi_radar_api_uses_fixed_hourly_defaults(monkeypatch):
     assert response.json()["interval"] == "1h"
     assert response.json()["rsi_period"] == 14
     assert response.json()["pivot_right"] == 5
+    assert response.json()["min_bars"] == 10
+    assert response.json()["min_price_change_percent"] == 0.5
+    assert response.json()["min_rsi_change"] == 5
+    assert response.json()["overbought"] == 70
+    assert response.json()["oversold"] == 30
+    assert response.json()["require_price_pivots"] is True
 
 
 def test_rsi_detail_passes_valid_symbol(monkeypatch):
-    async def detail(symbol):
+    async def detail(symbol, preset="strict"):
         assert symbol == "BTCUSDT"
+        assert preset == "strict"
         return RsiDivergenceDetail(symbol=symbol)
 
     monkeypatch.setattr(market_insight_api.rsi_divergence_service, "get_detail", detail)
     response = client().get("/api/v1/market-insight/rsi-divergence/detail", params={"symbol": "BTCUSDT"})
     assert response.status_code == 200
     assert response.json()["interval"] == "1h"
+    assert response.json()["min_bars"] == 10
+    assert response.json()["min_price_change_percent"] == 0.5
+    assert response.json()["min_rsi_change"] == 5
 
 
 @pytest.mark.parametrize("symbol", ["../BTCUSDT", "BTCUSD", "btcusdt", ""])
@@ -51,10 +62,35 @@ def test_invalid_symbol_rejected(symbol):
 
 
 def test_data_failure_is_visible_to_client(monkeypatch):
-    async def scan():
+    async def scan(preset="strict"):
         raise ValueError("行情不可用")
 
     monkeypatch.setattr(market_insight_api.rsi_divergence_service, "scan", scan)
     response = client().get("/api/v1/market-insight/rsi-divergence")
     assert response.status_code == 502
     assert "暂不可用" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("preset", ["balanced", "strong"])
+def test_rsi_preset_is_forwarded_to_radar_and_detail(monkeypatch, preset):
+    from app.schemas.rsi_divergence import get_rsi_rules
+
+    async def scan(preset):
+        return RsiDivergenceRadar(**get_rsi_rules(preset).model_dump(), timestamp=datetime.now(timezone.utc))
+
+    async def detail(symbol, preset):
+        return RsiDivergenceDetail(**get_rsi_rules(preset).model_dump(), symbol=symbol)
+
+    monkeypatch.setattr(market_insight_api.rsi_divergence_service, "scan", scan)
+    monkeypatch.setattr(market_insight_api.rsi_divergence_service, "get_detail", detail)
+    for path in ("/rsi-divergence", "/rsi-divergence/detail"):
+        response = client().get(f"/api/v1/market-insight{path}", params={"preset": preset, "symbol": "BTCUSDT"})
+        assert response.status_code == 200
+        assert response.json()["preset"] == preset
+        assert response.json()["min_rsi_change"] == (3 if preset == "balanced" else 8)
+
+
+@pytest.mark.parametrize("path", ["/rsi-divergence", "/rsi-divergence/detail"])
+def test_invalid_rsi_preset_is_rejected(path):
+    response = client().get(f"/api/v1/market-insight{path}", params={"symbol": "BTCUSDT", "preset": "unknown"})
+    assert response.status_code == 422

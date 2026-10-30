@@ -13,11 +13,15 @@ from app.schemas.rsi_divergence import (
     RsiDivergenceDetail,
     RsiDivergencePoint,
     RsiDivergenceRadar,
+    RsiDivergenceRules,
     RsiDivergenceSignal,
+    RsiPreset,
+    get_rsi_rules,
 )
 
 logger = logging.getLogger(__name__)
 HOUR_MS = 3_600_000
+STRICT_RULES = RsiDivergenceRules()
 
 
 def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]]:
@@ -45,14 +49,17 @@ def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]
 def detect_divergences(
     symbol: str,
     candles: List[RsiCandle],
-    pivot_left: int = 5,
-    pivot_right: int = 5,
-    min_bars: int = 5,
-    max_bars: int = 60,
+    pivot_left: int = STRICT_RULES.pivot_left,
+    pivot_right: int = STRICT_RULES.pivot_right,
+    min_bars: Optional[int] = None,
+    max_bars: int = STRICT_RULES.max_bars,
+    rules: Optional[RsiDivergenceRules] = None,
 ) -> List[RsiDivergenceSignal]:
-    """比较相邻同类 RSI 拐点及对应价格高/低点，不使用未确认拐点。"""
+    """严格筛选相邻同类RSI拐点：极值区、幅度及价格拐点均须确认。"""
     if not candles:
         return []
+    rules = rules or STRICT_RULES
+    min_bars = rules.min_bars if min_bars is None else min_bars
     previous = {"bullish": None, "bearish": None}
     signals = []
     for index in range(pivot_left, len(candles) - pivot_right):
@@ -83,6 +90,29 @@ def detect_divergences(
                 price > prior_price and candle.rsi < prior.rsi
             )
             if not diverges:
+                continue
+            # 首个拐点须进入超买/超卖区，后一个拐点体现足够的动能衰减。
+            if (prior.rsi > rules.oversold if bullish else prior.rsi < rules.overbought):
+                continue
+            price_change = abs(price - prior_price) / prior_price * 100
+            rsi_change = abs(candle.rsi - prior.rsi)
+            if price_change < rules.min_price_change_percent and not math.isclose(
+                price_change, rules.min_price_change_percent, rel_tol=1e-9,
+            ):
+                continue
+            if rsi_change < rules.min_rsi_change:
+                continue
+            # RSI拐点所在K线也必须是价格拐点，避免把普通波动连成背离。
+            # 前一个RSI拐点即使未通过价格筛选也保留，不跨过它挑选更早的点。
+            def is_price_pivot(at: int) -> bool:
+                pivot_price = candles[at].low if bullish else candles[at].high
+                neighbors = candles[at - pivot_left:at] + candles[at + 1:at + pivot_right + 1]
+                prices = [item.low if bullish else item.high for item in neighbors]
+                return all(pivot_price < value for value in prices) if bullish else all(
+                    pivot_price > value for value in prices
+                )
+
+            if not is_price_pivot(prior_index) or not is_price_pivot(index):
                 continue
             signals.append(RsiDivergenceSignal(
                 symbol=symbol,
@@ -162,14 +192,26 @@ class RsiDivergenceService:
         self._save(symbol, result, now_ms)
         return result
 
-    async def get_detail(self, symbol: str) -> RsiDivergenceDetail:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            return await self._fetch_detail(client, symbol, int(time.time() * 1000))
+    @staticmethod
+    def _apply_preset(detail: RsiDivergenceDetail, preset: RsiPreset) -> RsiDivergenceDetail:
+        if preset == "strict":
+            return detail
+        rules = get_rsi_rules(preset)
+        return RsiDivergenceDetail(
+            **rules.model_dump(), symbol=detail.symbol, candles=detail.candles,
+            signals=detect_divergences(detail.symbol, detail.candles, rules=rules),
+        )
 
-    async def scan(self) -> RsiDivergenceRadar:
+    async def get_detail(self, symbol: str, preset: RsiPreset = "strict") -> RsiDivergenceDetail:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            detail = await self._fetch_detail(client, symbol, int(time.time() * 1000))
+            return self._apply_preset(detail, preset)
+
+    async def scan(self, preset: RsiPreset = "strict") -> RsiDivergenceRadar:
         async with self._scan_lock:
             now_ms = int(time.time() * 1000)
-            cached = self._cached("radar", now_ms)
+            cache_key = "radar" if preset == "strict" else f"radar:{preset}"
+            cached = self._cached(cache_key, now_ms)
             if cached is not None:
                 return cached
             async with httpx.AsyncClient(timeout=8.0) as client:
@@ -205,19 +247,20 @@ class RsiDivergenceService:
                             return None
 
                 results = await asyncio.gather(*(inspect(item) for item in candidates))
-            successful = [item for item in results if item is not None]
+            successful = [self._apply_preset(item, preset) for item in results if item is not None]
             if candidates and not successful:
                 raise ValueError("所有合约的小时K线均不可用")
             signals = [signal for item in successful for signal in item.signals
                        if now_ms - 24 * HOUR_MS < signal.confirmed_at <= now_ms]
             result = RsiDivergenceRadar(
+                **get_rsi_rules(preset).model_dump(),
                 signals=sorted(signals, key=lambda item: item.confirmed_at, reverse=True),
                 scanned_count=len(successful), failed_count=len(results) - len(successful),
                 timestamp=datetime.fromtimestamp(now_ms / 1000, timezone.utc),
             )
             # 部分失败时保留成功币种缓存，下次刷新重试失败币种。
             if result.failed_count == 0:
-                self._save("radar", result, now_ms)
+                self._save(cache_key, result, now_ms)
             return result
 
 
