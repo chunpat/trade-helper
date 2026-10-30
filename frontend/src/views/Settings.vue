@@ -100,7 +100,7 @@
           </div>
         </el-form-item>
         <el-form-item label="RSI 背离提醒">
-          <el-checkbox v-model="dingTalkForm.notify_rsi_divergence">1 小时新确认背离，确认后尽快通知</el-checkbox>
+          <el-checkbox v-model="dingTalkForm.notify_rsi_divergence">24H 成交额 ≥ 1 亿 USDT 合约的 1 小时新确认背离</el-checkbox>
           <div class="help-text">后台每分钟检查，同轮信号合并发送；同一背离只发送一次，重启也不会重复。启用或切换强度后不补发历史信号，超过 1 小时的确认信号不再补发。</div>
         </el-form-item>
         <el-form-item label="RSI 通知强度">

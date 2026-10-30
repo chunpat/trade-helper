@@ -69,6 +69,7 @@ class RsiDivergenceDetail(RsiDivergenceRules):
 
 class RsiDivergenceRadar(RsiDivergenceRules):
     interval: Literal["1h"] = "1h"
+    min_quote_volume: float = Field(100_000_000, description="滚动24小时USDT成交额门槛")
     lookback_hours: int = 24
     signals: List[RsiDivergenceSignal] = Field(default_factory=list)
     scanned_count: int = 0
